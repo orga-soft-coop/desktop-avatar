@@ -1,0 +1,15 @@
+.DS_Store
+.env
+/.build
+/Packages
+xcuserdata/
+DerivedData/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
+node_modules/
+dist/
+coverage/
+src-tauri/target/
+src-tauri/gen/
+pnpm-lock.yaml

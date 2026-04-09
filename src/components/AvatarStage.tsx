@@ -5,8 +5,14 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRM, VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
 import type { AnimationAction, AnimationClip, AnimationMixer, Group } from "three";
-import type { AvatarManifest, CompanionState } from "../lib/contracts";
+import type {
+  AvatarManifest,
+  CompanionState,
+  DesktopAvatarAnimationKey
+} from "../lib/contracts";
 import { resolveAvatarAssets, type LoadedAnimationAsset } from "../lib/avatar-assets";
+import type { AvatarCameraConfig } from "../lib/avatar-stage-config";
+import { DEFAULT_AVATAR_CAMERA_CONFIG } from "../lib/avatar-stage-config";
 import { loadAvatarAnimationClip } from "../lib/vrm-animation";
 import { frontendLog } from "../lib/tauri";
 
@@ -14,7 +20,9 @@ interface AvatarStageProps {
   companionState: CompanionState;
   expanded: boolean;
   manifest: AvatarManifest | null;
+  cameraConfig?: AvatarCameraConfig;
   forcedAnimation?: string | null;
+  suggestedAnimation?: DesktopAvatarAnimationKey | null;
   onDragStart: () => void;
   onAnimationsLoaded?: (names: string[]) => void;
 }
@@ -26,28 +34,29 @@ interface RuntimeState {
   cleanup: () => void;
 }
 
-// Keep the avatar at a constant visual size regardless of canvas height.
-// Reference: at 780px canvas height the camera sits at Z = 4.0.
-const REF_HEIGHT = 780;
-const REF_CAMERA_Z = 4.0;
+function CameraController({ config }: { config: AvatarCameraConfig }) {
+  const camera = useThree((state) => state.camera as THREE.PerspectiveCamera);
+  const size = useThree((state) => state.size);
+  const targetPosition = useRef(new THREE.Vector3());
+  const targetLookAt = useRef(new THREE.Vector3());
 
-function CameraController() {
-  const { camera, size } = useThree();
-  const targetZ = useRef(REF_CAMERA_Z);
-
-  // Update target whenever canvas height changes
   useEffect(() => {
-    targetZ.current = REF_CAMERA_Z * (size.height / REF_HEIGHT);
-  }, [size.height]);
+    targetPosition.current.set(
+      config.position.x,
+      config.position.y,
+      config.position.z * (size.height / config.referenceHeight)
+    );
+    targetLookAt.current.set(config.target.x, config.target.y, config.target.z);
+    camera.fov = config.fov;
+    camera.updateProjectionMatrix();
+  }, [camera, config, size.height]);
 
-  // Smoothly lerp toward the target each frame
   useFrame(() => {
-    const current = camera.position.z;
-    const target = targetZ.current;
-    if (Math.abs(current - target) > 0.001) {
-      camera.position.z += (target - current) * 0.08;
-      camera.updateProjectionMatrix();
+    const target = targetPosition.current;
+    if (camera.position.distanceToSquared(target) > 0.000001) {
+      camera.position.lerp(target, 0.08);
     }
+    camera.lookAt(targetLookAt.current);
   });
 
   return null;
@@ -79,12 +88,14 @@ function AvatarRig({
   companionState,
   manifest,
   forcedAnimation,
+  suggestedAnimation,
   onLoadError,
   onAnimationsLoaded
 }: {
   companionState: CompanionState;
   manifest: AvatarManifest | null;
   forcedAnimation?: string | null;
+  suggestedAnimation?: DesktopAvatarAnimationKey | null;
   onLoadError?: (message: string | null) => void;
   onAnimationsLoaded?: (names: string[]) => void;
 }) {
@@ -231,22 +242,38 @@ function AvatarRig({
     fadeOutAll();
     let selectedAction: AnimationAction | undefined;
 
+    const idleKeys = Object.keys(actions).filter((key) => key.startsWith("idle-"));
+    const fallbackIdle = idleKeys.length > 0 ? actions[idleKeys[0]] : undefined;
+    const fallbackAction = fallbackIdle ?? Object.values(actions)[0];
+
+    const actionForSuggestedAnimation = (animation: DesktopAvatarAnimationKey) => {
+      switch (animation) {
+        case "thinking":
+          return actions.thinking ?? fallbackAction;
+        case "talking":
+          return actions.talking ?? fallbackAction;
+        case "attention":
+          return actions.attention ?? fallbackAction;
+        case "idle":
+        default:
+          return fallbackAction;
+      }
+    };
+
     // Dev override: force a specific animation by key
     if (forcedAnimation && actions[forcedAnimation]) {
       selectedAction = actions[forcedAnimation];
+    } else if (suggestedAnimation) {
+      selectedAction = actionForSuggestedAnimation(suggestedAnimation);
     } else {
-      const idleKeys = Object.keys(actions).filter((key) => key.startsWith("idle-"));
-      const fallbackIdle =
-        idleKeys.length > 0 ? actions[idleKeys[Math.floor(Math.random() * idleKeys.length)]] : undefined;
+      selectedAction = fallbackAction;
 
       if (companionState === "thinking" || companionState === "transcribing") {
-        selectedAction = actions.thinking ?? fallbackIdle;
+        selectedAction = actions.thinking ?? fallbackAction;
       } else if (companionState === "speaking") {
-        selectedAction = actions.talking ?? fallbackIdle;
+        selectedAction = actions.talking ?? fallbackAction;
       } else if (companionState === "listening") {
-        selectedAction = actions.attention ?? fallbackIdle;
-      } else if (companionState === "idle") {
-        selectedAction = fallbackIdle;
+        selectedAction = actions.attention ?? fallbackAction;
       }
     }
 
@@ -256,7 +283,7 @@ function AvatarRig({
     } else if (runtime.vrm.scene) {
       runtime.vrm.scene.rotation.y += companionState === "thinking" ? 0.08 : 0;
     }
-  }, [companionState, forcedAnimation, runtimeVersion]);
+  }, [companionState, forcedAnimation, runtimeVersion, suggestedAnimation]);
 
   useFrame((_, delta) => {
     runtimeRef.current?.mixer.update(delta);
@@ -276,7 +303,9 @@ export function AvatarStage({
   companionState,
   expanded,
   manifest,
+  cameraConfig = DEFAULT_AVATAR_CAMERA_CONFIG,
   forcedAnimation,
+  suggestedAnimation,
   onDragStart,
   onAnimationsLoaded
 }: AvatarStageProps) {
@@ -295,13 +324,20 @@ export function AvatarStage({
         }}
       >
         <Canvas
-          camera={{ position: [0, 0.95, 4.0], fov: 30 }}
+          camera={{
+            position: [
+              cameraConfig.position.x,
+              cameraConfig.position.y,
+              cameraConfig.position.z
+            ],
+            fov: cameraConfig.fov
+          }}
           gl={{ alpha: true }}
           onCreated={({ scene }) => {
             scene.background = null;
           }}
         >
-          <CameraController />
+          <CameraController config={cameraConfig} />
           <ambientLight intensity={1.1} />
           <directionalLight position={[2.4, 4, 2.8]} intensity={2.8} />
           <pointLight position={[-2, 1.3, 2]} intensity={10} />
@@ -310,14 +346,11 @@ export function AvatarStage({
               companionState={companionState}
               manifest={manifest}
               forcedAnimation={forcedAnimation}
+              suggestedAnimation={suggestedAnimation}
               onLoadError={setLoadError}
               onAnimationsLoaded={onAnimationsLoaded}
             />
           </group>
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.32, 0]}>
-            <circleGeometry args={[1.15, 64]} />
-            <meshBasicMaterial color="#000000" transparent opacity={0.14} />
-          </mesh>
           <OrbitControls enabled={false} />
         </Canvas>
         {loadError ? (

@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type {
   AvatarManifest,
-  BusinessCardPayload,
-  BusinessChatRequest,
   ChatMessage,
   CompanionState,
+  CreateDesktopAvatarRequestInput,
   LocalChatMessageInput,
   LocalChatRequest,
   MessageSource,
@@ -15,13 +14,19 @@ import type {
   StreamFinalPayload,
   StreamTextPayload
 } from "../lib/contracts";
+import { desktopAvatarApiClient, type DesktopAvatarStreamConnection } from "../lib/desktop-avatar-api";
+import {
+  desktopAvatarInitialState,
+  reduceDesktopAvatarState,
+  type DesktopAvatarOrchestratorState,
+  isDesktopAvatarTerminalStatus
+} from "../lib/desktop-avatar-orchestrator";
 import { routePrompt } from "../lib/router";
 import {
   getBootstrapState,
   onStreamEvent,
   onTtsState,
   resizeWindow,
-  sendBusinessChat,
   sendLocalChat,
   setClickThrough,
   speakText,
@@ -38,20 +43,32 @@ import {
   storeSizePreset
 } from "../lib/window-presets";
 
-interface RequestContext {
+interface SubmissionContext {
   prompt: string;
   source: MessageSource;
   route: PromptRoute;
+  clientRequestId?: string;
 }
 
-function buildAssistantPlaceholder(source: MessageSource): ChatMessage {
+interface ActiveDesktopAvatarRequest extends SubmissionContext {
+  assistantMessageId: string;
+  avatarRequestId: string | null;
+  clientRequestId: string;
+}
+
+function buildAssistantPlaceholder(source: MessageSource, clientRequestId?: string): ChatMessage {
   return {
     id: crypto.randomUUID(),
     role: "assistant",
     text: "",
     createdAt: new Date().toISOString(),
     source,
-    isStreaming: true
+    isStreaming: true,
+    clientRequestId: clientRequestId ?? null,
+    requestStatus: null,
+    avatarRequestId: null,
+    widget: null,
+    followUpQuestions: []
   };
 }
 
@@ -98,6 +115,34 @@ function preferredMimeType(): string {
   return options.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? "";
 }
 
+function buildDesktopAvatarRequestInput(
+  prompt: string,
+  source: MessageSource,
+  clientRequestId: string
+): CreateDesktopAvatarRequestInput {
+  return {
+    clientRequestId,
+    requestedBy: "desktop-avatar",
+    mode: "SIMULATION",
+    modality: source === "voice" ? "voice" : "chat",
+    locale: navigator.language,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    utterance: prompt,
+    responseModes: ["talk", "widget"],
+    autoStart: true
+  };
+}
+
+function nextPollDelay(attempt: number): number {
+  if (attempt <= 0) {
+    return 500;
+  }
+  if (attempt === 1) {
+    return 1000;
+  }
+  return 2000;
+}
+
 export function useDesktopCompanion() {
   const [avatarManifest, setAvatarManifest] = useState<AvatarManifest | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -107,24 +152,154 @@ export function useDesktopCompanion() {
   const [error, setError] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(true);
-  const [conversationId] = useState(() => crypto.randomUUID());
   const [sizePreset, setSizePresetState] = useState<SizePreset>(() => readStoredSizePreset());
   const [windowSize, setWindowSize] = useState(
     () => getWindowSizesForPreset(DEFAULT_SIZE_PRESET).collapsed
   );
   const [isRecording, setIsRecording] = useState(false);
+  const [desktopAvatarState, desktopAvatarDispatch] = useReducer(
+    reduceDesktopAvatarState,
+    desktopAvatarInitialState
+  );
 
-  const requestContextsRef = useRef(new Map<string, RequestContext>());
+  const requestContextsRef = useRef(new Map<string, SubmissionContext>());
   const messagesRef = useRef<ChatMessage[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  const lastPromptRef = useRef<string | null>(null);
-  const activeRequestIdRef = useRef<string | null>(null);
+  const lastSubmissionRef = useRef<SubmissionContext | null>(null);
+  const activeLocalRequestIdRef = useRef<string | null>(null);
+  const activeDesktopAvatarRequestRef = useRef<ActiveDesktopAvatarRequest | null>(null);
+  const desktopAvatarStateRef = useRef<DesktopAvatarOrchestratorState>(desktopAvatarInitialState);
+  const desktopAvatarConnectionRef = useRef<DesktopAvatarStreamConnection | null>(null);
+  const desktopAvatarPollTimeoutRef = useRef<number | null>(null);
+  const desktopAvatarPollAttemptRef = useRef(0);
+  const desktopAvatarPollErrorCountRef = useRef(0);
+  const lastSpokenDesktopAvatarKeyRef = useRef<string | null>(null);
+  const isTtsSpeakingRef = useRef(false);
 
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    desktopAvatarStateRef.current = desktopAvatarState;
+  }, [desktopAvatarState]);
+
+  const syncDesktopAvatarMessage = useCallback((state: DesktopAvatarOrchestratorState) => {
+    const activeRequest = activeDesktopAvatarRequestRef.current;
+    if (!activeRequest) {
+      return;
+    }
+
+    setMessages((current) =>
+      current.map((message) => {
+        if (message.id !== activeRequest.assistantMessageId) {
+          return message;
+        }
+
+        return {
+          ...message,
+          text: state.talkText || state.error || message.text,
+          widget: state.widget,
+          followUpQuestions: state.followUpQuestions,
+          isStreaming: !state.isDone,
+          requestStatus: state.status,
+          avatarRequestId: activeRequest.avatarRequestId,
+          clientRequestId: activeRequest.clientRequestId
+        };
+      })
+    );
+  }, []);
+
+  const clearDesktopAvatarPolling = useCallback(() => {
+    if (desktopAvatarPollTimeoutRef.current !== null) {
+      window.clearTimeout(desktopAvatarPollTimeoutRef.current);
+      desktopAvatarPollTimeoutRef.current = null;
+    }
+  }, []);
+
+  const closeDesktopAvatarConnection = useCallback(async () => {
+    const connection = desktopAvatarConnectionRef.current;
+    desktopAvatarConnectionRef.current = null;
+    if (connection) {
+      await connection.close();
+    }
+  }, []);
+
+  const startDesktopAvatarPolling = useCallback(
+    (avatarRequestId: string, pollUrl: string) => {
+      clearDesktopAvatarPolling();
+      desktopAvatarPollAttemptRef.current = 0;
+      desktopAvatarPollErrorCountRef.current = 0;
+      desktopAvatarDispatch({ type: "pollingStarted" });
+
+      const poll = async () => {
+        const activeRequest = activeDesktopAvatarRequestRef.current;
+        if (!activeRequest || activeRequest.avatarRequestId !== avatarRequestId) {
+          return;
+        }
+
+        try {
+          const document = await desktopAvatarApiClient.getRequest({ avatarRequestId, pollUrl });
+          desktopAvatarPollErrorCountRef.current = 0;
+          desktopAvatarDispatch({ type: "pollingSnapshot", document });
+          if (isDesktopAvatarTerminalStatus(document.status)) {
+            clearDesktopAvatarPolling();
+            return;
+          }
+        } catch (caughtError) {
+          desktopAvatarPollErrorCountRef.current += 1;
+          const message =
+            caughtError instanceof Error
+              ? caughtError.message
+              : "Polling fallback failed.";
+          if (desktopAvatarPollErrorCountRef.current >= 3) {
+            desktopAvatarDispatch({ type: "requestFailed", message });
+            clearDesktopAvatarPolling();
+            return;
+          }
+          desktopAvatarDispatch({ type: "streamDisconnected", reason: message });
+        }
+
+        const delay = nextPollDelay(desktopAvatarPollAttemptRef.current);
+        desktopAvatarPollAttemptRef.current += 1;
+        desktopAvatarPollTimeoutRef.current = window.setTimeout(() => {
+          void poll();
+        }, delay);
+      };
+
+      void poll();
+    },
+    [clearDesktopAvatarPolling]
+  );
+
+  const cleanupDesktopAvatarRuntime = useCallback(async () => {
+    clearDesktopAvatarPolling();
+    await closeDesktopAvatarConnection();
+  }, [clearDesktopAvatarPolling, closeDesktopAvatarConnection]);
+
+  const connectDesktopAvatarStream = useCallback(
+    async (avatarRequestId: string, streamUrl: string, pollUrl: string) => {
+      await closeDesktopAvatarConnection();
+      clearDesktopAvatarPolling();
+      desktopAvatarConnectionRef.current = await desktopAvatarApiClient.connectStream({
+        avatarRequestId,
+        streamUrl,
+        onEvent: (event) => {
+          desktopAvatarDispatch({ type: "streamEvent", event });
+        },
+        onDisconnect: (event) => {
+          if (event.phase === "aborted") {
+            return;
+          }
+          desktopAvatarDispatch({ type: "streamDisconnected", reason: event.reason });
+          startDesktopAvatarPolling(avatarRequestId, pollUrl);
+        }
+      });
+    },
+    [clearDesktopAvatarPolling, closeDesktopAvatarConnection, startDesktopAvatarPolling]
+  );
 
   useEffect(() => {
     let unlistenStream: (() => void) | undefined;
@@ -139,15 +314,21 @@ export function useDesktopCompanion() {
     });
 
     void onStreamEvent((event) => {
-      handleStreamEvent(event);
+      void handleLocalStreamEvent(event);
     }).then((unlisten) => {
       unlistenStream = unlisten;
     });
 
     void onTtsState((event) => {
+      isTtsSpeakingRef.current = event.speaking;
       if (event.speaking) {
         setCompanionState("speaking");
-      } else if (!activeRequestIdRef.current) {
+        return;
+      }
+
+      if (activeDesktopAvatarRequestRef.current) {
+        setCompanionState(desktopAvatarStateRef.current.companionState);
+      } else if (!activeLocalRequestIdRef.current) {
         setCompanionState("idle");
         setStatus(null);
       }
@@ -158,11 +339,66 @@ export function useDesktopCompanion() {
     return () => {
       unlistenStream?.();
       unlistenTts?.();
+      void cleanupDesktopAvatarRuntime();
     };
-  }, []);
+  }, [cleanupDesktopAvatarRuntime, sizePreset]);
 
-  async function handleStreamEvent(event: StreamEnvelope) {
-    activeRequestIdRef.current = event.requestId;
+  useEffect(() => {
+    if (!activeDesktopAvatarRequestRef.current) {
+      return;
+    }
+
+    syncDesktopAvatarMessage(desktopAvatarState);
+    setStatus(desktopAvatarState.error ?? desktopAvatarState.statusMessage);
+    setError(desktopAvatarState.error);
+    if (!isTtsSpeakingRef.current) {
+      setCompanionState(desktopAvatarState.companionState);
+    }
+  }, [desktopAvatarState, syncDesktopAvatarMessage]);
+
+  useEffect(() => {
+    const activeRequest = activeDesktopAvatarRequestRef.current;
+    if (!activeRequest) {
+      return;
+    }
+
+    if (!desktopAvatarState.talkText.trim()) {
+      return;
+    }
+
+    const speakKey = `${activeRequest.avatarRequestId}:${desktopAvatarState.talkText}`;
+    if (lastSpokenDesktopAvatarKeyRef.current === speakKey) {
+      return;
+    }
+    lastSpokenDesktopAvatarKeyRef.current = speakKey;
+
+    if (ttsEnabled && activeRequest.avatarRequestId) {
+      void speakText(activeRequest.avatarRequestId, desktopAvatarState.talkText);
+    }
+  }, [desktopAvatarState.talkText, ttsEnabled]);
+
+  useEffect(() => {
+    if (!activeDesktopAvatarRequestRef.current || !desktopAvatarState.isDone) {
+      return;
+    }
+
+    void closeDesktopAvatarConnection();
+    clearDesktopAvatarPolling();
+
+    if (!ttsEnabled || !desktopAvatarState.talkText.trim()) {
+      setCompanionState(desktopAvatarState.companionState);
+    }
+  }, [
+    clearDesktopAvatarPolling,
+    closeDesktopAvatarConnection,
+    desktopAvatarState.companionState,
+    desktopAvatarState.isDone,
+    desktopAvatarState.talkText,
+    ttsEnabled
+  ]);
+
+  async function handleLocalStreamEvent(event: StreamEnvelope) {
+    activeLocalRequestIdRef.current = event.requestId;
 
     if (event.kind === "handoff_local") {
       const context = requestContextsRef.current.get(event.requestId);
@@ -195,15 +431,16 @@ export function useDesktopCompanion() {
     if (event.kind === "final") {
       const payload = event.payload as StreamFinalPayload;
       requestContextsRef.current.delete(event.requestId);
-      activeRequestIdRef.current = null;
+      activeLocalRequestIdRef.current = null;
       setMessages((current) =>
         current.map((message) =>
           message.id === event.requestId
             ? {
                 ...message,
                 text: payload.displayText,
-                card: payload.card as BusinessCardPayload | undefined,
-                isStreaming: false
+                isStreaming: false,
+                widget: null,
+                followUpQuestions: []
               }
             : message
         )
@@ -220,22 +457,13 @@ export function useDesktopCompanion() {
     if (event.kind === "error") {
       const payload = event.payload as StreamErrorPayload;
       requestContextsRef.current.delete(event.requestId);
-      activeRequestIdRef.current = null;
+      activeLocalRequestIdRef.current = null;
       setMessages((current) =>
         current.map((message) =>
           message.id === event.requestId
             ? {
                 ...message,
                 text: payload.message,
-                card: {
-                  type: "error",
-                  title: "Request failed",
-                  subtitle: payload.retryHint ?? undefined,
-                  data: {
-                    message: payload.message,
-                    retryHint: payload.retryHint
-                  }
-                },
                 isStreaming: false
               }
             : message
@@ -258,66 +486,124 @@ export function useDesktopCompanion() {
         )
       );
     }
+
     setStatus(nextStatus);
     setCompanionState("thinking");
   }
 
-  async function submitPrompt(rawPrompt: string, source: MessageSource) {
-    const prompt = rawPrompt.trim();
-    if (!prompt) {
-      return;
-    }
-
-    lastPromptRef.current = prompt;
-    setError(null);
-    await stopSpeaking();
-
-    const route = routePrompt(prompt);
+  async function submitDesktopAvatarPrompt(
+    prompt: string,
+    source: MessageSource,
+    route: PromptRoute,
+    clientRequestId?: string
+  ) {
+    const requestId = clientRequestId ?? `desktop-avatar-client:${crypto.randomUUID()}`;
     const userMessage = buildUserMessage(prompt, source);
-    const assistantMessage = buildAssistantPlaceholder(source);
+    const assistantMessage = buildAssistantPlaceholder(source, requestId);
     const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
     messagesRef.current = nextMessages;
     setMessages(nextMessages);
     setDraft("");
-    requestContextsRef.current.set(assistantMessage.id, { prompt, source, route });
-    activeRequestIdRef.current = assistantMessage.id;
+    setError(null);
+    setStatus("Sending request…");
+    desktopAvatarDispatch({ type: "createRequested", clientRequestId: requestId });
+    lastSubmissionRef.current = { prompt, source, route, clientRequestId: requestId };
+    activeLocalRequestIdRef.current = null;
+    activeDesktopAvatarRequestRef.current = {
+      assistantMessageId: assistantMessage.id,
+      avatarRequestId: null,
+      clientRequestId: requestId,
+      prompt,
+      source,
+      route
+    };
 
     if (!isExpanded) {
       await toggleExpanded();
     }
 
-    setCompanionState("thinking");
-    setStatus(route === "localChat" ? "Thinking locally…" : "Checking with the Communication Officer…");
+    await stopSpeaking();
+    await cleanupDesktopAvatarRuntime();
 
     try {
-      if (route === "localChat") {
+      const result = await desktopAvatarApiClient.createRequest(
+        buildDesktopAvatarRequestInput(prompt, source, requestId)
+      );
+      activeDesktopAvatarRequestRef.current = {
+        ...(activeDesktopAvatarRequestRef.current ?? {
+          assistantMessageId: assistantMessage.id,
+          clientRequestId: requestId,
+          prompt,
+          source,
+          route
+        }),
+        avatarRequestId: result.avatarRequestId
+      };
+      desktopAvatarDispatch({ type: "createAccepted", result });
+      await connectDesktopAvatarStream(result.avatarRequestId, result.streamUrl, result.pollUrl);
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error ? caughtError.message : "The request could not be started.";
+      desktopAvatarDispatch({ type: "requestFailed", message });
+    }
+  }
+
+  async function submitPrompt(
+    rawPrompt: string,
+    source: MessageSource,
+    retryClientRequestId?: string
+  ) {
+    const prompt = rawPrompt.trim();
+    if (!prompt) {
+      return;
+    }
+
+    const route = routePrompt(prompt);
+    lastSubmissionRef.current = { prompt, source, route, clientRequestId: retryClientRequestId };
+    setError(null);
+
+    if (route === "localChat") {
+      await stopSpeaking();
+      await cleanupDesktopAvatarRuntime();
+      const userMessage = buildUserMessage(prompt, source);
+      const assistantMessage = buildAssistantPlaceholder(source);
+      const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
+      setDraft("");
+      requestContextsRef.current.set(assistantMessage.id, { prompt, source, route });
+      activeLocalRequestIdRef.current = assistantMessage.id;
+      activeDesktopAvatarRequestRef.current = null;
+      desktopAvatarDispatch({ type: "reset" });
+
+      if (!isExpanded) {
+        await toggleExpanded();
+      }
+
+      setCompanionState("thinking");
+      setStatus("Thinking locally…");
+
+      try {
         const request: LocalChatRequest = {
           requestId: assistantMessage.id,
           prompt,
           messages: buildLocalHistory(nextMessages)
         };
         await sendLocalChat(request);
-      } else {
-        const request: BusinessChatRequest = {
+      } catch (caughtError) {
+        const message =
+          caughtError instanceof Error ? caughtError.message : "The request could not be started.";
+        await handleLocalStreamEvent({
           requestId: assistantMessage.id,
-          conversationId,
-          utterance: prompt,
-          source,
-          locale: navigator.language,
-          route
-        };
-        await sendBusinessChat(request);
+          source: "local",
+          kind: "error",
+          payload: { message }
+        });
       }
-    } catch (caughtError) {
-      const message =
-        caughtError instanceof Error ? caughtError.message : "The request could not be started.";
-      await handleStreamEvent({
-        requestId: assistantMessage.id,
-        source: route === "localChat" ? "local" : "business",
-        kind: "error",
-        payload: { message }
-      });
+      return;
     }
+
+    await submitDesktopAvatarPrompt(prompt, source, route, retryClientRequestId);
   }
 
   async function toggleExpanded() {
@@ -347,10 +633,13 @@ export function useDesktopCompanion() {
   }
 
   async function retryLastPrompt() {
-    if (!lastPromptRef.current) {
+    if (!lastSubmissionRef.current) {
       return;
     }
-    await submitPrompt(lastPromptRef.current, "text");
+
+    const { prompt, source, route, clientRequestId } = lastSubmissionRef.current;
+    const retryId = route === "localChat" ? undefined : clientRequestId;
+    await submitPrompt(prompt, source, retryId);
   }
 
   async function startRecording() {
@@ -455,9 +744,13 @@ export function useDesktopCompanion() {
     sizePreset,
     ttsEnabled,
     windowSize,
+    activeAnimation: activeDesktopAvatarRequestRef.current
+      ? desktopAvatarState.animation
+      : null,
     setDraft,
     setSizePreset,
     submitCurrentDraft: () => submitPrompt(draft, "text"),
+    submitSuggestion: (value: string) => submitPrompt(value, "text"),
     toggleExpanded,
     toggleRecording,
     retryLastPrompt,

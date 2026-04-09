@@ -1,0 +1,11 @@
+[1775748535] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/sample-avatar-manifest.json
+[1775748535] bootstrap: resolved vrm = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/male_avatar.vrm, idle clips = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/warrior-idle.fbx, /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/bored.fbx
+[1775748535] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/sample-avatar-manifest.json
+[1775748535] bootstrap: resolved vrm = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/male_avatar.vrm, idle clips = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/warrior-idle.fbx, /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/bored.fbx
+[1775748535] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/male_avatar.vrm
+[1775748535] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/warrior-idle.fbx
+[1775748535] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/bored.fbx
+[1775748535] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/looking.fbx
+[1775748535] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/bored.fbx
+[1775748536] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/DesktopAvatar/./public/./sample-assets/looking.fbx
+[1775748537] frontend:info: avatar runtime ready: 5 animation actions loaded

@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  DEFAULT_AVATAR_CAMERA_CONFIG,
+  formatAvatarCameraConfig,
+  type AvatarCameraConfig
+} from "./lib/avatar-stage-config";
 import { getWindowSizesForPreset } from "./lib/window-presets";
 import { ChatPanel } from "./components/ChatPanel";
 import { AvatarStage } from "./components/AvatarStage";
 import { DataPanelSlider } from "./components/DataPanelSlider";
 import { DemoDataTable } from "./components/DataTable";
+import { DesktopAvatarWidgetPanel } from "./components/DesktopAvatarWidgetPanel";
 import { DemoKpiCard } from "./components/KpiCard";
-import { OrderSummaryCard } from "./components/OrderSummaryCard";
 import { SpeechBubble } from "./components/SpeechBubble";
 import { useDesktopCompanion } from "./hooks/useDesktopCompanion";
 
@@ -13,6 +18,9 @@ export default function App() {
   const companion = useDesktopCompanion();
   const [showDemo, setShowDemo] = useState(false);
   const [animationNames, setAnimationNames] = useState<string[]>([]);
+  const [cameraConfig, setCameraConfig] = useState<AvatarCameraConfig>(
+    DEFAULT_AVATAR_CAMERA_CONFIG
+  );
   const [forcedAnimation, setForcedAnimation] = useState<string | null>(null);
 
   const bottomStackRef = useRef<HTMLDivElement>(null);
@@ -69,7 +77,7 @@ export default function App() {
 
   const latestAssistantMessage = [...companion.messages]
     .reverse()
-    .find((message) => message.role === "assistant" && (message.text.trim() || message.card));
+    .find((message) => message.role === "assistant" && (message.text.trim() || message.widget));
   const bubbleText =
     companion.error ??
     companion.status ??
@@ -80,7 +88,17 @@ export default function App() {
     : companion.status && companion.companionState !== "idle"
       ? "status"
       : "default";
-  const activeCard = latestAssistantMessage?.card ?? null;
+  const activeWidget = latestAssistantMessage?.widget ?? null;
+  const cameraConfigSnippet = formatAvatarCameraConfig(cameraConfig);
+
+  const adjustWindowHeight = useCallback(
+    (delta: number) => {
+      const nextHeight = Math.max(480, companion.windowSize.height + delta);
+      lastResizedHeight.current = nextHeight;
+      void companion.resizeWindow(companion.windowSize.width, nextHeight);
+    },
+    [companion]
+  );
 
   return (
     <main className={`app-shell ${companion.isExpanded ? "is-expanded" : "is-collapsed"}`}>
@@ -94,7 +112,9 @@ export default function App() {
         companionState={companion.companionState}
         expanded={companion.isExpanded}
         manifest={companion.avatarManifest}
+        cameraConfig={cameraConfig}
         forcedAnimation={forcedAnimation}
+        suggestedAnimation={companion.activeAnimation}
         onDragStart={companion.startWindowDrag}
         onAnimationsLoaded={handleAnimationsLoaded}
       />
@@ -106,9 +126,13 @@ export default function App() {
             <DemoKpiCard onClose={() => setShowDemo(false)} />
           </DataPanelSlider>
         </div>
-      ) : activeCard ? (
+      ) : activeWidget ? (
         <div className="data-panel" style={{ bottom: dataPanelBottom }}>
-          <OrderSummaryCard card={activeCard} />
+          <DesktopAvatarWidgetPanel
+            widget={activeWidget}
+            followUpQuestions={latestAssistantMessage?.followUpQuestions}
+            onSuggestionSelect={companion.submitSuggestion}
+          />
         </div>
       ) : null}
 
@@ -121,8 +145,14 @@ export default function App() {
           sizePreset={companion.sizePreset}
           ttsEnabled={companion.ttsEnabled}
           animationNames={animationNames}
+          cameraConfig={cameraConfig}
+          cameraConfigSnippet={cameraConfigSnippet}
           forcedAnimation={forcedAnimation}
+          windowSize={companion.windowSize}
           onDraftChange={companion.setDraft}
+          onAdjustWindowHeight={adjustWindowHeight}
+          onCameraConfigChange={setCameraConfig}
+          onResetCameraConfig={() => setCameraConfig(DEFAULT_AVATAR_CAMERA_CONFIG)}
           onSelectSizePreset={companion.setSizePreset}
           onSubmit={companion.submitCurrentDraft}
           onToggleExpanded={companion.toggleExpanded}

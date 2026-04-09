@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     fs,
     fs::OpenOptions,
@@ -24,9 +25,11 @@ use tauri::{
     Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, State,
     WebviewWindow,
 };
-use tokio::process::Command;
+use tokio::{process::Command, sync::Mutex, task::JoinHandle};
 
 const CHAT_STREAM_EVENT: &str = "chat-stream-event";
+const DESKTOP_AVATAR_STREAM_EVENT: &str = "desktop-avatar-stream-event";
+const DESKTOP_AVATAR_STREAM_LIFECYCLE_EVENT: &str = "desktop-avatar-stream-lifecycle";
 const TTS_STATE_EVENT: &str = "tts-state";
 const COLLAPSED_WIDTH: f64 = 520.0;
 const COLLAPSED_HEIGHT: f64 = 780.0;
@@ -37,6 +40,7 @@ const EXPANDED_HEIGHT: f64 = 920.0;
 struct AppState {
     client: Client,
     config: Arc<AppConfig>,
+    desktop_avatar_streams: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +122,60 @@ struct BusinessChatRequest {
     source: String,
     locale: String,
     route: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CreateDesktopAvatarRequestInput {
+    client_request_id: String,
+    requested_by: Option<String>,
+    mode: Option<String>,
+    modality: Option<String>,
+    locale: Option<String>,
+    timezone: Option<String>,
+    utterance: String,
+    response_modes: Option<Vec<String>>,
+    target_studio_agent_id: Option<String>,
+    iws_query_request: Option<Value>,
+    auto_start: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CreateDesktopAvatarRequestResult {
+    accepted: bool,
+    avatar_request_id: String,
+    status: String,
+    stream_url: String,
+    poll_url: String,
+    idempotent: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopAvatarRequestDocument {
+    avatar_request_id: String,
+    client_request_id: String,
+    requested_by: Option<String>,
+    mode: Option<String>,
+    modality: Option<String>,
+    locale: Option<String>,
+    timezone: Option<String>,
+    utterance: Option<String>,
+    response_modes: Option<Vec<String>>,
+    status: String,
+    response: Option<Value>,
+    error: Option<String>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopAvatarStreamLifecycleEvent {
+    avatar_request_id: String,
+    phase: String,
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -375,6 +433,226 @@ async fn window_set_click_through(window: WebviewWindow, ignore: bool) -> Result
     window
         .set_ignore_cursor_events(ignore)
         .map_err(|error| error.to_string())
+}
+
+fn comm_officer_credentials(config: &AppConfig) -> Result<(String, String), String> {
+    let base_url = config
+        .comm_officer_base_url
+        .clone()
+        .ok_or_else(|| "COMM_OFFICER_BASE_URL is missing.".to_string())?;
+    let token = config
+        .comm_officer_token
+        .clone()
+        .ok_or_else(|| "COMM_OFFICER_TOKEN is missing.".to_string())?;
+
+    Ok((base_url, token))
+}
+
+fn absolute_comm_officer_url(base_url: &str, path_or_url: &str) -> String {
+    if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
+        return path_or_url.to_string();
+    }
+
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        path_or_url.trim_start_matches('/')
+    )
+}
+
+fn with_auth(request: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
+    request.header(AUTHORIZATION, format!("Bearer {token}"))
+}
+
+fn normalize_desktop_avatar_result_urls(base_url: &str, result: &mut CreateDesktopAvatarRequestResult) {
+    result.stream_url = absolute_comm_officer_url(base_url, &result.stream_url);
+    result.poll_url = absolute_comm_officer_url(base_url, &result.poll_url);
+}
+
+#[tauri::command]
+async fn desktop_avatar_request_create(
+    state: State<'_, AppState>,
+    request: CreateDesktopAvatarRequestInput,
+) -> Result<CreateDesktopAvatarRequestResult, String> {
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let url = absolute_comm_officer_url(&base_url, "/v1/desktop-avatar/requests");
+
+    let response = with_auth(
+        state
+            .client
+            .post(url)
+            .header(CONTENT_TYPE, "application/json")
+            .json(&request),
+        &token,
+    )
+    .send()
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!("Desktop Avatar create returned {status}: {text}"));
+    }
+
+    let mut result = response
+        .json::<CreateDesktopAvatarRequestResult>()
+        .await
+        .map_err(|error| error.to_string())?;
+    normalize_desktop_avatar_result_urls(&base_url, &mut result);
+    Ok(result)
+}
+
+#[tauri::command]
+async fn desktop_avatar_request_get(
+    state: State<'_, AppState>,
+    avatar_request_id: Option<String>,
+    poll_url: Option<String>,
+) -> Result<DesktopAvatarRequestDocument, String> {
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let url = match (avatar_request_id, poll_url) {
+        (_, Some(url)) => absolute_comm_officer_url(&base_url, &url),
+        (Some(request_id), None) => absolute_comm_officer_url(
+            &base_url,
+            &format!("/v1/desktop-avatar/requests/{request_id}"),
+        ),
+        (None, None) => {
+            return Err("desktop_avatar_request_get requires avatarRequestId or pollUrl.".to_string())
+        }
+    };
+
+    let response = with_auth(state.client.get(url), &token)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!("Desktop Avatar poll returned {status}: {text}"));
+    }
+
+    response
+        .json::<DesktopAvatarRequestDocument>()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn desktop_avatar_request_stream(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    avatar_request_id: Option<String>,
+    stream_url: Option<String>,
+) -> Result<(), String> {
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let request_id = avatar_request_id
+        .or_else(|| {
+            stream_url.as_ref().and_then(|value| {
+                value
+                    .trim_end_matches('/')
+                    .split('/')
+                    .nth_back(1)
+                    .map(str::to_string)
+            })
+        })
+        .ok_or_else(|| {
+            "desktop_avatar_request_stream requires avatarRequestId or a streamUrl containing it."
+                .to_string()
+        })?;
+    let url = match stream_url {
+        Some(url) => absolute_comm_officer_url(&base_url, &url),
+        None => absolute_comm_officer_url(
+            &base_url,
+            &format!("/v1/desktop-avatar/requests/{request_id}/stream"),
+        ),
+    };
+
+    if let Some(existing) = state
+        .desktop_avatar_streams
+        .lock()
+        .await
+        .remove(request_id.as_str())
+    {
+        existing.abort();
+    }
+
+    let client = state.client.clone();
+    let streams = state.desktop_avatar_streams.clone();
+    let request_id_for_task = request_id.clone();
+    let handle = async_runtime::spawn(async move {
+        let response = with_auth(
+            client
+                .get(url)
+                .header(ACCEPT, "text/event-stream")
+                .header(CONTENT_TYPE, "application/json"),
+            &token,
+        )
+        .send()
+        .await;
+
+        match response {
+            Ok(response) => {
+                if let Err(error) = process_desktop_avatar_stream(
+                    window.clone(),
+                    request_id_for_task.clone(),
+                    response,
+                )
+                .await
+                {
+                    let _ = emit_desktop_avatar_stream_lifecycle(
+                        &window,
+                        request_id_for_task.as_str(),
+                        "error",
+                        Some(error),
+                    );
+                } else {
+                    let _ = emit_desktop_avatar_stream_lifecycle(
+                        &window,
+                        request_id_for_task.as_str(),
+                        "closed",
+                        None,
+                    );
+                }
+            }
+            Err(error) => {
+                let _ = emit_desktop_avatar_stream_lifecycle(
+                    &window,
+                    request_id_for_task.as_str(),
+                    "error",
+                    Some(error.to_string()),
+                );
+            }
+        }
+
+        streams.lock().await.remove(request_id_for_task.as_str());
+    });
+
+    state
+        .desktop_avatar_streams
+        .lock()
+        .await
+        .insert(request_id, handle);
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn desktop_avatar_request_stream_stop(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    avatar_request_id: String,
+) -> Result<(), String> {
+    if let Some(handle) = state
+        .desktop_avatar_streams
+        .lock()
+        .await
+        .remove(avatar_request_id.as_str())
+    {
+        handle.abort();
+    }
+
+    emit_desktop_avatar_stream_lifecycle(&window, avatar_request_id.as_str(), "aborted", None)
 }
 
 #[tauri::command]
@@ -706,6 +984,64 @@ async fn process_business_stream(
     Ok(())
 }
 
+async fn process_desktop_avatar_stream(
+    window: WebviewWindow,
+    request_id: String,
+    response: reqwest::Response,
+) -> Result<(), String> {
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!("Desktop Avatar stream returned {status}: {text}"));
+    }
+
+    let mut parser = SseParser {
+        current: SseFrame::new(),
+    };
+    let mut pending = String::new();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        pending.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(index) = pending.find('\n') {
+            let mut line = pending[..index].to_string();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            pending.replace_range(..=index, "");
+            if let Some(frame) = parser.push_line(line.as_str()) {
+                let payload: Value =
+                    serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
+                emit_desktop_avatar_stream_event(&window, payload)?;
+            }
+        }
+    }
+
+    if !pending.is_empty() {
+        let line = pending.trim_end_matches('\r').to_string();
+        if let Some(frame) = parser.push_line(line.as_str()) {
+            let payload: Value =
+                serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
+            emit_desktop_avatar_stream_event(&window, payload)?;
+        }
+    }
+
+    if let Some(frame) = parser.finish() {
+        let payload: Value =
+            serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
+        emit_desktop_avatar_stream_event(&window, payload)?;
+    }
+
+    append_log(
+        &workspace_root().join("tmp").join("desktop-avatar.log"),
+        format!("desktop-avatar stream closed: {request_id}"),
+    );
+
+    Ok(())
+}
+
 async fn process_local_stream(
     window: WebviewWindow,
     request_id: String,
@@ -821,6 +1157,30 @@ fn emit_stream_event<T: Serialize + Clone>(
                 source,
                 kind,
                 payload,
+            },
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn emit_desktop_avatar_stream_event(window: &WebviewWindow, payload: Value) -> Result<(), String> {
+    window
+        .emit(DESKTOP_AVATAR_STREAM_EVENT, payload)
+        .map_err(|error| error.to_string())
+}
+
+fn emit_desktop_avatar_stream_lifecycle(
+    window: &WebviewWindow,
+    avatar_request_id: &str,
+    phase: &str,
+    reason: Option<String>,
+) -> Result<(), String> {
+    window
+        .emit(
+            DESKTOP_AVATAR_STREAM_LIFECYCLE_EVENT,
+            DesktopAvatarStreamLifecycleEvent {
+                avatar_request_id: avatar_request_id.to_string(),
+                phase: phase.to_string(),
+                reason,
             },
         )
         .map_err(|error| error.to_string())
@@ -952,6 +1312,7 @@ pub fn run() {
     let state = AppState {
         client: Client::new(),
         config: Arc::new(AppConfig::load()),
+        desktop_avatar_streams: Arc::new(Mutex::new(HashMap::new())),
     };
 
     tauri::Builder::default()
@@ -964,6 +1325,10 @@ pub fn run() {
             window_resize,
             window_start_drag,
             window_set_click_through,
+            desktop_avatar_request_create,
+            desktop_avatar_request_get,
+            desktop_avatar_request_stream,
+            desktop_avatar_request_stream_stop,
             chat_send_business,
             chat_send_local,
             speech_transcribe,

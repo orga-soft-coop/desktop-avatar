@@ -1,0 +1,39 @@
+{
+  "name": "desktop-avatar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "3.5.1",
+    "@pixiv/three-vrm-animation": "3.5.1",
+    "@react-three/drei": "10.7.7",
+    "@react-three/fiber": "9.5.0",
+    "@tauri-apps/api": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "three": "0.182.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "latest",
+    "@testing-library/jest-dom": "latest",
+    "@testing-library/react": "latest",
+    "@testing-library/user-event": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@types/three": "0.182.0",
+    "@vitejs/plugin-react": "latest",
+    "jsdom": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vitest": "latest"
+  }
+}

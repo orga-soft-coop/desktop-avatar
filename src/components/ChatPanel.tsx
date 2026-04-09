@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { AvatarCameraConfig } from "../lib/avatar-stage-config";
 import { SIZE_PRESET_OPTIONS, type SizePreset } from "../lib/window-presets";
 
 interface ChatPanelProps {
@@ -9,9 +10,15 @@ interface ChatPanelProps {
   ttsEnabled: boolean;
   error?: string | null;
   animationNames?: string[];
+  cameraConfig?: AvatarCameraConfig;
+  cameraConfigSnippet?: string;
   forcedAnimation?: string | null;
+  windowSize?: { width: number; height: number };
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
+  onAdjustWindowHeight?: (delta: number) => void;
+  onCameraConfigChange?: (next: AvatarCameraConfig) => void;
+  onResetCameraConfig?: () => void;
   onToggleExpanded: () => void;
   onToggleTts: () => void;
   onToggleRecording: () => void;
@@ -30,9 +37,15 @@ export function ChatPanel({
   ttsEnabled,
   error,
   animationNames,
+  cameraConfig,
+  cameraConfigSnippet,
   forcedAnimation,
+  windowSize,
   onDraftChange,
   onSubmit,
+  onAdjustWindowHeight,
+  onCameraConfigChange,
+  onResetCameraConfig,
   onToggleExpanded,
   onToggleTts,
   onToggleRecording,
@@ -44,7 +57,51 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [devToolsOpen, setDevToolsOpen] = useState(false);
 
-  const hasDevTools = !!(onSelectAnimation || onToggleDemo);
+  const hasDevTools = !!(
+    onSelectAnimation ||
+    onToggleDemo ||
+    onAdjustWindowHeight ||
+    onCameraConfigChange
+  );
+
+  const handleCameraNumberChange = (
+    section: keyof Pick<AvatarCameraConfig, "position" | "target">,
+    axis: keyof AvatarCameraConfig["position"],
+    value: string
+  ) => {
+    if (!cameraConfig || !onCameraConfigChange) {
+      return;
+    }
+
+    const nextValue = Number.parseFloat(value);
+    if (Number.isNaN(nextValue)) {
+      return;
+    }
+
+    onCameraConfigChange({
+      ...cameraConfig,
+      [section]: {
+        ...cameraConfig[section],
+        [axis]: nextValue
+      }
+    });
+  };
+
+  const handleCameraFovChange = (value: string) => {
+    if (!cameraConfig || !onCameraConfigChange) {
+      return;
+    }
+
+    const nextValue = Number.parseFloat(value);
+    if (Number.isNaN(nextValue)) {
+      return;
+    }
+
+    onCameraConfigChange({
+      ...cameraConfig,
+      fov: nextValue
+    });
+  };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -145,6 +202,31 @@ export function ChatPanel({
                     </div>
                   </div>
 
+                  {windowSize && onAdjustWindowHeight ? (
+                    <div className="chat-panel__devtools-row">
+                      <label>Win</label>
+                      <div className="chat-panel__devtools-inline">
+                        <button
+                          className="chat-panel__devtools-btn"
+                          type="button"
+                          onClick={() => onAdjustWindowHeight(-40)}
+                        >
+                          -40h
+                        </button>
+                        <span className="chat-panel__devtools-metric">
+                          {Math.round(windowSize.width)} x {Math.round(windowSize.height)}
+                        </span>
+                        <button
+                          className="chat-panel__devtools-btn"
+                          type="button"
+                          onClick={() => onAdjustWindowHeight(40)}
+                        >
+                          +40h
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
                   {/* Animation picker */}
                   {onSelectAnimation && animationNames && animationNames.length > 0 ? (
                     <div className="chat-panel__devtools-row">
@@ -159,6 +241,106 @@ export function ChatPanel({
                         ))}
                       </select>
                     </div>
+                  ) : null}
+
+                  {cameraConfig && onCameraConfigChange ? (
+                    <>
+                      <div className="chat-panel__devtools-row chat-panel__devtools-row--top">
+                        <label>Cam</label>
+                        <div className="chat-panel__devtools-grid">
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={cameraConfig.position.x}
+                            onChange={(event) =>
+                              handleCameraNumberChange("position", "x", event.target.value)
+                            }
+                            aria-label="Camera X"
+                          />
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={cameraConfig.position.y}
+                            onChange={(event) =>
+                              handleCameraNumberChange("position", "y", event.target.value)
+                            }
+                            aria-label="Camera Y"
+                          />
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={cameraConfig.position.z}
+                            onChange={(event) =>
+                              handleCameraNumberChange("position", "z", event.target.value)
+                            }
+                            aria-label="Camera Z"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="chat-panel__devtools-row chat-panel__devtools-row--top">
+                        <label>Aim</label>
+                        <div className="chat-panel__devtools-grid">
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={cameraConfig.target.x}
+                            onChange={(event) =>
+                              handleCameraNumberChange("target", "x", event.target.value)
+                            }
+                            aria-label="Target X"
+                          />
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={cameraConfig.target.y}
+                            onChange={(event) =>
+                              handleCameraNumberChange("target", "y", event.target.value)
+                            }
+                            aria-label="Target Y"
+                          />
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={cameraConfig.target.z}
+                            onChange={(event) =>
+                              handleCameraNumberChange("target", "z", event.target.value)
+                            }
+                            aria-label="Target Z"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="chat-panel__devtools-row">
+                        <label>FOV</label>
+                        <div className="chat-panel__devtools-inline">
+                          <input
+                            className="chat-panel__devtools-input"
+                            type="number"
+                            step="1"
+                            value={cameraConfig.fov}
+                            onChange={(event) => handleCameraFovChange(event.target.value)}
+                            aria-label="Camera field of view"
+                          />
+                          {onResetCameraConfig ? (
+                            <button
+                              className="chat-panel__devtools-btn"
+                              type="button"
+                              onClick={onResetCameraConfig}
+                            >
+                              Reset
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      {cameraConfigSnippet ? (
+                        <div className="chat-panel__devtools-snippet">
+                          <label>Cfg</label>
+                          <textarea readOnly value={cameraConfigSnippet} />
+                        </div>
+                      ) : null}
+                    </>
                   ) : null}
 
                   {/* Demo components toggle */}

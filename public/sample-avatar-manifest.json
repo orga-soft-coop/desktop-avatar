@@ -1,0 +1,13 @@
+{
+  "displayName": "Mint",
+  "license": "CC0 (100Avatars R1)",
+  "thumbnailUrl": null,
+  "vrmUrl": "./sample-assets/male_avatar.vrm",
+  "idleAnimationUrls": [
+    "./sample-assets/warrior-idle.fbx",
+    "./sample-assets/bored.fbx"
+  ],
+  "attentionAnimationUrl": "./sample-assets/looking.fbx",
+  "thinkingAnimationUrl": "./sample-assets/bored.fbx",
+  "talkingAnimationUrl": "./sample-assets/looking.fbx"
+}

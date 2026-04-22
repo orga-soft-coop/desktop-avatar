@@ -17,4 +17,10 @@ describe("routePrompt", () => {
       "backendReview"
     );
   });
+
+  it("routes forecast prompts to the backend path", () => {
+    expect(routePrompt("Gib mir den Forecast fuer naechste Woche")).toBe(
+      "backendBusiness"
+    );
+  });
 });

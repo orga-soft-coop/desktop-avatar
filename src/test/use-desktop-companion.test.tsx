@@ -5,20 +5,28 @@ import type {
   CreateDesktopAvatarRequestResult,
   DesktopAvatarRequestDocument,
   DesktopAvatarStreamEvent,
-  DesktopAvatarStreamLifecycleEvent
+  DesktopAvatarStreamLifecycleEvent,
+  TtsStateEvent
 } from "../lib/contracts";
 
 const mocks = vi.hoisted(() => {
   let streamHandlers: {
     onEvent: ((event: DesktopAvatarStreamEvent) => void) | null;
     onDisconnect: ((event: DesktopAvatarStreamLifecycleEvent) => void) | null;
-  } = { onEvent: null, onDisconnect: null };
+    onTtsState: ((event: TtsStateEvent) => void) | null;
+  } = { onEvent: null, onDisconnect: null, onTtsState: null };
 
   return {
     streamHandlers,
     getBootstrapStateMock: vi.fn(),
+    listTtsVoicesMock: vi.fn(),
     onStreamEventMock: vi.fn(),
-    onTtsStateMock: vi.fn(),
+    onTtsStateMock: vi.fn(async (handler: (event: TtsStateEvent) => void) => {
+      streamHandlers.onTtsState = handler;
+      return () => {
+        streamHandlers.onTtsState = null;
+      };
+    }),
     resizeWindowMock: vi.fn(),
     sendLocalChatMock: vi.fn(),
     setClickThroughMock: vi.fn(),
@@ -57,6 +65,7 @@ vi.mock("../lib/desktop-avatar-api", () => ({
 
 vi.mock("../lib/tauri", () => ({
   getBootstrapState: mocks.getBootstrapStateMock,
+  listTtsVoices: mocks.listTtsVoicesMock,
   onStreamEvent: mocks.onStreamEventMock,
   onTtsState: mocks.onTtsStateMock,
   resizeWindow: mocks.resizeWindowMock,
@@ -81,16 +90,19 @@ describe("useDesktopCompanion desktop avatar integration", () => {
   });
 
   beforeEach(() => {
+    window.localStorage.clear();
     mocks.streamHandlers.onEvent = null;
     mocks.streamHandlers.onDisconnect = null;
+    mocks.streamHandlers.onTtsState = null;
     mocks.getBootstrapStateMock.mockReset().mockResolvedValue({
       avatarManifest: null,
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
       ttsEnabled: false
     });
+    mocks.listTtsVoicesMock.mockReset().mockResolvedValue([]);
     mocks.onStreamEventMock.mockReset().mockResolvedValue(() => {});
-    mocks.onTtsStateMock.mockReset().mockResolvedValue(() => {});
+    mocks.onTtsStateMock.mockClear();
     mocks.resizeWindowMock.mockReset().mockResolvedValue(undefined);
     mocks.sendLocalChatMock.mockReset().mockResolvedValue(undefined);
     mocks.setClickThroughMock.mockReset().mockResolvedValue(undefined);
@@ -102,6 +114,77 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     mocks.createRequestMock.mockReset();
     mocks.getRequestMock.mockReset();
     mocks.connectStreamMock.mockClear();
+  });
+
+  it("uses selected voice and persists TTS off across remounts", async () => {
+    mocks.getBootstrapStateMock.mockResolvedValue({
+      avatarManifest: null,
+      collapsedSize: { width: 520, height: 780 },
+      expandedSize: { width: 520, height: 920 },
+      ttsEnabled: true
+    });
+    mocks.listTtsVoicesMock.mockResolvedValue(["onyx", "echo"]);
+    mocks.createRequestMock.mockResolvedValue({
+      accepted: true,
+      avatarRequestId: "req-voice",
+      status: "RECEIVED",
+      streamUrl: "/stream/req-voice",
+      pollUrl: "/poll/req-voice",
+      idempotent: false
+    });
+
+    const first = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+    expect(first.result.current.ttsEnabled).toBe(true);
+
+    act(() => {
+      first.result.current.selectTtsVoice("echo");
+      first.result.current.setDraft("Zeig mir die letzten 10 Bestellungen.");
+    });
+    await act(async () => {
+      await first.result.current.submitCurrentDraft();
+    });
+
+    act(() => {
+      mocks.streamHandlers.onEvent?.({
+        type: "talk",
+        avatarRequestId: "req-voice",
+        talk: { text: "Antwort eins." },
+        emittedAt: "2026-04-21T10:00:00.000Z"
+      });
+    });
+    await waitFor(() =>
+      expect(mocks.speakTextMock).toHaveBeenCalledWith("req-voice", "Antwort eins.", "echo")
+    );
+
+    await act(async () => {
+      await first.result.current.toggleTts();
+    });
+    expect(first.result.current.ttsEnabled).toBe(false);
+
+    act(() => {
+      mocks.streamHandlers.onEvent?.({
+        type: "talk",
+        avatarRequestId: "req-voice",
+        talk: { text: "Antwort zwei." },
+        emittedAt: "2026-04-21T10:00:01.000Z"
+      });
+    });
+    await waitFor(() => expect(mocks.speakTextMock).toHaveBeenCalledTimes(1));
+
+    first.unmount();
+    const second = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(second.result.current.ttsEnabled).toBe(false));
+  });
+
+  it("keeps TTS disabled when bootstrap config disables it even with a stored opt-in", async () => {
+    window.localStorage.setItem("desktop-avatar.ttsEnabled", "true");
+
+    const { result } = renderHook(() => useDesktopCompanion());
+
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+    await waitFor(() => expect(result.current.ttsEnabled).toBe(false));
+    expect(window.localStorage.getItem("desktop-avatar.ttsEnabled")).toBe("false");
   });
 
   it("runs the happy path from submit to talk, widget and completion", async () => {
@@ -127,7 +210,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
 
     expect(mocks.createRequestMock).toHaveBeenCalledTimes(1);
-    expect(result.current.status).toContain("Waiting");
+    expect(result.current.status).toContain("Warte");
 
     act(() => {
       mocks.streamHandlers.onEvent?.({
@@ -176,6 +259,77 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       expect(latestMessage.widget?.type).toBe("table");
       expect(latestMessage.isStreaming).toBe(false);
       expect(result.current.companionState).toBe("idle");
+      expect(result.current.latencyDebug?.requestKind).toBe("desktop-avatar");
+      expect(result.current.latencyDebug?.firstResponseMs).not.toBeNull();
+      expect(result.current.latencyDebug?.completedMs).not.toBeNull();
+      expect(result.current.latencyDebug?.usedPolling).toBe(false);
+    });
+  });
+
+  it("tracks actual TTS provider and fallback usage in latency debug", async () => {
+    mocks.getBootstrapStateMock.mockResolvedValue({
+      avatarManifest: null,
+      collapsedSize: { width: 520, height: 780 },
+      expandedSize: { width: 520, height: 920 },
+      ttsEnabled: true
+    });
+    mocks.createRequestMock.mockResolvedValue({
+      accepted: true,
+      avatarRequestId: "req-tts-provider",
+      status: "RECEIVED",
+      streamUrl: "/stream/req-tts-provider",
+      pollUrl: "/poll/req-tts-provider",
+      idempotent: false
+    });
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    act(() => {
+      result.current.setDraft("Bitte zeig mir die letzten Bestellungen.");
+    });
+    await act(async () => {
+      await result.current.submitCurrentDraft();
+    });
+
+    act(() => {
+      mocks.streamHandlers.onEvent?.({
+        type: "talk",
+        avatarRequestId: "req-tts-provider",
+        talk: { text: "Hier ist die Zusammenfassung." },
+        emittedAt: "2026-04-21T10:00:00.000Z"
+      });
+    });
+
+    await waitFor(() => {
+      expect(mocks.speakTextMock).toHaveBeenCalledWith(
+        "req-tts-provider",
+        "Hier ist die Zusammenfassung.",
+        null
+      );
+      expect(typeof mocks.streamHandlers.onTtsState).toBe("function");
+    });
+
+    act(() => {
+      mocks.streamHandlers.onTtsState?.({
+        requestId: "req-tts-provider",
+        speaking: true,
+        provider: "system",
+        fallback: true
+      });
+      mocks.streamHandlers.onTtsState?.({
+        requestId: "req-tts-provider",
+        speaking: false,
+        provider: "system",
+        fallback: true
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.latencyDebug?.ttsProvider).toBe("system");
+      expect(result.current.latencyDebug?.ttsFallbackUsed).toBe(true);
+      expect(result.current.latencyDebug?.ttsStartedMs).not.toBeNull();
+      expect(result.current.latencyDebug?.ttsSpeakDurationMs).not.toBeNull();
     });
   });
 
@@ -210,7 +364,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
 
     act(() => {
-      result.current.setDraft("Bitte pruefe die offenen Belege.");
+      result.current.setDraft("Welche Bestellungen sind offen?");
     });
     await act(async () => {
       await result.current.submitCurrentDraft();
@@ -229,6 +383,29 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       expect(latestMessage.text).toContain("Polling hat die Antwort geliefert");
       expect(latestMessage.widget?.type).toBe("text");
       expect(result.current.error).toBeNull();
+      expect(result.current.latencyDebug?.usedPolling).toBe(true);
+      expect(result.current.latencyDebug?.pollFallbackMs).not.toBeNull();
+      expect(result.current.latencyDebug?.firstResponseMs).not.toBeNull();
+    });
+  });
+
+  it("surfaces backend create errors when the runtime rejects with a string", async () => {
+    mocks.createRequestMock.mockRejectedValueOnce(
+      "Desktop Avatar create returned 409 Conflict: No active studio agents support READ_SQL_SERVER_QUERY."
+    );
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    act(() => {
+      result.current.setDraft("Zeig mir die letzten 10 Bestellungen von gestern");
+    });
+    await act(async () => {
+      await result.current.submitCurrentDraft();
+    });
+
+    await waitFor(() => {
+      expect(result.current.error).toContain("No active studio agents support READ_SQL_SERVER_QUERY");
     });
   });
 

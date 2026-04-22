@@ -1,13 +1,17 @@
 {
-  "displayName": "Mint",
-  "license": "CC0 (100Avatars R1)",
+  "displayName": "Female Avatar 1 (Packed)",
+  "license": "Project internal",
   "thumbnailUrl": null,
-  "vrmUrl": "./sample-assets/male_avatar.vrm",
-  "idleAnimationUrls": [
-    "./sample-assets/warrior-idle.fbx",
-    "./sample-assets/bored.fbx"
-  ],
-  "attentionAnimationUrl": "./sample-assets/looking.fbx",
-  "thinkingAnimationUrl": "./sample-assets/bored.fbx",
-  "talkingAnimationUrl": "./sample-assets/looking.fbx"
+  "modelUrl": "./sample-assets/female_avatar_1_packed.glb",
+  "animationMapping": {
+    "idle": "idle",
+    "walking": "walking",
+    "working": "thinking",
+    "communicating": "communicating",
+    "coffee-break": "coffee-break",
+    "at-phone": "at-phone",
+    "teleport-out": "teleport-out",
+    "teleport-in": "teleport-in",
+    "talking": "talking"
+  }
 }

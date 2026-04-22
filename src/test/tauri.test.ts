@@ -50,7 +50,7 @@ describe("tauri runtime guards", () => {
         prompt: "Hello",
         messages: [{ role: "user", content: "Hello" }]
       })
-    ).rejects.toThrow("Local chat requires the Tauri desktop shell.");
+    ).rejects.toThrow("Lokaler Chat benötigt die Tauri-Desktop-Shell.");
 
     expect(invokeMock).not.toHaveBeenCalled();
   });
@@ -61,7 +61,7 @@ describe("tauri runtime guards", () => {
         audioBase64: "SGVsbG8=",
         mimeType: "audio/webm"
       })
-    ).rejects.toThrow("Voice transcription requires the Tauri desktop shell.");
+    ).rejects.toThrow("Sprachtranskription benötigt die Tauri-Desktop-Shell.");
 
     expect(invokeMock).not.toHaveBeenCalled();
   });
@@ -73,7 +73,7 @@ describe("tauri runtime guards", () => {
         utterance: "Hello",
         responseModes: ["talk", "widget"]
       })
-    ).rejects.toThrow("Desktop Avatar request requires the Tauri desktop shell.");
+    ).rejects.toThrow("Desktop Avatar Anfrage benötigt die Tauri-Desktop-Shell.");
 
     expect(invokeMock).not.toHaveBeenCalled();
   });

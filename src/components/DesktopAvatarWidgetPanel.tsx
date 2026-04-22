@@ -1,4 +1,5 @@
 import type { DesktopAvatarWidgetPayload } from "../lib/contracts";
+import { t } from "../lib/i18n";
 import { DataTable } from "./DataTable";
 
 interface DesktopAvatarWidgetPanelProps {
@@ -9,7 +10,7 @@ interface DesktopAvatarWidgetPanelProps {
 
 function formatScalar(value: string | number | boolean | null): string {
   if (typeof value === "boolean") {
-    return value ? "Yes" : "No";
+    return value ? t("widgets.yes") : t("widgets.no");
   }
   if (value === null) {
     return "-";

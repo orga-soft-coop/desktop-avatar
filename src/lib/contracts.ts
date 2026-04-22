@@ -24,6 +24,18 @@ export type DesktopAvatarRequestStatus =
   | "FAILED";
 export type DesktopAvatarWidgetScalar = string | number | boolean | null;
 export type DesktopAvatarAnimationKey = "idle" | "attention" | "thinking" | "talking";
+export type PackedAvatarAnimationState =
+  | "idle"
+  | "walking"
+  | "working"
+  | "communicating"
+  | "coffee-break"
+  | "at-phone"
+  | "teleport-out"
+  | "teleport-in"
+  | "talking"
+  | "attention"
+  | "thinking";
 
 export interface DesktopAvatarTableWidget {
   type: "table";
@@ -178,8 +190,10 @@ export interface AvatarManifest {
   displayName?: string | null;
   license?: string | null;
   thumbnailUrl?: string | null;
-  vrmUrl: string;
-  idleAnimationUrls: string[];
+  modelUrl?: string | null;
+  animationMapping?: Partial<Record<PackedAvatarAnimationState, string>>;
+  vrmUrl?: string | null;
+  idleAnimationUrls?: string[];
   attentionAnimationUrl?: string | null;
   thinkingAnimationUrl?: string | null;
   talkingAnimationUrl?: string | null;
@@ -245,6 +259,8 @@ export interface StreamErrorPayload {
 export interface TtsStateEvent {
   requestId: string;
   speaking: boolean;
+  provider?: string;
+  fallback?: boolean;
 }
 
 export interface ChatMessage {
@@ -259,4 +275,33 @@ export interface ChatMessage {
   requestStatus?: DesktopAvatarRequestStatus | null;
   clientRequestId?: string | null;
   avatarRequestId?: string | null;
+}
+
+export interface DevToolsLatencySnapshot {
+  requestKey: string;
+  requestKind: "desktop-avatar" | "local-chat";
+  route: PromptRoute;
+  source: MessageSource;
+  status: string | null;
+  startedAt: string;
+  usedPolling: boolean;
+  createAcceptedMs: number | null;
+  streamConnectedMs: number | null;
+  firstEventMs: number | null;
+  firstResponseMs: number | null;
+  talkMs: number | null;
+  widgetMs: number | null;
+  pollFallbackMs: number | null;
+  completedMs: number | null;
+  failedMs: number | null;
+  ttsRequestedMs: number | null;
+  ttsStartedMs: number | null;
+  ttsSpeakDurationMs: number | null;
+  talkToTtsStartMs: number | null;
+  ttsProvider: string | null;
+  ttsFallbackUsed: boolean | null;
+  lastError: string | null;
+  clientRequestId: string | null;
+  avatarRequestId: string | null;
+  ttsRequestId: string | null;
 }

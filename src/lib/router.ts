@@ -20,7 +20,13 @@ const businessKeywords = [
   "inventory",
   "lieferung",
   "lieferungen",
-  "umsatz"
+  "umsatz",
+  "forecast",
+  "prognose",
+  "vorhersage",
+  "next week",
+  "naechste woche",
+  "nächste woche"
 ];
 
 const backendReviewKeywords = [

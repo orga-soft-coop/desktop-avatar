@@ -13,7 +13,8 @@ html,
 body,
 #root {
   margin: 0;
-  min-height: 100%;
+  height: auto;
+  min-height: 0;
   width: 100%;
   background: transparent !important;
   background-color: transparent !important;
@@ -36,21 +37,30 @@ button {
 
 .app-shell {
   position: relative;
-  display: grid;
-  place-items: center;
-  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  padding: 0;
+  box-sizing: border-box;
+  /* Reserve space for the absolutely positioned speech bubble (top ~28px + text + tail). */
+  padding: 118px 0 26px;
+  min-height: 0;
   background: transparent !important;
   pointer-events: none;
+  --avatar-viewport-height: 300px;
+}
+
+.app-shell.is-expanded {
+  --avatar-viewport-height: 380px;
 }
 
 .avatar-stage {
-  position: absolute;
-  inset: 0;
+  position: relative;
   z-index: 1;
+  flex-shrink: 0;
   width: 100%;
-  height: 100%;
+  height: var(--avatar-viewport-height);
   pointer-events: auto;
 }
 
@@ -88,7 +98,7 @@ button {
 .avatar-stage__pulse {
   position: absolute;
   right: 46px;
-  top: 112px;
+  top: 72px;
   width: 14px;
   height: 14px;
   border-radius: 999px;
@@ -104,27 +114,80 @@ button {
   transform: scale(1.15);
 }
 
-/* --- Data panel (overlay, does NOT affect window size) --- */
+/* --- Data panel (in layout column: below avatar, above chat; scrolls internally) --- */
 
 .data-panel {
-  position: absolute;
-  left: 50%;
-  /* bottom is set dynamically via inline style in App.tsx */
-  transform: translateX(-50%);
+  position: relative;
+  left: auto;
+  transform: none;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
   width: min(calc(100% - 28px), 430px);
-  max-height: calc(100vh - 160px);
-  overflow-y: auto;
+  /* Taller cap so KPI + paginator often fit without a permanent scrollbar; still bounded for small windows */
+  max-height: min(560px, min(72dvh, calc(100dvh - 220px)));
+  box-sizing: border-box;
+  /* Vertical inset: tight bottom so paginator-to-chat spacing matches the old ~8px overlay gap (plus shell flex gap) */
+  padding: 18px 0 4px;
+  border-radius: 22px;
+  overflow: hidden;
   pointer-events: auto;
-  z-index: 9;
+  z-index: 5;
 }
 
-/* --- Bottom stack: chat panel only (drives auto-resize) --- */
+/* Widgets / non-slider content: scroll inside the panel */
+.data-panel > :not(.data-panel-slider) {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.data-panel > :not(.data-panel-slider)::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.data-panel > :not(.data-panel-slider):hover,
+.data-panel > :not(.data-panel-slider):focus-within {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+
+.data-panel > :not(.data-panel-slider):hover::-webkit-scrollbar,
+.data-panel > :not(.data-panel-slider):focus-within::-webkit-scrollbar {
+  width: 6px;
+  height: 0;
+}
+
+.data-panel > :not(.data-panel-slider):hover::-webkit-scrollbar-thumb,
+.data-panel > :not(.data-panel-slider):focus-within::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+}
+
+.data-panel > .data-panel-slider {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* --- Bottom stack: chat (included in shell auto-resize) --- */
 
 .bottom-stack {
-  position: absolute;
-  bottom: 26px;
-  left: 50%;
-  transform: translateX(-50%);
+  position: relative;
+  flex-shrink: 0;
+  left: auto;
+  transform: none;
   width: min(calc(100% - 28px), 430px);
   pointer-events: none;
   z-index: 10;
@@ -137,7 +200,7 @@ button {
 .chat-panel__dock,
 .chat-panel__launcher,
 .speech-bubble {
-  box-shadow: 0 24px 60px rgba(5, 10, 20, 0.2);
+  box-shadow: none;
   backdrop-filter: blur(24px);
 }
 
@@ -341,9 +404,11 @@ button {
 .chat-panel__devtools-body {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   padding: 6px 0 2px;
 }
+
+/* --- Devtools rows (shared) --- */
 
 .chat-panel__devtools-row {
   display: flex;
@@ -351,13 +416,15 @@ button {
   gap: 8px;
 }
 
-.chat-panel__devtools-row--top {
-  align-items: flex-start;
+.chat-panel__devtools-row--actions {
+  display: flex;
+  gap: 6px;
+  padding-top: 2px;
 }
 
 .chat-panel__devtools-row > label {
   flex-shrink: 0;
-  width: 36px;
+  width: 56px;
   font-size: 0.68rem;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -385,38 +452,108 @@ button {
   border-color: rgba(141, 232, 216, 0.4);
 }
 
+/* --- Devtools sections (grouped controls with visual separation) --- */
+
+.chat-panel__devtools-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.chat-panel__devtools-section-title {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.25);
+  padding: 0 2px;
+}
+
+.chat-panel__devtools-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 2px;
+  border: 0;
+  background: none;
+  color: rgba(255, 255, 255, 0.25);
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.chat-panel__devtools-section-toggle:hover {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.chat-panel__devtools-section-chevron {
+  margin-left: auto;
+  transition: transform 200ms ease;
+}
+
+.chat-panel__devtools-section-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.chat-panel__devtools-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-panel__devtools-kv {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 3px 8px;
+}
+
+.chat-panel__devtools-k {
+  font-size: 0.63rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.chat-panel__devtools-v {
+  font-size: 0.69rem;
+  color: rgba(255, 255, 255, 0.74);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat-panel__devtools-v--error {
+  color: rgba(255, 168, 142, 0.95);
+}
+
+.chat-panel__devtools-mapping {
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 0.66rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* --- Inline row (window height buttons etc.) --- */
+
 .chat-panel__devtools-inline {
   display: flex;
   align-items: center;
   gap: 6px;
   flex: 1;
   min-width: 0;
-}
-
-.chat-panel__devtools-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-}
-
-.chat-panel__devtools-grid input,
-.chat-panel__devtools-input {
-  min-width: 0;
-  padding: 4px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.3);
-  color: rgba(255, 255, 255, 0.8);
-  font: inherit;
-  font-size: 0.72rem;
-  outline: none;
-}
-
-.chat-panel__devtools-grid input:focus,
-.chat-panel__devtools-input:focus {
-  border-color: rgba(141, 232, 216, 0.4);
 }
 
 .chat-panel__devtools-metric {
@@ -426,39 +563,97 @@ button {
   text-align: center;
 }
 
-.chat-panel__devtools-snippet {
+/* --- Slider rows (camera controls) --- */
+
+.chat-panel__devtools-slider-group {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.chat-panel__devtools-snippet > label {
-  flex-shrink: 0;
-  width: 36px;
-  font-size: 0.68rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.3);
-  padding-top: 6px;
-}
-
-.chat-panel__devtools-snippet textarea {
+  flex-direction: column;
+  gap: 4px;
   flex: 1;
-  min-height: 88px;
-  resize: vertical;
-  padding: 8px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.26);
-  color: rgba(255, 255, 255, 0.78);
-  font: 500 0.68rem/1.45 "SFMono-Regular", "Menlo", "Monaco", monospace;
-  outline: none;
+  min-width: 0;
 }
 
-.chat-panel__devtools-snippet textarea:focus {
+.chat-panel__devtools-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-panel__devtools-axis {
+  flex-shrink: 0;
+  width: 12px;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.3);
+  text-align: center;
+}
+
+.chat-panel__devtools-slider-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.chat-panel__devtools-slider-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #8de8d8;
+  border: 0;
+  cursor: pointer;
+  transition: transform 100ms ease;
+}
+
+.chat-panel__devtools-slider-row input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.3);
+}
+
+.chat-panel__devtools-slider-row input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #8de8d8;
+  border: 0;
+  cursor: pointer;
+}
+
+.chat-panel__devtools-num {
+  width: 52px;
+  flex-shrink: 0;
+  padding: 3px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  color: rgba(255, 255, 255, 0.8);
+  font: inherit;
+  font-size: 0.68rem;
+  text-align: right;
+  outline: none;
+  -moz-appearance: textfield;
+}
+
+.chat-panel__devtools-num::-webkit-inner-spin-button,
+.chat-panel__devtools-num::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.chat-panel__devtools-num:focus {
   border-color: rgba(141, 232, 216, 0.4);
 }
+
+/* --- Buttons --- */
 
 .chat-panel__devtools-btn {
   display: flex;
@@ -479,6 +674,10 @@ button {
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(141, 232, 216, 0.3);
   color: white;
+}
+
+.chat-panel__devtools-btn--wide {
+  flex: 1;
 }
 
 /* --- Error row --- */
@@ -589,6 +788,10 @@ button {
   padding: 14px 18px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(18, 27, 39, 0.12);
+  box-shadow:
+    0 18px 45px rgba(15, 23, 42, 0.18),
+    0 2px 8px rgba(15, 23, 42, 0.08);
   color: #141d29;
   pointer-events: auto;
 }
@@ -615,6 +818,8 @@ button {
   width: 18px;
   height: 18px;
   background: inherit;
+  border-right: 1px solid rgba(18, 27, 39, 0.12);
+  border-bottom: 1px solid rgba(18, 27, 39, 0.12);
   transform: translateX(-50%) rotate(45deg);
   border-radius: 0 0 5px;
 }
@@ -641,12 +846,20 @@ button {
 /* --- Data table (shadcn-style) --- */
 
 .data-table {
+  width: 100%;
+  box-sizing: border-box;
   border-radius: 16px;
+  color: white;
+  overflow: visible;
+  box-shadow: 0 6px 22px rgba(5, 10, 20, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.data-table__inner {
+  border-radius: inherit;
+  overflow: hidden;
   background: rgba(14, 18, 26, 0.88);
   backdrop-filter: blur(24px);
-  box-shadow: 0 24px 60px rgba(5, 10, 20, 0.28);
-  color: white;
-  overflow: hidden;
 }
 
 .data-table__header {
@@ -688,6 +901,22 @@ button {
 .data-table__scroll {
   overflow-x: auto;
   padding: 8px 0 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
+.data-table__scroll::-webkit-scrollbar {
+  height: 5px;
+  width: 5px;
+}
+
+.data-table__scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+}
+
+.data-table__scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .data-table table {
@@ -750,12 +979,18 @@ button {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 16px;
   border-radius: 20px;
   background: rgba(14, 18, 26, 0.88);
   backdrop-filter: blur(24px);
-  box-shadow: 0 24px 60px rgba(5, 10, 20, 0.28);
   color: white;
+  overflow: visible;
+  box-shadow: 0 6px 22px rgba(5, 10, 20, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .widget-card--clarification {
@@ -840,12 +1075,19 @@ button {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 16px;
   border-radius: 20px;
   background: rgba(14, 18, 26, 0.88);
   backdrop-filter: blur(24px);
-  box-shadow: 0 24px 60px rgba(5, 10, 20, 0.28);
   color: white;
+  overflow: visible;
+  /* Softer, mostly-down shadow so overflow clips (from scrollport) are less obvious */
+  box-shadow: 0 6px 22px rgba(5, 10, 20, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .kpi-card__header {
@@ -904,6 +1146,8 @@ button {
   padding: 12px 14px;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: none;
 }
 
 .kpi-card__metric-value {
@@ -943,23 +1187,65 @@ button {
 .data-panel-slider {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .data-panel-slider__viewport {
+  flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* Overlay scrollbar: no layout gutter so KPI matches paginator width (classic scrollbars steal ~12–16px). */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.data-panel-slider__viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.data-panel-slider__viewport:hover,
+.data-panel-slider__viewport:focus-within {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+
+.data-panel-slider__viewport:hover::-webkit-scrollbar,
+.data-panel-slider__viewport:focus-within::-webkit-scrollbar {
+  width: 6px;
+  height: 0;
+}
+
+.data-panel-slider__viewport:hover::-webkit-scrollbar-thumb,
+.data-panel-slider__viewport:focus-within::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
 }
 
 .data-panel-slider__nav {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 8px 14px;
   border-radius: 16px;
   background: rgba(14, 18, 26, 0.88);
   backdrop-filter: blur(24px);
-  box-shadow: 0 8px 24px rgba(5, 10, 20, 0.3);
+  box-shadow: 0 6px 18px rgba(5, 10, 20, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .data-panel-slider__arrow {
@@ -1009,10 +1295,6 @@ button {
 }
 
 @media (max-width: 920px) {
-  .app-shell.is-expanded {
-    grid-template-columns: 1fr;
-  }
-
   .avatar-stage {
     min-height: 280px;
   }

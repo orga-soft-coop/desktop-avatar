@@ -4,15 +4,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRM, VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
-import type { AnimationAction, AnimationClip, AnimationMixer, Group } from "three";
+import type { AnimationAction, AnimationClip, AnimationMixer, Group, Object3D } from "three";
 import type {
   AvatarManifest,
   CompanionState,
   DesktopAvatarAnimationKey
 } from "../lib/contracts";
 import { resolveAvatarAssets, type LoadedAnimationAsset } from "../lib/avatar-assets";
+import {
+  deriveAnimationCandidates,
+  selectAnimationAction
+} from "../lib/avatar-animation-selection";
 import type { AvatarCameraConfig } from "../lib/avatar-stage-config";
 import { DEFAULT_AVATAR_CAMERA_CONFIG } from "../lib/avatar-stage-config";
+import { t } from "../lib/i18n";
 import { loadAvatarAnimationClip } from "../lib/vrm-animation";
 import { frontendLog } from "../lib/tauri";
 
@@ -25,13 +30,111 @@ interface AvatarStageProps {
   suggestedAnimation?: DesktopAvatarAnimationKey | null;
   onDragStart: () => void;
   onAnimationsLoaded?: (names: string[]) => void;
+  onAnimationDebugChange?: (input: {
+    assetKind: "legacy-vrm" | "packed-glb" | null;
+    selectedClip: string | null;
+    resolvedAnimationMapping: Record<string, string>;
+  }) => void;
 }
 
 interface RuntimeState {
-  vrm: VRM;
+  root: Object3D;
   mixer: AnimationMixer;
   actions: Record<string, AnimationAction>;
+  assetKind: "legacy-vrm" | "packed-glb";
+  resolvedAnimationMapping: Record<string, string>;
+  update: (delta: number) => void;
   cleanup: () => void;
+}
+
+function actionClipName(action: AnimationAction | undefined): string | null {
+  if (!action || typeof action.getClip !== "function") {
+    return null;
+  }
+  return action.getClip()?.name ?? null;
+}
+
+function collectMeshBounds(root: Object3D): THREE.Box3 {
+  const bounds = new THREE.Box3();
+  const next = new THREE.Box3();
+  const worldMatrix = new THREE.Matrix4();
+  let hasBounds = false;
+
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh || child instanceof THREE.SkinnedMesh)) {
+      return;
+    }
+    const geo = child.geometry;
+    if (!geo) {
+      return;
+    }
+    if (geo.boundingBox === null) {
+      geo.computeBoundingBox();
+    }
+    if (!geo.boundingBox) {
+      return;
+    }
+
+    worldMatrix.copy(child.matrixWorld);
+    next.copy(geo.boundingBox).applyMatrix4(worldMatrix);
+    if (hasBounds) {
+      bounds.union(next);
+    } else {
+      bounds.copy(next);
+      hasBounds = true;
+    }
+  });
+
+  if (!hasBounds) {
+    bounds.setFromObject(root);
+  }
+  return bounds;
+}
+
+function normalizeModelRoot(root: Object3D, targetHeight = 1.6): void {
+  root.updateMatrixWorld(true);
+  const bounds = collectMeshBounds(root);
+  if (bounds.isEmpty()) {
+    return;
+  }
+
+  const centerX = (bounds.min.x + bounds.max.x) / 2;
+  const centerZ = (bounds.min.z + bounds.max.z) / 2;
+  root.position.x -= centerX;
+  root.position.z -= centerZ;
+  root.updateMatrixWorld(true);
+
+  const centeredBounds = collectMeshBounds(root);
+  const height = centeredBounds.max.y - centeredBounds.min.y;
+  if (Number.isFinite(height) && height > 0.0001) {
+    const scale = targetHeight / height;
+    if (scale > 0.05 && scale < 20) {
+      root.scale.multiplyScalar(scale);
+      root.updateMatrixWorld(true);
+    }
+  }
+
+  const scaledBounds = collectMeshBounds(root);
+  if (Number.isFinite(scaledBounds.min.y)) {
+    root.position.y -= scaledBounds.min.y;
+  }
+  root.updateMatrixWorld(true);
+}
+
+function resolveActionNameByCaseInsensitiveMatch(
+  actions: Record<string, AnimationAction>,
+  preferredName: string
+): string | null {
+  if (actions[preferredName]) {
+    return preferredName;
+  }
+  const preferred = preferredName.trim().toLowerCase();
+  for (const key of Object.keys(actions)) {
+    if (key.trim().toLowerCase() === preferred) {
+      return key;
+    }
+  }
+  return null;
 }
 
 function CameraController({ config }: { config: AvatarCameraConfig }) {
@@ -90,7 +193,8 @@ function AvatarRig({
   forcedAnimation,
   suggestedAnimation,
   onLoadError,
-  onAnimationsLoaded
+  onAnimationsLoaded,
+  onAnimationDebugChange
 }: {
   companionState: CompanionState;
   manifest: AvatarManifest | null;
@@ -98,6 +202,11 @@ function AvatarRig({
   suggestedAnimation?: DesktopAvatarAnimationKey | null;
   onLoadError?: (message: string | null) => void;
   onAnimationsLoaded?: (names: string[]) => void;
+  onAnimationDebugChange?: (input: {
+    assetKind: "legacy-vrm" | "packed-glb" | null;
+    selectedClip: string | null;
+    resolvedAnimationMapping: Record<string, string>;
+  }) => void;
 }) {
   const groupRef = useRef<Group>(null);
   const runtimeRef = useRef<RuntimeState | null>(null);
@@ -110,9 +219,14 @@ function AvatarRig({
 
     async function loadRuntime() {
       if (!manifest || !groupRef.current) {
-        const message = "No avatar manifest configured.";
+        const message = t("errors.avatarManifestMissing");
         setLoadError(message);
         onLoadError?.(message);
+        onAnimationDebugChange?.({
+          assetKind: null,
+          selectedClip: null,
+          resolvedAnimationMapping: {}
+        });
         void frontendLog("error", `avatar manifest missing: ${message}`);
         return;
       }
@@ -123,86 +237,188 @@ function AvatarRig({
           assets.revoke();
           return;
         }
-
-        const gltfLoader = new GLTFLoader();
-        gltfLoader.register((parser) => new VRMLoaderPlugin(parser));
-        const gltf = await gltfLoader.loadAsync(assets.vrmUrl);
-        const vrm = gltf.userData.vrm as VRM;
-
-        VRMUtils.removeUnnecessaryVertices(gltf.scene);
-        VRMUtils.removeUnnecessaryJoints(gltf.scene);
-        VRMUtils.rotateVRM0(vrm);
-
-        const mixer = new THREE.AnimationMixer(vrm.scene);
         const actions: Record<string, AnimationAction> = {};
+        let mixer: AnimationMixer;
+        let root: Object3D;
+        let assetKind: "legacy-vrm" | "packed-glb";
+        let resolvedAnimationMapping: Record<string, string> = {};
+        let updateRuntime = (_delta: number) => {};
+        let cleanupRuntime = () => {};
 
-        const loadClip = async (
-          asset: LoadedAnimationAsset | null | undefined
-        ): Promise<AnimationClip | null> => {
-          if (!asset) {
-            return null;
+        if (assets.kind === "packed-glb") {
+          assetKind = "packed-glb";
+          const gltfLoader = new GLTFLoader();
+          const gltf = await gltfLoader.loadAsync(assets.modelUrl);
+          root = gltf.scene;
+          normalizeModelRoot(root);
+
+          mixer = new THREE.AnimationMixer(root);
+          for (const clip of gltf.animations) {
+            if (!clip.name?.trim()) {
+              continue;
+            }
+            actions[clip.name] = mixer.clipAction(clip);
           }
-          return loadAvatarAnimationClip(asset.url, asset.source, vrm);
-        };
 
-        const loadClipSafely = async (
-          asset: LoadedAnimationAsset | null | undefined,
-          label: string
-        ) => {
-          try {
-            return await loadClip(asset);
-          } catch (error) {
-            console.warn(`Failed to load ${label} animation`, error);
-            void frontendLog(
-              "warn",
-              `failed to load ${label} animation: ${
-                error instanceof Error ? error.message : String(error)
-              }`
-            );
-            return null;
+          for (const [state, preferredClipName] of Object.entries(assets.animationMapping)) {
+            if (!preferredClipName) {
+              continue;
+            }
+            const resolved = resolveActionNameByCaseInsensitiveMatch(actions, preferredClipName);
+            if (resolved && actions[resolved]) {
+              actions[state] = actions[resolved];
+              const clipName = actionClipName(actions[resolved]);
+              if (clipName) {
+                resolvedAnimationMapping[state] = clipName;
+              }
+            }
           }
-        };
 
-        const idleClips = (
-          await Promise.all(
-            assets.idleAnimationUrls.map((url, index) =>
-              loadClipSafely(url, `idle-${index + 1}`)
+          for (const [key, action] of Object.entries(actions)) {
+            const clipName = actionClipName(action);
+            if (clipName) {
+              resolvedAnimationMapping[key] = clipName;
+            }
+          }
+
+          cleanupRuntime = () => {
+            mixer.stopAllAction();
+            root.traverse((child) => {
+              if (child instanceof THREE.Mesh) {
+                child.geometry?.dispose();
+                if (Array.isArray(child.material)) {
+                  child.material.forEach((material) => material.dispose());
+                } else {
+                  child.material?.dispose();
+                }
+              }
+            });
+          };
+          void frontendLog(
+            "info",
+            `loaded packed GLB avatar with ${Object.keys(actions).length} action entries`
+          );
+        } else {
+          assetKind = "legacy-vrm";
+          const gltfLoader = new GLTFLoader();
+          gltfLoader.register((parser) => new VRMLoaderPlugin(parser));
+          const gltf = await gltfLoader.loadAsync(assets.vrmUrl);
+          const vrm = gltf.userData.vrm as VRM;
+
+          VRMUtils.removeUnnecessaryVertices(gltf.scene);
+          VRMUtils.removeUnnecessaryJoints(gltf.scene);
+          VRMUtils.rotateVRM0(vrm);
+          normalizeModelRoot(vrm.scene);
+
+          mixer = new THREE.AnimationMixer(vrm.scene);
+          root = vrm.scene;
+
+          const loadClip = async (
+            asset: LoadedAnimationAsset | null | undefined
+          ): Promise<AnimationClip | null> => {
+            if (!asset) {
+              return null;
+            }
+            return loadAvatarAnimationClip(asset.url, asset.source, vrm);
+          };
+
+          const loadClipSafely = async (
+            asset: LoadedAnimationAsset | null | undefined,
+            label: string
+          ) => {
+            try {
+              return await loadClip(asset);
+            } catch (error) {
+              console.warn(`Failed to load ${label} animation`, error);
+              void frontendLog(
+                "warn",
+                `failed to load ${label} animation: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              );
+              return null;
+            }
+          };
+
+          const idleClips = (
+            await Promise.all(
+              assets.idleAnimationUrls.map((url, index) =>
+                loadClipSafely(url, `idle-${index + 1}`)
+              )
             )
-          )
-        ).filter(Boolean) as AnimationClip[];
+          ).filter(Boolean) as AnimationClip[];
 
-        const clips = {
-          attention: await loadClipSafely(assets.attentionAnimationUrl, "attention"),
-          thinking: await loadClipSafely(assets.thinkingAnimationUrl, "thinking"),
-          talking: await loadClipSafely(assets.talkingAnimationUrl, "talking")
-        };
+          const clips = {
+            attention: await loadClipSafely(assets.attentionAnimationUrl, "attention"),
+            thinking: await loadClipSafely(assets.thinkingAnimationUrl, "thinking"),
+            talking: await loadClipSafely(assets.talkingAnimationUrl, "talking")
+          };
 
-        idleClips.forEach((clip, index) => {
-          actions[`idle-${index}`] = mixer.clipAction(clip);
-        });
-
-        Object.entries(clips).forEach(([key, clip]) => {
-          if (clip) {
-            actions[key] = mixer.clipAction(clip);
+          idleClips.forEach((clip, index) => {
+            actions[`idle-${index}`] = mixer.clipAction(clip);
+          });
+          Object.entries(clips).forEach(([key, clip]) => {
+            if (clip) {
+              actions[key] = mixer.clipAction(clip);
+            }
+          });
+          if (idleClips.length > 0) {
+            resolvedAnimationMapping.idle = idleClips[0].name;
           }
-        });
+          if (clips.attention) {
+            resolvedAnimationMapping.attention = clips.attention.name;
+          }
+          if (clips.thinking) {
+            resolvedAnimationMapping.thinking = clips.thinking.name;
+            resolvedAnimationMapping.working = clips.thinking.name;
+          }
+          if (clips.talking) {
+            resolvedAnimationMapping.talking = clips.talking.name;
+            resolvedAnimationMapping.communicating = clips.talking.name;
+          } else if (clips.attention) {
+            resolvedAnimationMapping.communicating = clips.attention.name;
+          } else if (idleClips.length > 0) {
+            resolvedAnimationMapping.communicating = idleClips[0].name;
+          }
 
-        groupRef.current.clear();
-        groupRef.current.add(vrm.scene);
-
-        runtimeRef.current = {
-          vrm,
-          mixer,
-          actions,
-          cleanup: () => {
-            assets.revoke();
+          updateRuntime = (delta) => {
+            vrm.update(delta);
+          };
+          cleanupRuntime = () => {
             mixer.stopAllAction();
             VRMUtils.deepDispose(vrm.scene);
+          };
+        }
+
+        groupRef.current.clear();
+        groupRef.current.add(root);
+        root.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            child.castShadow = false;
+            child.receiveShadow = false;
+          }
+        });
+
+        runtimeRef.current = {
+          root,
+          mixer,
+          actions,
+          assetKind,
+          resolvedAnimationMapping,
+          update: updateRuntime,
+          cleanup: () => {
+            assets.revoke();
+            cleanupRuntime();
           }
         };
         localCleanup = runtimeRef.current.cleanup;
         setLoadError(null);
         onLoadError?.(null);
+        onAnimationDebugChange?.({
+          assetKind,
+          selectedClip: null,
+          resolvedAnimationMapping
+        });
         onAnimationsLoaded?.(Object.keys(actions));
         setRuntimeVersion((current) => current + 1);
         void frontendLog(
@@ -211,9 +427,14 @@ function AvatarRig({
         );
       } catch (error) {
         console.error(error);
-        const message = error instanceof Error ? error.message : "Could not load avatar.";
+        const message = error instanceof Error ? error.message : t("errors.avatarLoadFailed");
         setLoadError(message);
         onLoadError?.(message);
+        onAnimationDebugChange?.({
+          assetKind: null,
+          selectedClip: null,
+          resolvedAnimationMapping: {}
+        });
         void frontendLog("error", `avatar load failed: ${message}`);
       }
     }
@@ -240,54 +461,31 @@ function AvatarRig({
     };
 
     fadeOutAll();
-    let selectedAction: AnimationAction | undefined;
-
-    const idleKeys = Object.keys(actions).filter((key) => key.startsWith("idle-"));
-    const fallbackIdle = idleKeys.length > 0 ? actions[idleKeys[0]] : undefined;
-    const fallbackAction = fallbackIdle ?? Object.values(actions)[0];
-
-    const actionForSuggestedAnimation = (animation: DesktopAvatarAnimationKey) => {
-      switch (animation) {
-        case "thinking":
-          return actions.thinking ?? fallbackAction;
-        case "talking":
-          return actions.talking ?? fallbackAction;
-        case "attention":
-          return actions.attention ?? fallbackAction;
-        case "idle":
-        default:
-          return fallbackAction;
-      }
-    };
-
-    // Dev override: force a specific animation by key
-    if (forcedAnimation && actions[forcedAnimation]) {
-      selectedAction = actions[forcedAnimation];
-    } else if (suggestedAnimation) {
-      selectedAction = actionForSuggestedAnimation(suggestedAnimation);
-    } else {
-      selectedAction = fallbackAction;
-
-      if (companionState === "thinking" || companionState === "transcribing") {
-        selectedAction = actions.thinking ?? fallbackAction;
-      } else if (companionState === "speaking") {
-        selectedAction = actions.talking ?? fallbackAction;
-      } else if (companionState === "listening") {
-        selectedAction = actions.attention ?? fallbackAction;
-      }
-    }
+    const selectedAction = selectAnimationAction(
+      actions,
+      deriveAnimationCandidates({
+        companionState,
+        forcedAnimation,
+        suggestedAnimation
+      })
+    );
 
     if (selectedAction) {
       selectedAction.reset().fadeIn(0.24).play();
       selectedAction.loop = THREE.LoopRepeat;
-    } else if (runtime.vrm.scene) {
-      runtime.vrm.scene.rotation.y += companionState === "thinking" ? 0.08 : 0;
+    } else if (runtime.root) {
+      runtime.root.rotation.y += companionState === "thinking" ? 0.08 : 0;
     }
-  }, [companionState, forcedAnimation, runtimeVersion, suggestedAnimation]);
+    onAnimationDebugChange?.({
+      assetKind: runtime.assetKind,
+      selectedClip: actionClipName(selectedAction),
+      resolvedAnimationMapping: runtime.resolvedAnimationMapping
+    });
+  }, [companionState, forcedAnimation, onAnimationDebugChange, runtimeVersion, suggestedAnimation]);
 
   useFrame((_, delta) => {
     runtimeRef.current?.mixer.update(delta);
-    runtimeRef.current?.vrm.update(delta);
+    runtimeRef.current?.update(delta);
   });
 
   const fallback = useMemo(() => !manifest || loadError, [manifest, loadError]);
@@ -307,7 +505,8 @@ export function AvatarStage({
   forcedAnimation,
   suggestedAnimation,
   onDragStart,
-  onAnimationsLoaded
+  onAnimationsLoaded,
+  onAnimationDebugChange
 }: AvatarStageProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -333,8 +532,9 @@ export function AvatarStage({
             fov: cameraConfig.fov
           }}
           gl={{ alpha: true }}
-          onCreated={({ scene }) => {
+          onCreated={({ scene, gl }) => {
             scene.background = null;
+            gl.shadowMap.enabled = false;
           }}
         >
           <CameraController config={cameraConfig} />
@@ -349,6 +549,7 @@ export function AvatarStage({
               suggestedAnimation={suggestedAnimation}
               onLoadError={setLoadError}
               onAnimationsLoaded={onAnimationsLoaded}
+              onAnimationDebugChange={onAnimationDebugChange}
             />
           </group>
           <OrbitControls enabled={false} />

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type {
+  AvatarManifest,
   DesktopAvatarResponse,
   DesktopAvatarStreamEvent,
   DesktopAvatarWidgetPayload
@@ -43,5 +44,25 @@ describe("desktop avatar contracts", () => {
     };
 
     expect(event.talk.text).toContain("10");
+  });
+
+  it("accepts packed GLB avatar manifest shape", () => {
+    const manifest: AvatarManifest = {
+      modelUrl: "./avatars/female_avatar_1.glb",
+      animationMapping: {
+        idle: "idle",
+        walking: "walking",
+        working: "thinking",
+        communicating: "communicating",
+        "coffee-break": "coffee-break",
+        "at-phone": "at-phone",
+        "teleport-out": "teleport-out",
+        "teleport-in": "teleport-in",
+        talking: "talking"
+      }
+    };
+
+    expect(manifest.modelUrl).toContain(".glb");
+    expect(manifest.animationMapping?.working).toBe("thinking");
   });
 });

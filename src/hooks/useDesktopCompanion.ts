@@ -4,6 +4,9 @@ import type {
   ChatMessage,
   CompanionState,
   CreateDesktopAvatarRequestInput,
+  DesktopAvatarRequestDocument,
+  DesktopAvatarStreamEvent,
+  DevToolsLatencySnapshot,
   LocalChatMessageInput,
   LocalChatRequest,
   MessageSource,
@@ -22,8 +25,10 @@ import {
   isDesktopAvatarTerminalStatus
 } from "../lib/desktop-avatar-orchestrator";
 import { routePrompt } from "../lib/router";
+import { t } from "../lib/i18n";
 import {
   getBootstrapState,
+  listTtsVoices,
   onStreamEvent,
   onTtsState,
   resizeWindow,
@@ -43,6 +48,11 @@ import {
   storeSizePreset
 } from "../lib/window-presets";
 
+const TTS_VOICE_STORAGE_KEY = "desktop-avatar.ttsVoice";
+const TTS_ENABLED_STORAGE_KEY = "desktop-avatar.ttsEnabled";
+const LOCAL_CHAT_SYSTEM_PROMPT = t("localChat.systemPrompt");
+const LOCAL_CHAT_FALLBACK_RESPONSE = t("status.localFallback");
+
 interface SubmissionContext {
   prompt: string;
   source: MessageSource;
@@ -54,6 +64,35 @@ interface ActiveDesktopAvatarRequest extends SubmissionContext {
   assistantMessageId: string;
   avatarRequestId: string | null;
   clientRequestId: string;
+}
+
+interface LatencyTimeline {
+  requestKey: string;
+  requestKind: "desktop-avatar" | "local-chat";
+  route: PromptRoute;
+  source: MessageSource;
+  status: string | null;
+  startedAtMs: number;
+  startedAt: string;
+  usedPolling: boolean;
+  createAcceptedAtMs?: number;
+  streamConnectedAtMs?: number;
+  firstEventAtMs?: number;
+  firstResponseAtMs?: number;
+  talkAtMs?: number;
+  widgetAtMs?: number;
+  pollingStartedAtMs?: number;
+  completedAtMs?: number;
+  failedAtMs?: number;
+  ttsRequestedAtMs?: number;
+  ttsStartedAtMs?: number;
+  ttsEndedAtMs?: number;
+  ttsProvider: string | null;
+  ttsFallbackUsed: boolean | null;
+  lastError: string | null;
+  clientRequestId: string | null;
+  avatarRequestId: string | null;
+  ttsRequestId: string | null;
 }
 
 function buildAssistantPlaceholder(source: MessageSource, clientRequestId?: string): ChatMessage {
@@ -93,11 +132,34 @@ function buildLocalHistory(messages: ChatMessage[]): LocalChatMessageInput[] {
   return [
     {
       role: "system",
-      content:
-        "You are Milk, a concise desktop companion. Stay conversational, helpful, and never invent business facts."
+      content: LOCAL_CHAT_SYSTEM_PROMPT
     },
     ...history
   ];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sanitizeLocalAssistantText(value: string | null | undefined): string {
+  if (!value) {
+    return "";
+  }
+
+  let sanitized = value.trim();
+  if (!sanitized) {
+    return "";
+  }
+
+  const fullPromptPattern = new RegExp(escapeRegExp(LOCAL_CHAT_SYSTEM_PROMPT), "gi");
+  sanitized = sanitized.replace(fullPromptPattern, "").trim();
+
+  const prefixPattern =
+    /^you are milk,\s*a concise desktop companion\.[\s\S]{0,260}?(?:instructions?\.?|facts\.?)/i;
+  sanitized = sanitized.replace(prefixPattern, "").trim();
+
+  return sanitized;
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -133,6 +195,22 @@ function buildDesktopAvatarRequestInput(
   };
 }
 
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim().length > 0) {
+    return error;
+  }
+  if (error && typeof error === "object") {
+    const candidate = error as { message?: unknown };
+    if (typeof candidate.message === "string" && candidate.message.trim().length > 0) {
+      return candidate.message;
+    }
+  }
+  return fallback;
+}
+
 function nextPollDelay(attempt: number): number {
   if (attempt <= 0) {
     return 500;
@@ -143,6 +221,115 @@ function nextPollDelay(attempt: number): number {
   return 2000;
 }
 
+function readStoredTtsVoice(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const value = window.localStorage.getItem(TTS_VOICE_STORAGE_KEY);
+    if (!value) {
+      return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readStoredTtsEnabled(): boolean | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const value = window.localStorage.getItem(TTS_ENABLED_STORAGE_KEY);
+    if (!value) {
+      return null;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function storeTtsVoice(voice: string | null): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    if (!voice) {
+      window.localStorage.removeItem(TTS_VOICE_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(TTS_VOICE_STORAGE_KEY, voice);
+  } catch {
+    // no-op (storage can fail in restricted environments)
+  }
+}
+
+function storeTtsEnabled(enabled: boolean): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(TTS_ENABLED_STORAGE_KEY, String(enabled));
+  } catch {
+    // no-op (storage can fail in restricted environments)
+  }
+}
+
+function elapsed(startedAtMs: number, timestamp?: number): number | null {
+  if (typeof timestamp !== "number") {
+    return null;
+  }
+  return Math.max(0, Math.round(timestamp - startedAtMs));
+}
+
+function duration(from?: number, to?: number): number | null {
+  if (typeof from !== "number" || typeof to !== "number") {
+    return null;
+  }
+  return Math.max(0, Math.round(to - from));
+}
+
+function toLatencySnapshot(timeline: LatencyTimeline): DevToolsLatencySnapshot {
+  return {
+    requestKey: timeline.requestKey,
+    requestKind: timeline.requestKind,
+    route: timeline.route,
+    source: timeline.source,
+    status: timeline.status,
+    startedAt: timeline.startedAt,
+    usedPolling: timeline.usedPolling,
+    createAcceptedMs: elapsed(timeline.startedAtMs, timeline.createAcceptedAtMs),
+    streamConnectedMs: elapsed(timeline.startedAtMs, timeline.streamConnectedAtMs),
+    firstEventMs: elapsed(timeline.startedAtMs, timeline.firstEventAtMs),
+    firstResponseMs: elapsed(timeline.startedAtMs, timeline.firstResponseAtMs),
+    talkMs: elapsed(timeline.startedAtMs, timeline.talkAtMs),
+    widgetMs: elapsed(timeline.startedAtMs, timeline.widgetAtMs),
+    pollFallbackMs: elapsed(timeline.startedAtMs, timeline.pollingStartedAtMs),
+    completedMs: elapsed(timeline.startedAtMs, timeline.completedAtMs),
+    failedMs: elapsed(timeline.startedAtMs, timeline.failedAtMs),
+    ttsRequestedMs: elapsed(timeline.startedAtMs, timeline.ttsRequestedAtMs),
+    ttsStartedMs: elapsed(timeline.startedAtMs, timeline.ttsStartedAtMs),
+    ttsSpeakDurationMs: duration(timeline.ttsStartedAtMs, timeline.ttsEndedAtMs),
+    talkToTtsStartMs: duration(timeline.talkAtMs, timeline.ttsStartedAtMs),
+    ttsProvider: timeline.ttsProvider,
+    ttsFallbackUsed: timeline.ttsFallbackUsed,
+    lastError: timeline.lastError,
+    clientRequestId: timeline.clientRequestId,
+    avatarRequestId: timeline.avatarRequestId,
+    ttsRequestId: timeline.ttsRequestId
+  };
+}
+
 export function useDesktopCompanion() {
   const [avatarManifest, setAvatarManifest] = useState<AvatarManifest | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -151,7 +338,11 @@ export function useDesktopCompanion() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
-  const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [ttsEnabled, setTtsEnabled] = useState(() => readStoredTtsEnabled() ?? true);
+  const [ttsVoices, setTtsVoices] = useState<string[]>([]);
+  const [selectedTtsVoice, setSelectedTtsVoiceState] = useState<string | null>(() =>
+    readStoredTtsVoice()
+  );
   const [sizePreset, setSizePresetState] = useState<SizePreset>(() => readStoredSizePreset());
   const [windowSize, setWindowSize] = useState(
     () => getWindowSizesForPreset(DEFAULT_SIZE_PRESET).collapsed
@@ -161,6 +352,7 @@ export function useDesktopCompanion() {
     reduceDesktopAvatarState,
     desktopAvatarInitialState
   );
+  const [latencyTimeline, setLatencyTimeline] = useState<LatencyTimeline | null>(null);
 
   const requestContextsRef = useRef(new Map<string, SubmissionContext>());
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -185,6 +377,135 @@ export function useDesktopCompanion() {
   useEffect(() => {
     desktopAvatarStateRef.current = desktopAvatarState;
   }, [desktopAvatarState]);
+
+  const patchLatencyByRequestKey = useCallback(
+    (requestKey: string, updater: (current: LatencyTimeline) => LatencyTimeline) => {
+      setLatencyTimeline((current) => {
+        if (!current || current.requestKey !== requestKey) {
+          return current;
+        }
+        return updater(current);
+      });
+    },
+    []
+  );
+
+  const markDesktopStreamEvent = useCallback(
+    (event: DesktopAvatarStreamEvent) => {
+      const activeRequest = activeDesktopAvatarRequestRef.current;
+      if (!activeRequest) {
+        return;
+      }
+
+      const requestKey = activeRequest.clientRequestId;
+      const now = Date.now();
+      patchLatencyByRequestKey(requestKey, (current) => {
+        const next: LatencyTimeline = {
+          ...current,
+          firstEventAtMs: current.firstEventAtMs ?? now,
+          status: event.type === "status" ? event.status : current.status,
+          avatarRequestId: current.avatarRequestId ?? activeRequest.avatarRequestId ?? null
+        };
+
+        if (event.type === "status" && event.status === "FAILED") {
+          next.failedAtMs = current.failedAtMs ?? now;
+          next.lastError = event.message ?? current.lastError;
+        } else if (event.type === "talk") {
+          next.firstResponseAtMs = current.firstResponseAtMs ?? now;
+          next.talkAtMs = current.talkAtMs ?? now;
+        } else if (event.type === "widget") {
+          next.firstResponseAtMs = current.firstResponseAtMs ?? now;
+          next.widgetAtMs = current.widgetAtMs ?? now;
+        } else if (event.type === "done") {
+          if (event.status === "FAILED") {
+            next.failedAtMs = current.failedAtMs ?? now;
+          } else {
+            next.completedAtMs = current.completedAtMs ?? now;
+          }
+          next.status = event.status;
+        } else if (event.type === "error") {
+          next.failedAtMs = current.failedAtMs ?? now;
+          next.status = "FAILED";
+          next.lastError = event.error;
+        }
+
+        return next;
+      });
+    },
+    [patchLatencyByRequestKey]
+  );
+
+  const markDesktopPollingStarted = useCallback(
+    (requestKey: string) => {
+      const now = Date.now();
+      patchLatencyByRequestKey(requestKey, (current) => ({
+        ...current,
+        usedPolling: true,
+        pollingStartedAtMs: current.pollingStartedAtMs ?? now
+      }));
+    },
+    [patchLatencyByRequestKey]
+  );
+
+  const markDesktopPollingSnapshot = useCallback(
+    (requestKey: string, document: DesktopAvatarRequestDocument) => {
+      const now = Date.now();
+      patchLatencyByRequestKey(requestKey, (current) => {
+        const next: LatencyTimeline = {
+          ...current,
+          firstEventAtMs: current.firstEventAtMs ?? now,
+          status: document.status,
+          avatarRequestId: current.avatarRequestId ?? document.avatarRequestId ?? null
+        };
+
+        if (document.response?.talk?.text) {
+          next.firstResponseAtMs = current.firstResponseAtMs ?? now;
+          next.talkAtMs = current.talkAtMs ?? now;
+        }
+
+        if (document.response?.widget) {
+          next.firstResponseAtMs = next.firstResponseAtMs ?? now;
+          next.widgetAtMs = current.widgetAtMs ?? now;
+        }
+
+        if (document.status === "FAILED") {
+          next.failedAtMs = current.failedAtMs ?? now;
+          next.lastError = document.error ?? current.lastError;
+        } else if (isDesktopAvatarTerminalStatus(document.status)) {
+          next.completedAtMs = current.completedAtMs ?? now;
+        }
+
+        return next;
+      });
+    },
+    [patchLatencyByRequestKey]
+  );
+
+  const markLocalStreamEvent = useCallback(
+    (event: StreamEnvelope) => {
+      const now = Date.now();
+      patchLatencyByRequestKey(event.requestId, (current) => {
+        const next: LatencyTimeline = {
+          ...current,
+          firstEventAtMs: current.firstEventAtMs ?? now,
+          status: event.kind
+        };
+
+        if (event.kind === "final") {
+          next.firstResponseAtMs = current.firstResponseAtMs ?? now;
+          next.talkAtMs = current.talkAtMs ?? now;
+          next.completedAtMs = current.completedAtMs ?? now;
+        } else if (event.kind === "error") {
+          const payload = event.payload as StreamErrorPayload;
+          next.failedAtMs = current.failedAtMs ?? now;
+          next.lastError = payload.message;
+        }
+
+        return next;
+      });
+    },
+    [patchLatencyByRequestKey]
+  );
 
   const syncDesktopAvatarMessage = useCallback((state: DesktopAvatarOrchestratorState) => {
     const activeRequest = activeDesktopAvatarRequestRef.current;
@@ -233,6 +554,10 @@ export function useDesktopCompanion() {
       desktopAvatarPollAttemptRef.current = 0;
       desktopAvatarPollErrorCountRef.current = 0;
       desktopAvatarDispatch({ type: "pollingStarted" });
+      const activeRequest = activeDesktopAvatarRequestRef.current;
+      if (activeRequest && activeRequest.avatarRequestId === avatarRequestId) {
+        markDesktopPollingStarted(activeRequest.clientRequestId);
+      }
 
       const poll = async () => {
         const activeRequest = activeDesktopAvatarRequestRef.current;
@@ -243,6 +568,7 @@ export function useDesktopCompanion() {
         try {
           const document = await desktopAvatarApiClient.getRequest({ avatarRequestId, pollUrl });
           desktopAvatarPollErrorCountRef.current = 0;
+          markDesktopPollingSnapshot(activeRequest.clientRequestId, document);
           desktopAvatarDispatch({ type: "pollingSnapshot", document });
           if (isDesktopAvatarTerminalStatus(document.status)) {
             clearDesktopAvatarPolling();
@@ -253,8 +579,14 @@ export function useDesktopCompanion() {
           const message =
             caughtError instanceof Error
               ? caughtError.message
-              : "Polling fallback failed.";
+              : t("status.pollingFallbackFailed");
           if (desktopAvatarPollErrorCountRef.current >= 3) {
+            patchLatencyByRequestKey(activeRequest.clientRequestId, (current) => ({
+              ...current,
+              status: "FAILED",
+              failedAtMs: current.failedAtMs ?? Date.now(),
+              lastError: message
+            }));
             desktopAvatarDispatch({ type: "requestFailed", message });
             clearDesktopAvatarPolling();
             return;
@@ -271,7 +603,12 @@ export function useDesktopCompanion() {
 
       void poll();
     },
-    [clearDesktopAvatarPolling]
+    [
+      clearDesktopAvatarPolling,
+      markDesktopPollingSnapshot,
+      markDesktopPollingStarted,
+      patchLatencyByRequestKey
+    ]
   );
 
   const cleanupDesktopAvatarRuntime = useCallback(async () => {
@@ -287,6 +624,7 @@ export function useDesktopCompanion() {
         avatarRequestId,
         streamUrl,
         onEvent: (event) => {
+          markDesktopStreamEvent(event);
           desktopAvatarDispatch({ type: "streamEvent", event });
         },
         onDisconnect: (event) => {
@@ -297,21 +635,54 @@ export function useDesktopCompanion() {
           startDesktopAvatarPolling(avatarRequestId, pollUrl);
         }
       });
+      const activeRequest = activeDesktopAvatarRequestRef.current;
+      if (activeRequest && activeRequest.avatarRequestId === avatarRequestId) {
+        patchLatencyByRequestKey(activeRequest.clientRequestId, (current) => ({
+          ...current,
+          avatarRequestId,
+          streamConnectedAtMs: current.streamConnectedAtMs ?? Date.now()
+        }));
+      }
     },
-    [clearDesktopAvatarPolling, closeDesktopAvatarConnection, startDesktopAvatarPolling]
+    [
+      clearDesktopAvatarPolling,
+      closeDesktopAvatarConnection,
+      markDesktopStreamEvent,
+      patchLatencyByRequestKey,
+      startDesktopAvatarPolling
+    ]
   );
 
   useEffect(() => {
     let unlistenStream: (() => void) | undefined;
     let unlistenTts: (() => void) | undefined;
 
-    void getBootstrapState().then((bootstrap) => {
+    void (async () => {
+      const bootstrap = await getBootstrapState();
       setAvatarManifest(bootstrap.avatarManifest);
-      setTtsEnabled(bootstrap.ttsEnabled);
+      setTtsEnabled(() => {
+        const stored = readStoredTtsEnabled();
+        const next = bootstrap.ttsEnabled ? stored ?? true : false;
+        storeTtsEnabled(next);
+        return next;
+      });
       const presetSizes = getWindowSizesForPreset(sizePreset);
       setWindowSize(presetSizes.collapsed);
       void resizeWindow(presetSizes.collapsed.width, presetSizes.collapsed.height);
-    });
+
+      try {
+        const voices = await listTtsVoices();
+        const normalized = [...new Set(voices.map((voice) => voice.trim()).filter(Boolean))];
+        setTtsVoices(normalized);
+        setSelectedTtsVoiceState((current) => {
+          const nextVoice = current && normalized.includes(current) ? current : null;
+          storeTtsVoice(nextVoice);
+          return nextVoice;
+        });
+      } catch {
+        setTtsVoices([]);
+      }
+    })();
 
     void onStreamEvent((event) => {
       void handleLocalStreamEvent(event);
@@ -320,6 +691,32 @@ export function useDesktopCompanion() {
     });
 
     void onTtsState((event) => {
+      setLatencyTimeline((current) => {
+        if (!current || current.ttsRequestId !== event.requestId) {
+          return current;
+        }
+        const now = Date.now();
+        const nextProvider = event.provider?.trim() || null;
+        const nextFallback =
+          typeof event.fallback === "boolean" ? event.fallback : null;
+        if (event.speaking) {
+          return {
+            ...current,
+            ttsStartedAtMs: current.ttsStartedAtMs ?? now,
+            ttsProvider: nextProvider ?? current.ttsProvider,
+            ttsFallbackUsed: nextFallback ?? current.ttsFallbackUsed
+          };
+        }
+        return {
+          ...current,
+          ttsEndedAtMs:
+            typeof current.ttsStartedAtMs === "number" && !current.ttsEndedAtMs
+              ? now
+              : current.ttsEndedAtMs,
+          ttsProvider: nextProvider ?? current.ttsProvider,
+          ttsFallbackUsed: nextFallback ?? current.ttsFallbackUsed
+        };
+      });
       isTtsSpeakingRef.current = event.speaking;
       if (event.speaking) {
         setCompanionState("speaking");
@@ -341,7 +738,7 @@ export function useDesktopCompanion() {
       unlistenTts?.();
       void cleanupDesktopAvatarRuntime();
     };
-  }, [cleanupDesktopAvatarRuntime, sizePreset]);
+  }, [cleanupDesktopAvatarRuntime]);
 
   useEffect(() => {
     if (!activeDesktopAvatarRequestRef.current) {
@@ -373,9 +770,15 @@ export function useDesktopCompanion() {
     lastSpokenDesktopAvatarKeyRef.current = speakKey;
 
     if (ttsEnabled && activeRequest.avatarRequestId) {
-      void speakText(activeRequest.avatarRequestId, desktopAvatarState.talkText);
+      const requestedAtMs = Date.now();
+      patchLatencyByRequestKey(activeRequest.clientRequestId, (current) => ({
+        ...current,
+        ttsRequestId: activeRequest.avatarRequestId,
+        ttsRequestedAtMs: current.ttsRequestedAtMs ?? requestedAtMs
+      }));
+      void speakText(activeRequest.avatarRequestId, desktopAvatarState.talkText, selectedTtsVoice);
     }
-  }, [desktopAvatarState.talkText, ttsEnabled]);
+  }, [desktopAvatarState.talkText, patchLatencyByRequestKey, selectedTtsVoice, ttsEnabled]);
 
   useEffect(() => {
     if (!activeDesktopAvatarRequestRef.current || !desktopAvatarState.isDone) {
@@ -399,6 +802,7 @@ export function useDesktopCompanion() {
 
   async function handleLocalStreamEvent(event: StreamEnvelope) {
     activeLocalRequestIdRef.current = event.requestId;
+    markLocalStreamEvent(event);
 
     if (event.kind === "handoff_local") {
       const context = requestContextsRef.current.get(event.requestId);
@@ -406,7 +810,7 @@ export function useDesktopCompanion() {
         return;
       }
 
-      setStatus("Continuing locally…");
+      setStatus(t("status.continuingLocally"));
       void sendLocalChat({
         requestId: event.requestId,
         prompt: context.prompt,
@@ -430,6 +834,14 @@ export function useDesktopCompanion() {
 
     if (event.kind === "final") {
       const payload = event.payload as StreamFinalPayload;
+      const displayText =
+        sanitizeLocalAssistantText(payload.displayText) ||
+        sanitizeLocalAssistantText(payload.speechText) ||
+        LOCAL_CHAT_FALLBACK_RESPONSE;
+      const speechText =
+        sanitizeLocalAssistantText(payload.speechText) ||
+        sanitizeLocalAssistantText(payload.displayText) ||
+        displayText;
       requestContextsRef.current.delete(event.requestId);
       activeLocalRequestIdRef.current = null;
       setMessages((current) =>
@@ -437,7 +849,7 @@ export function useDesktopCompanion() {
           message.id === event.requestId
             ? {
                 ...message,
-                text: payload.displayText,
+                text: displayText,
                 isStreaming: false,
                 widget: null,
                 followUpQuestions: []
@@ -447,7 +859,12 @@ export function useDesktopCompanion() {
       );
       setStatus(null);
       if (ttsEnabled) {
-        await speakText(event.requestId, payload.speechText);
+        patchLatencyByRequestKey(event.requestId, (current) => ({
+          ...current,
+          ttsRequestId: event.requestId,
+          ttsRequestedAtMs: current.ttsRequestedAtMs ?? Date.now()
+        }));
+        await speakText(event.requestId, speechText, selectedTtsVoice);
       } else {
         setCompanionState("idle");
       }
@@ -498,6 +915,7 @@ export function useDesktopCompanion() {
     clientRequestId?: string
   ) {
     const requestId = clientRequestId ?? `desktop-avatar-client:${crypto.randomUUID()}`;
+    const startedAtMs = Date.now();
     const userMessage = buildUserMessage(prompt, source);
     const assistantMessage = buildAssistantPlaceholder(source, requestId);
     const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
@@ -505,7 +923,7 @@ export function useDesktopCompanion() {
     setMessages(nextMessages);
     setDraft("");
     setError(null);
-    setStatus("Sending request…");
+    setStatus(t("status.sendingRequest"));
     desktopAvatarDispatch({ type: "createRequested", clientRequestId: requestId });
     lastSubmissionRef.current = { prompt, source, route, clientRequestId: requestId };
     activeLocalRequestIdRef.current = null;
@@ -517,6 +935,22 @@ export function useDesktopCompanion() {
       source,
       route
     };
+    setLatencyTimeline({
+      requestKey: requestId,
+      requestKind: "desktop-avatar",
+      route,
+      source,
+      status: "creating",
+      startedAtMs,
+      startedAt: new Date(startedAtMs).toISOString(),
+      usedPolling: false,
+      ttsProvider: null,
+      ttsFallbackUsed: null,
+      lastError: null,
+      clientRequestId: requestId,
+      avatarRequestId: null,
+      ttsRequestId: null
+    });
 
     if (!isExpanded) {
       await toggleExpanded();
@@ -539,11 +973,22 @@ export function useDesktopCompanion() {
         }),
         avatarRequestId: result.avatarRequestId
       };
+      patchLatencyByRequestKey(requestId, (current) => ({
+        ...current,
+        status: result.status,
+        avatarRequestId: result.avatarRequestId,
+        createAcceptedAtMs: current.createAcceptedAtMs ?? Date.now()
+      }));
       desktopAvatarDispatch({ type: "createAccepted", result });
       await connectDesktopAvatarStream(result.avatarRequestId, result.streamUrl, result.pollUrl);
     } catch (caughtError) {
-      const message =
-        caughtError instanceof Error ? caughtError.message : "The request could not be started.";
+      const message = errorMessage(caughtError, t("status.requestCouldNotStart"));
+      patchLatencyByRequestKey(requestId, (current) => ({
+        ...current,
+        status: "FAILED",
+        failedAtMs: current.failedAtMs ?? Date.now(),
+        lastError: message
+      }));
       desktopAvatarDispatch({ type: "requestFailed", message });
     }
   }
@@ -563,6 +1008,7 @@ export function useDesktopCompanion() {
     setError(null);
 
     if (route === "localChat") {
+      const startedAtMs = Date.now();
       await stopSpeaking();
       await cleanupDesktopAvatarRuntime();
       const userMessage = buildUserMessage(prompt, source);
@@ -575,13 +1021,29 @@ export function useDesktopCompanion() {
       activeLocalRequestIdRef.current = assistantMessage.id;
       activeDesktopAvatarRequestRef.current = null;
       desktopAvatarDispatch({ type: "reset" });
+      setLatencyTimeline({
+        requestKey: assistantMessage.id,
+        requestKind: "local-chat",
+        route,
+        source,
+        status: "starting",
+        startedAtMs,
+        startedAt: new Date(startedAtMs).toISOString(),
+        usedPolling: false,
+        ttsProvider: null,
+        ttsFallbackUsed: null,
+        lastError: null,
+        clientRequestId: null,
+        avatarRequestId: null,
+        ttsRequestId: null
+      });
 
       if (!isExpanded) {
         await toggleExpanded();
       }
 
       setCompanionState("thinking");
-      setStatus("Thinking locally…");
+      setStatus(t("status.thinkingLocally"));
 
       try {
         const request: LocalChatRequest = {
@@ -591,8 +1053,13 @@ export function useDesktopCompanion() {
         };
         await sendLocalChat(request);
       } catch (caughtError) {
-        const message =
-          caughtError instanceof Error ? caughtError.message : "The request could not be started.";
+        const message = errorMessage(caughtError, t("status.requestCouldNotStart"));
+        patchLatencyByRequestKey(assistantMessage.id, (current) => ({
+          ...current,
+          status: "error",
+          failedAtMs: current.failedAtMs ?? Date.now(),
+          lastError: message
+        }));
         await handleLocalStreamEvent({
           requestId: assistantMessage.id,
           source: "local",
@@ -611,8 +1078,9 @@ export function useDesktopCompanion() {
     const presetSizes = getWindowSizesForPreset(sizePreset);
     const targetSize = nextExpanded ? presetSizes.expanded : presetSizes.collapsed;
     setIsExpanded(nextExpanded);
-    await toggleExpandedWindow(nextExpanded, targetSize.width, targetSize.height);
-    setWindowSize(targetSize);
+    // Keep current height until the layout pass measures content (avoids a tall preset flash).
+    await toggleExpandedWindow(nextExpanded, targetSize.width, windowSize.height);
+    setWindowSize({ width: targetSize.width, height: windowSize.height });
     if (nextExpanded) {
       await setClickThrough(false);
     }
@@ -628,8 +1096,8 @@ export function useDesktopCompanion() {
     storeSizePreset(preset);
 
     const targetSize = isExpanded ? presetSizes.expanded : presetSizes.collapsed;
-    await resizeWindow(targetSize.width, targetSize.height);
-    setWindowSize(targetSize);
+    await resizeWindow(targetSize.width, windowSize.height);
+    setWindowSize({ width: targetSize.width, height: windowSize.height });
   }
 
   async function retryLastPrompt() {
@@ -668,7 +1136,7 @@ export function useDesktopCompanion() {
           });
           const audioBase64 = await blobToBase64(blob);
           setCompanionState("transcribing");
-          setStatus("Transcribing…");
+          setStatus(t("status.transcribing"));
           const transcript = await transcribeAudio({
             audioBase64,
             mimeType: blob.type || "audio/webm"
@@ -683,7 +1151,7 @@ export function useDesktopCompanion() {
           const message =
             caughtError instanceof Error
               ? caughtError.message
-              : "Voice transcription failed.";
+              : t("status.voiceTranscriptionFailed");
           setError(message);
           setStatus(message);
           setCompanionState("error");
@@ -700,12 +1168,12 @@ export function useDesktopCompanion() {
       setError(null);
       setIsRecording(true);
       setCompanionState("listening");
-      setStatus("Listening…");
+      setStatus(t("status.listening"));
     } catch (caughtError) {
       const message =
         caughtError instanceof Error
           ? caughtError.message
-          : "Microphone access failed.";
+          : t("status.microphoneAccessFailed");
       setError(message);
       setStatus(message);
       setCompanionState("error");
@@ -730,6 +1198,10 @@ export function useDesktopCompanion() {
   }
 
   const canSend = useMemo(() => draft.trim().length > 0, [draft]);
+  const latencyDebug = useMemo(
+    () => (latencyTimeline ? toLatencySnapshot(latencyTimeline) : null),
+    [latencyTimeline]
+  );
 
   return {
     avatarManifest,
@@ -740,9 +1212,12 @@ export function useDesktopCompanion() {
     isExpanded,
     isRecording,
     messages,
+    latencyDebug,
+    selectedTtsVoice,
     status,
     sizePreset,
     ttsEnabled,
+    ttsVoices,
     windowSize,
     activeAnimation: activeDesktopAvatarRequestRef.current
       ? desktopAvatarState.animation
@@ -754,11 +1229,21 @@ export function useDesktopCompanion() {
     toggleExpanded,
     toggleRecording,
     retryLastPrompt,
+    selectTtsVoice: (voice: string | null) => {
+      const normalized = voice?.trim() ?? "";
+      const nextVoice = normalized.length > 0 ? normalized : null;
+      setSelectedTtsVoiceState(nextVoice);
+      storeTtsVoice(nextVoice);
+    },
     toggleTts: async () => {
       if (ttsEnabled) {
         await stopSpeaking();
       }
-      setTtsEnabled((current) => !current);
+      setTtsEnabled((current) => {
+        const next = !current;
+        storeTtsEnabled(next);
+        return next;
+      });
     },
     resizeWindow: async (width: number, height: number) => {
       await resizeWindow(width, height);

@@ -12,9 +12,9 @@ export interface AvatarCameraConfig {
 }
 
 export const DEFAULT_AVATAR_CAMERA_CONFIG: AvatarCameraConfig = {
-  position: { x: 0, y: 0.95, z: 4.0 },
-  target: { x: 0, y: 0.05, z: 0 },
-  fov: 30,
+  position: { x: 0, y: 0, z: 3 },
+  target: { x: 0, y: 0, z: 0 },
+  fov: 61,
   referenceHeight: 780
 };
 

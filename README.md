@@ -85,8 +85,8 @@ User input (text or voice)
 routePrompt(text)  ──→  keyword classifier
     │
     ├─ "localChat"       → LM Studio (local LLM, SSE streaming)
-    ├─ "backendBusiness"  → Communication Officer backend (SSE)
-    └─ "backendReview"    → Communication Officer backend (SSE)
+    ├─ "backendBusiness"  → Desktop Avatar backend API (create + SSE stream)
+    └─ "backendReview"    → Desktop Avatar backend API (same create + SSE flow)
     │
     ▼
 SSE stream events → Tauri emits to frontend
@@ -201,7 +201,12 @@ The macOS menu bar tray provides:
 
 ## Avatar Assets
 
-The app loads a VRM avatar and animation clips from a JSON manifest. Assets can be absolute file paths, manifest-relative paths, or HTTPS URLs.
+The app supports two avatar manifest styles:
+
+- **Legacy VRM flow** (`vrmUrl` + external animation files)
+- **Packed GLB flow** (`modelUrl` + clip-name mapping)
+
+Assets can be absolute file paths, manifest-relative paths, or HTTPS URLs.
 
 ```json
 {
@@ -218,9 +223,74 @@ The app loads a VRM avatar and animation clips from a JSON manifest. Assets can 
 }
 ```
 
-Supported formats: `.vrm` (avatar), `.vrma` (native VRM animation), `.fbx` (Mixamo — auto-mapped via bone table in `vrm-animation.ts`).
+Packed GLB example:
 
-A working sample is included at `public/sample-avatar-manifest.json` with a CC0 avatar and FBX clips in `public/sample-assets/`.
+```json
+{
+  "displayName": "Female Avatar 1",
+  "modelUrl": "./sample-assets/female_avatar_1_packed.glb",
+  "animationMapping": {
+    "idle": "idle",
+    "walking": "walking",
+    "working": "thinking",
+    "communicating": "communicating",
+    "coffee-break": "coffee-break",
+    "at-phone": "at-phone",
+    "teleport-out": "teleport-out",
+    "teleport-in": "teleport-in",
+    "talking": "talking"
+  }
+}
+```
+
+Runtime fallbacks:
+- `speaking` -> `talking` -> `communicating` -> `idle`
+- `thinking/transcribing` -> `thinking` -> `working` -> `idle`
+
+DevTools now show avatar runtime diagnostics:
+- active asset kind (`legacy-vrm` or `packed-glb`)
+- currently selected clip name
+- resolved runtime mapping (`state -> clip`)
+
+Supported formats:
+- Legacy: `.vrm` (avatar), `.vrma` or `.fbx` clips
+- Packed: `.glb` (mesh + rig + clips in one file)
+
+Samples:
+- `public/sample-avatar-manifest.json` (legacy)
+- `public/sample-avatar-packed-manifest.json` (packed template)
+
+### Avatar Build Pipeline (`semi|full`)
+
+Build one packed GLB from `mesh.glb + base.fbx + clips/*.fbx`:
+
+```bash
+pnpm --dir desktop-avatar avatar:validate \
+  --mode semi \
+  --clips-dir /abs/path/clips
+```
+
+CI/automation friendly output:
+
+```bash
+pnpm --dir desktop-avatar avatar:validate \
+  --mode semi \
+  --clips-dir /abs/path/clips \
+  --json
+```
+
+```bash
+pnpm --dir desktop-avatar avatar:build \
+  --mode semi \
+  --mesh-glb /abs/path/female_avatar_1.glb \
+  --base-fbx /abs/path/female_avatar_1_base.fbx \
+  --clips-dir /abs/path/clips \
+  --output-glb /abs/path/build/female_avatar_1.glb
+```
+
+Use `--mode full` for final export.  
+Optional in `full` mode: `--desktop-target` and `--studio-target` to copy the generated GLB to separate runtime paths.  
+Details: `tools/avatar-build/README.md`.
 
 ## Environment
 
@@ -228,8 +298,22 @@ A working sample is included at `public/sample-avatar-manifest.json` with a CC0 
 |----------|----------|---------|---------|
 | `COMM_OFFICER_BASE_URL` | For business queries | — | Backend API URL |
 | `COMM_OFFICER_TOKEN` | For business queries | — | Bearer token |
-| `OPENAI_API_KEY` | For voice input | — | Speech transcription |
+| `OPENAI_API_KEY` | For voice I/O | — | Speech transcription + OpenAI TTS |
 | `OPENAI_STT_MODEL` | No | `gpt-4o-mini-transcribe` | STT model |
+| `TTS_PROVIDER` | No | `auto` | TTS backend: `auto`, `local`, `fish`, `openai`, `system` |
+| `OPENAI_TTS_ENABLED` | No | `true` | Use OpenAI TTS (fallback to system `say` on error) |
+| `OPENAI_TTS_MODEL` | No | `gpt-4o-mini-tts` | OpenAI TTS model |
+| `OPENAI_TTS_VOICE` | No | `onyx` | Default OpenAI TTS voice |
+| `OPENAI_TTS_VOICES` | No | `OPENAI_TTS_VOICE` | Comma-separated voice options shown in DevTools |
+| `LOCAL_TTS_URL` | For local TTS provider | — | Local HTTP endpoint for TTS. Runtime first tries the exact URL, then fallback candidates (for base URLs also `/v1` and `/v1/audio/speech`). |
+| `LOCAL_TTS_API_KEY` | No | — | Optional bearer token for local TTS endpoint |
+| `LOCAL_TTS_MODEL` | No | `kokoro` | Local TTS model name sent to `LOCAL_TTS_URL` |
+| `LOCAL_TTS_VOICE` | No | `de_male` | Default local TTS voice |
+| `LOCAL_TTS_VOICES` | No | `LOCAL_TTS_VOICE` | Comma-separated local voices shown in DevTools |
+| `LOCAL_TTS_REQUEST_FORMAT` | No | `openai` | Request mapper preset: `openai` (`model`,`voice`,`input`) or `fish` (`text`,`speaker`,`model`) |
+| `LOCAL_TTS_REQUEST_TEMPLATE` | No | preset from `LOCAL_TTS_REQUEST_FORMAT` | Optional JSON template with placeholders `{{model}}`, `{{voice}}`, `{{input}}` for arbitrary TTS APIs |
+| `LOCAL_TTS_RESPONSE_BASE64_PATH` | No | auto-detect | Dot-path for JSON base64 audio payload (for non-binary TTS responses), e.g. `data.audio` |
+| `LOCAL_TTS_HEADERS` | No | `{}` | Optional JSON headers map for local TTS requests |
 | `ENABLE_TTS` | No | `true` | Text-to-speech toggle |
 | `AVATAR_ASSET_MANIFEST` | No | `public/sample-avatar-manifest.json` | Path to manifest JSON |
 | `LOCAL_LLM_BASE_URL` | No | `http://127.0.0.1:1234/v1` | LM Studio URL |
@@ -248,7 +332,7 @@ A working sample is included at `public/sample-avatar-manifest.json` with a CC0 
 ## Testing
 
 ```bash
-pnpm test          # 4 test suites
+pnpm test
 ```
 
 | Test file | Coverage |

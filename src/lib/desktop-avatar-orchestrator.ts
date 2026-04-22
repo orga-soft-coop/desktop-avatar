@@ -8,6 +8,7 @@ import type {
   DesktopAvatarStreamEvent,
   DesktopAvatarWidgetPayload
 } from "./contracts";
+import { t } from "./i18n";
 
 export interface DesktopAvatarOrchestratorState {
   clientRequestId: string | null;
@@ -57,8 +58,8 @@ export const desktopAvatarInitialState: DesktopAvatarOrchestratorState = {
 
 export function isDesktopAvatarTerminalStatus(
   status: DesktopAvatarRequestStatus | null | undefined
-): status is Extract<DesktopAvatarRequestStatus, "COMPLETED" | "FAILED" | "NEEDS_CLARIFICATION"> {
-  return status === "COMPLETED" || status === "FAILED" || status === "NEEDS_CLARIFICATION";
+): status is Extract<DesktopAvatarRequestStatus, "COMPLETED" | "FAILED"> {
+  return status === "COMPLETED" || status === "FAILED";
 }
 
 export function isDesktopAvatarThinkingStatus(
@@ -69,6 +70,17 @@ export function isDesktopAvatarThinkingStatus(
     status === "THINKING" ||
     status === "FETCHING_DATA" ||
     status === "FORMATTING_RESPONSE"
+  );
+}
+
+function isTerminalPollingSnapshot(document: DesktopAvatarRequestDocument): boolean {
+  if (isDesktopAvatarTerminalStatus(document.status)) {
+    return true;
+  }
+
+  return (
+    document.status === "NEEDS_CLARIFICATION" &&
+    (document.response?.widget?.type === "clarification" || !!document.response)
   );
 }
 
@@ -150,7 +162,7 @@ export function reduceDesktopAvatarState(
         ...desktopAvatarInitialState,
         clientRequestId: action.clientRequestId,
         phase: "creating",
-        statusMessage: "Sending request…",
+        statusMessage: t("status.sendingRequest"),
         companionState: "thinking",
         animation: "thinking"
       };
@@ -168,7 +180,7 @@ export function reduceDesktopAvatarState(
         isDone: false,
         animation,
         companionState: animationToCompanionState(animation, false),
-        statusMessage: "Waiting for live updates…"
+        statusMessage: t("status.waitingForUpdates")
       };
     }
 
@@ -182,7 +194,7 @@ export function reduceDesktopAvatarState(
           return {
             ...state,
             phase: "streaming",
-            statusMessage: state.statusMessage ?? "Connected. Processing request…",
+            statusMessage: state.statusMessage ?? t("status.connectedProcessing"),
             animation: "thinking",
             companionState: "thinking"
           };
@@ -191,17 +203,18 @@ export function reduceDesktopAvatarState(
           const animation = animationForStatus(action.event.status);
           const failed = action.event.status === "FAILED";
           const statusMessage = action.event.message ?? state.statusMessage;
+          const isTerminal = isDesktopAvatarTerminalStatus(action.event.status);
           return {
             ...state,
             status: action.event.status,
             statusMessage,
-            phase: isDesktopAvatarTerminalStatus(action.event.status)
+            phase: isTerminal
               ? failed
                 ? "failed"
                 : "completed"
               : "streaming",
-            error: failed ? statusMessage ?? "Request failed." : null,
-            isDone: isDesktopAvatarTerminalStatus(action.event.status),
+            error: failed ? statusMessage ?? t("status.requestFailed") : null,
+            isDone: isTerminal,
             animation,
             companionState: animationToCompanionState(animation, failed)
           };
@@ -265,13 +278,14 @@ export function reduceDesktopAvatarState(
       return {
         ...state,
         phase: "polling",
-        statusMessage: state.isDone ? state.statusMessage : "Reconnecting… using polling fallback."
+        statusMessage: state.isDone ? state.statusMessage : t("status.reconnectingPolling")
       };
 
     case "pollingSnapshot": {
       let nextState = applyResponse(state, action.document.response);
       const status = action.document.status;
       const failed = status === "FAILED";
+      const isTerminal = isTerminalPollingSnapshot(action.document);
       const animation = nextState.hasTalkEvent && status === "COMPLETED"
         ? "idle"
         : action.document.response?.talk?.text
@@ -285,9 +299,9 @@ export function reduceDesktopAvatarState(
         avatarRequestId: nextState.avatarRequestId ?? action.document.avatarRequestId,
         clientRequestId: nextState.clientRequestId ?? action.document.clientRequestId,
         status,
-        error: action.document.error ?? (failed ? nextState.error ?? "Request failed." : null),
-        isDone: isDesktopAvatarTerminalStatus(status),
-        phase: isDesktopAvatarTerminalStatus(status)
+        error: action.document.error ?? (failed ? nextState.error ?? t("status.requestFailed") : null),
+        isDone: isTerminal,
+        phase: isTerminal
           ? failed
             ? "failed"
             : "completed"
@@ -297,8 +311,8 @@ export function reduceDesktopAvatarState(
           ? "speaking"
           : animationToCompanionState(animation, failed),
         statusMessage: failed
-          ? action.document.error ?? nextState.statusMessage ?? "Request failed."
-          : isDesktopAvatarTerminalStatus(status)
+          ? action.document.error ?? nextState.statusMessage ?? t("status.requestFailed")
+          : isTerminal
             ? null
             : nextState.statusMessage
       };
@@ -313,7 +327,7 @@ export function reduceDesktopAvatarState(
       return {
         ...state,
         phase: "polling",
-        statusMessage: action.reason ?? "Stream disconnected. Switching to polling fallback."
+        statusMessage: action.reason ?? t("status.streamDisconnectedPolling")
       };
 
     case "requestFailed": {

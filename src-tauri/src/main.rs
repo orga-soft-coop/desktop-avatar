@@ -1,7 +1,6 @@
 use std::{
-    collections::HashMap,
-    env,
-    fs,
+    collections::{HashMap, HashSet},
+    env, fs,
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
@@ -14,33 +13,35 @@ use futures_util::StreamExt;
 use reqwest::{
     header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE},
     multipart::{Form, Part},
-    Client,
+    Client, Url,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{
     async_runtime,
+    image::Image,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, State,
     WebviewWindow,
 };
-use tokio::{process::Command, sync::Mutex, task::JoinHandle};
+use tokio::{process::Command, sync::Mutex};
 
 const CHAT_STREAM_EVENT: &str = "chat-stream-event";
 const DESKTOP_AVATAR_STREAM_EVENT: &str = "desktop-avatar-stream-event";
 const DESKTOP_AVATAR_STREAM_LIFECYCLE_EVENT: &str = "desktop-avatar-stream-lifecycle";
 const TTS_STATE_EVENT: &str = "tts-state";
 const COLLAPSED_WIDTH: f64 = 520.0;
-const COLLAPSED_HEIGHT: f64 = 780.0;
+const COLLAPSED_HEIGHT: f64 = 600.0;
 const EXPANDED_WIDTH: f64 = 720.0;
-const EXPANDED_HEIGHT: f64 = 920.0;
+const EXPANDED_HEIGHT: f64 = 700.0;
 
 #[derive(Clone)]
 struct AppState {
     client: Client,
     config: Arc<AppConfig>,
-    desktop_avatar_streams: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    desktop_avatar_streams: Arc<Mutex<HashMap<String, async_runtime::JoinHandle<()>>>>,
+    last_tts_text_by_request: Arc<Mutex<HashMap<String, String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +50,19 @@ struct AppConfig {
     comm_officer_token: Option<String>,
     openai_api_key: Option<String>,
     openai_stt_model: String,
+    tts_provider: TtsProviderMode,
+    openai_tts_enabled: bool,
+    openai_tts_model: String,
+    openai_tts_default_voice: String,
+    openai_tts_voices: Vec<String>,
+    local_tts_url: Option<String>,
+    local_tts_api_key: Option<String>,
+    local_tts_model: String,
+    local_tts_default_voice: String,
+    local_tts_voices: Vec<String>,
+    local_tts_request_template: Value,
+    local_tts_response_base64_path: Option<String>,
+    local_tts_headers: HashMap<String, String>,
     avatar_asset_manifest: Option<PathBuf>,
     log_file_path: PathBuf,
     enable_tts: bool,
@@ -63,7 +77,12 @@ struct AvatarManifest {
     display_name: Option<String>,
     license: Option<String>,
     thumbnail_url: Option<String>,
-    vrm_url: String,
+    #[serde(default)]
+    model_url: Option<String>,
+    #[serde(default)]
+    animation_mapping: Option<HashMap<String, String>>,
+    #[serde(default)]
+    vrm_url: Option<String>,
     #[serde(default, alias = "idleVrmaUrls")]
     idle_animation_urls: Vec<String>,
     #[serde(default, alias = "attentionVrmaUrl")]
@@ -128,15 +147,24 @@ struct BusinessChatRequest {
 #[serde(rename_all = "camelCase")]
 struct CreateDesktopAvatarRequestInput {
     client_request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     requested_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     modality: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     locale: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     timezone: Option<String>,
     utterance: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     response_modes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     target_studio_agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     iws_query_request: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     auto_start: Option<bool>,
 }
 
@@ -154,6 +182,7 @@ struct CreateDesktopAvatarRequestResult {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct DesktopAvatarRequestDocument {
+    #[serde(alias = "id")]
     avatar_request_id: String,
     client_request_id: String,
     requested_by: Option<String>,
@@ -190,6 +219,10 @@ struct SpeechTranscriptionRequest {
 struct TtsStateEvent {
     request_id: String,
     speaking: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -223,6 +256,21 @@ impl SseFrame {
 #[derive(Default, Debug)]
 struct SseParser {
     current: SseFrame,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TtsProviderMode {
+    Auto,
+    Local,
+    FishAudio,
+    OpenAI,
+    System,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TtsHttpRequestFormat {
+    OpenAiCompat,
+    FishAudio,
 }
 
 impl SseParser {
@@ -264,6 +312,134 @@ impl SseParser {
     }
 }
 
+impl TtsProviderMode {
+    fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "local" => Self::Local,
+            "fish" | "fishaudio" | "fish-audio" => Self::FishAudio,
+            "openai" => Self::OpenAI,
+            "system" | "say" => Self::System,
+            _ => Self::Auto,
+        }
+    }
+}
+
+fn tts_provider_name(provider: TtsProviderMode) -> &'static str {
+    match provider {
+        TtsProviderMode::Local => "local",
+        TtsProviderMode::FishAudio => "fish",
+        TtsProviderMode::OpenAI => "openai",
+        TtsProviderMode::System => "system",
+        TtsProviderMode::Auto => "auto",
+    }
+}
+
+fn ui_text(key: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(include_str!("../../src/locales/de/ui.json")) else {
+        return key.to_string();
+    };
+    let mut current = &value;
+    for segment in key.split('.') {
+        let Some(next) = current.get(segment) else {
+            return key.to_string();
+        };
+        current = next;
+    }
+    current.as_str().unwrap_or(key).to_string()
+}
+
+fn normalize_tts_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+fn local_tts_endpoint_candidates(raw_endpoint: &str) -> Vec<String> {
+    let trimmed = raw_endpoint.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let parsed = match Url::parse(trimmed) {
+        Ok(url) => url,
+        Err(_) => return vec![trimmed.to_string()],
+    };
+
+    let mut candidates = Vec::<String>::new();
+    candidates.push(parsed.to_string());
+
+    let normalized_path = parsed.path().trim_end_matches('/').to_string();
+    if normalized_path.is_empty() {
+        let mut v1 = parsed.clone();
+        v1.set_path("/v1");
+        candidates.push(v1.to_string());
+
+        let mut audio = parsed.clone();
+        audio.set_path("/v1/audio/speech");
+        candidates.push(audio.to_string());
+    } else if normalized_path == "/v1" {
+        let mut audio = parsed;
+        audio.set_path("/v1/audio/speech");
+        candidates.push(audio.to_string());
+    }
+
+    let mut seen = HashSet::<String>::new();
+    candidates.retain(|candidate| seen.insert(candidate.clone()));
+    candidates
+}
+
+fn top_level_json_keys(value: &Value) -> String {
+    value
+        .as_object()
+        .map(|object| {
+            let mut keys = object.keys().cloned().collect::<Vec<String>>();
+            keys.sort_unstable();
+            keys.join(",")
+        })
+        .filter(|keys| !keys.is_empty())
+        .unwrap_or_else(|| "<non-object>".to_string())
+}
+
+fn truncate_for_log(value: &str, max_len: usize) -> String {
+    if value.chars().count() <= max_len {
+        return value.to_string();
+    }
+
+    value.chars().take(max_len).collect::<String>() + "…"
+}
+
+fn should_skip_duplicate_tts_entry(
+    cache: &mut HashMap<String, String>,
+    request_id: &str,
+    normalized_text: &str,
+) -> bool {
+    if normalized_text.trim().is_empty() {
+        return false;
+    }
+
+    // Bound memory growth for long-running dev sessions.
+    if cache.len() > 512 {
+        cache.clear();
+    }
+
+    if cache
+        .get(request_id)
+        .is_some_and(|previous| previous == normalized_text)
+    {
+        return true;
+    }
+
+    cache.insert(request_id.to_string(), normalized_text.to_string());
+    false
+}
+
+impl TtsHttpRequestFormat {
+    fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "fish" | "fishaudio" | "fish-audio" | "fish_audio" => Self::FishAudio,
+            _ => Self::OpenAiCompat,
+        }
+    }
+}
+
 impl AppConfig {
     fn load() -> Self {
         let _ = dotenvy::dotenv();
@@ -282,11 +458,70 @@ impl AppConfig {
                 }
             })
             .filter(|path| path.exists())
-            .or(default_manifest.exists().then_some(default_manifest.clone()));
+            .or(default_manifest
+                .exists()
+                .then_some(default_manifest.clone()));
         let log_file_path = workspace_root.join("tmp").join("desktop-avatar.log");
 
         let _ = fs::create_dir_all(log_file_path.parent().unwrap_or_else(|| Path::new(".")));
         let _ = fs::write(&log_file_path, "");
+
+        let tts_provider = env::var("TTS_PROVIDER")
+            .map(|value| TtsProviderMode::parse(&value))
+            .unwrap_or(TtsProviderMode::Auto);
+
+        let openai_tts_default_voice =
+            env::var("OPENAI_TTS_VOICE").unwrap_or_else(|_| "onyx".to_string());
+        let mut openai_tts_voices = env::var("OPENAI_TTS_VOICES")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        if openai_tts_voices.is_empty() {
+            openai_tts_voices.push(openai_tts_default_voice.clone());
+        }
+
+        let local_tts_default_voice =
+            env::var("LOCAL_TTS_VOICE").unwrap_or_else(|_| "de_male".to_string());
+        let mut local_tts_voices = env::var("LOCAL_TTS_VOICES")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        if local_tts_voices.is_empty() {
+            local_tts_voices.push(local_tts_default_voice.clone());
+        }
+
+        let local_tts_url = env::var("LOCAL_TTS_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let local_tts_request_format = env::var("LOCAL_TTS_REQUEST_FORMAT")
+            .map(|value| TtsHttpRequestFormat::parse(&value))
+            .unwrap_or(TtsHttpRequestFormat::OpenAiCompat);
+        let local_tts_request_template = env::var("LOCAL_TTS_REQUEST_TEMPLATE")
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(raw.trim()).ok())
+            .filter(Value::is_object)
+            .unwrap_or_else(|| default_local_tts_request_template(local_tts_request_format));
+        let local_tts_response_base64_path = env::var("LOCAL_TTS_RESPONSE_BASE64_PATH")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let local_tts_headers = env::var("LOCAL_TTS_HEADERS")
+            .ok()
+            .and_then(|raw| serde_json::from_str::<HashMap<String, String>>(raw.trim()).ok())
+            .unwrap_or_default();
 
         Self {
             comm_officer_base_url: env::var("COMM_OFFICER_BASE_URL").ok(),
@@ -294,6 +529,22 @@ impl AppConfig {
             openai_api_key: env::var("OPENAI_API_KEY").ok(),
             openai_stt_model: env::var("OPENAI_STT_MODEL")
                 .unwrap_or_else(|_| "gpt-4o-mini-transcribe".to_string()),
+            tts_provider,
+            openai_tts_enabled: env::var("OPENAI_TTS_ENABLED")
+                .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+                .unwrap_or(true),
+            openai_tts_model: env::var("OPENAI_TTS_MODEL")
+                .unwrap_or_else(|_| "gpt-4o-mini-tts".to_string()),
+            openai_tts_default_voice,
+            openai_tts_voices,
+            local_tts_url,
+            local_tts_api_key: env::var("LOCAL_TTS_API_KEY").ok(),
+            local_tts_model: env::var("LOCAL_TTS_MODEL").unwrap_or_else(|_| "kokoro".to_string()),
+            local_tts_default_voice,
+            local_tts_voices,
+            local_tts_request_template,
+            local_tts_response_base64_path,
+            local_tts_headers,
             avatar_asset_manifest,
             log_file_path,
             enable_tts: env::var("ENABLE_TTS")
@@ -306,6 +557,140 @@ impl AppConfig {
             local_llm_api_key: env::var("LOCAL_LLM_API_KEY").ok(),
         }
     }
+
+    fn openai_tts_available(&self) -> bool {
+        self.openai_tts_enabled
+            && self
+                .openai_api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_some()
+    }
+
+    fn local_tts_available(&self) -> bool {
+        self.local_tts_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+    }
+
+    fn fish_tts_available(&self) -> bool {
+        self.local_tts_available()
+    }
+}
+
+fn default_local_tts_request_template(format: TtsHttpRequestFormat) -> Value {
+    match format {
+        TtsHttpRequestFormat::OpenAiCompat => json!({
+            "model": "{{model}}",
+            "voice": "{{voice}}",
+            "input": "{{input}}"
+        }),
+        TtsHttpRequestFormat::FishAudio => json!({
+            "text": "{{input}}",
+            "speaker": "{{voice}}",
+            "model": "{{model}}"
+        }),
+    }
+}
+
+fn render_tts_request_template(template: &Value, input: &str, voice: &str, model: &str) -> Value {
+    match template {
+        Value::String(raw) => Value::String(
+            raw.replace("{{input}}", input)
+                .replace("{{voice}}", voice)
+                .replace("{{model}}", model),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|value| render_tts_request_template(value, input, voice, model))
+                .collect(),
+        ),
+        Value::Object(map) => {
+            let mut next = serde_json::Map::with_capacity(map.len());
+            for (key, value) in map {
+                next.insert(
+                    key.clone(),
+                    render_tts_request_template(value, input, voice, model),
+                );
+            }
+            Value::Object(next)
+        }
+        _ => template.clone(),
+    }
+}
+
+fn lookup_json_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path
+        .split('.')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+    {
+        if let Ok(index) = segment.parse::<usize>() {
+            current = current.as_array()?.get(index)?;
+            continue;
+        }
+        current = current.as_object()?.get(segment)?;
+    }
+    Some(current)
+}
+
+fn decode_json_tts_audio(
+    body: &[u8],
+    provider_name: &str,
+    response_base64_path: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let value = serde_json::from_slice::<Value>(body).map_err(|error| {
+        format!("{provider_name} TTS returned JSON payload that could not be parsed: {error}")
+    })?;
+
+    let mut paths: Vec<String> = Vec::new();
+    if let Some(path) = response_base64_path {
+        paths.push(path.to_string());
+    }
+    paths.extend(
+        [
+            "audio",
+            "audio_base64",
+            "data",
+            "data.audio",
+            "output.audio",
+            "result.audio",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+
+    for path in paths {
+        let raw = match lookup_json_path(&value, &path) {
+            Some(Value::String(raw)) => raw.trim(),
+            _ => continue,
+        };
+        if raw.is_empty() {
+            continue;
+        }
+        let encoded = raw
+            .split_once(',')
+            .map(|(_, suffix)| suffix)
+            .unwrap_or(raw)
+            .trim();
+        if encoded.is_empty() {
+            continue;
+        }
+        if let Ok(decoded) = BASE64.decode(encoded.as_bytes()) {
+            if !decoded.is_empty() {
+                return Ok(decoded);
+            }
+        }
+    }
+
+    Err(format!(
+        "{provider_name} TTS returned JSON but no decodable base64 audio payload was found. Configure LOCAL_TTS_RESPONSE_BASE64_PATH when required.",
+    ))
 }
 
 #[tauri::command]
@@ -334,8 +719,12 @@ async fn load_bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapSta
             append_log(
                 &state.config.log_file_path,
                 format!(
-                    "bootstrap: resolved vrm = {}, idle clips = {}",
-                    manifest.vrm_url,
+                    "bootstrap: resolved model = {} vrm = {} idle clips = {}",
+                    manifest
+                        .model_url
+                        .as_deref()
+                        .unwrap_or("<none>"),
+                    manifest.vrm_url.as_deref().unwrap_or("<none>"),
                     manifest.idle_animation_urls.join(", ")
                 ),
             );
@@ -349,7 +738,10 @@ async fn load_bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapSta
             None
         }
         None => {
-            append_log(&state.config.log_file_path, "bootstrap: no avatar manifest configured");
+            append_log(
+                &state.config.log_file_path,
+                "bootstrap: no avatar manifest configured",
+            );
             None
         }
     };
@@ -464,7 +856,10 @@ fn with_auth(request: reqwest::RequestBuilder, token: &str) -> reqwest::RequestB
     request.header(AUTHORIZATION, format!("Bearer {token}"))
 }
 
-fn normalize_desktop_avatar_result_urls(base_url: &str, result: &mut CreateDesktopAvatarRequestResult) {
+fn normalize_desktop_avatar_result_urls(
+    base_url: &str,
+    result: &mut CreateDesktopAvatarRequestResult,
+) {
     result.stream_url = absolute_comm_officer_url(base_url, &result.stream_url);
     result.poll_url = absolute_comm_officer_url(base_url, &result.poll_url);
 }
@@ -491,7 +886,10 @@ async fn desktop_avatar_request_create(
 
     if !response.status().is_success() {
         let status = response.status();
-        let text = response.text().await.unwrap_or_else(|_| "Unknown error".into());
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
         return Err(format!("Desktop Avatar create returned {status}: {text}"));
     }
 
@@ -517,7 +915,9 @@ async fn desktop_avatar_request_get(
             &format!("/v1/desktop-avatar/requests/{request_id}"),
         ),
         (None, None) => {
-            return Err("desktop_avatar_request_get requires avatarRequestId or pollUrl.".to_string())
+            return Err(
+                "desktop_avatar_request_get requires avatarRequestId or pollUrl.".to_string(),
+            )
         }
     };
 
@@ -528,7 +928,10 @@ async fn desktop_avatar_request_get(
 
     if !response.status().is_success() {
         let status = response.status();
-        let text = response.text().await.unwrap_or_else(|_| "Unknown error".into());
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
         return Err(format!("Desktop Avatar poll returned {status}: {text}"));
     }
 
@@ -697,7 +1100,8 @@ async fn chat_send_business(
         match response {
             Ok(response) => {
                 if let Err(error) =
-                    process_business_stream(window.clone(), request.request_id.clone(), response).await
+                    process_business_stream(window.clone(), request.request_id.clone(), response)
+                        .await
                 {
                     let _ = emit_stream_event(
                         &window,
@@ -845,31 +1249,642 @@ async fn speech_transcribe(
 }
 
 #[tauri::command]
-async fn tts_speak(window: WebviewWindow, request_id: String, text: String) -> Result<(), String> {
+async fn tts_list_voices(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let build_voice_list = |values: &[String]| {
+        let mut voices = values.to_vec();
+        voices.sort_unstable();
+        voices.dedup();
+        voices
+    };
+
+    match state.config.tts_provider {
+        TtsProviderMode::Local => {
+            if !state.config.local_tts_available() {
+                return Err(
+                    "LOCAL_TTS_URL is missing while TTS_PROVIDER=local is configured.".to_string(),
+                );
+            }
+            Ok(build_voice_list(&state.config.local_tts_voices))
+        }
+        TtsProviderMode::FishAudio => {
+            if !state.config.fish_tts_available() {
+                return Err(
+                    "LOCAL_TTS_URL is missing while TTS_PROVIDER=fish is configured.".to_string(),
+                );
+            }
+            Ok(build_voice_list(&state.config.local_tts_voices))
+        }
+        TtsProviderMode::OpenAI => {
+            if !state.config.openai_tts_available() {
+                return Err(
+                    "OPENAI_API_KEY is missing or OPENAI_TTS_ENABLED=false while TTS_PROVIDER=openai is configured."
+                        .to_string(),
+                );
+            }
+            Ok(build_voice_list(&state.config.openai_tts_voices))
+        }
+        TtsProviderMode::System => list_system_tts_voices().await,
+        TtsProviderMode::Auto => {
+            if state.config.local_tts_available() {
+                return Ok(build_voice_list(&state.config.local_tts_voices));
+            }
+            if state.config.openai_tts_available() {
+                return Ok(build_voice_list(&state.config.openai_tts_voices));
+            }
+            list_system_tts_voices().await
+        }
+    }
+}
+
+#[tauri::command]
+async fn tts_speak(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    request_id: String,
+    text: String,
+    voice: Option<String>,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let mut child = Command::new("say")
-            .arg("-r")
-            .arg("185")
-            .arg(text)
-            .spawn()
-            .map_err(|error| error.to_string())?;
+        let normalized_text = normalize_tts_text(&text);
+        let should_skip = {
+            let mut cache = state.last_tts_text_by_request.lock().await;
+            should_skip_duplicate_tts_entry(&mut cache, &request_id, &normalized_text)
+        };
+        if should_skip {
+            append_log(
+                &state.config.log_file_path,
+                format!(
+                    "tts: duplicate suppressed (requestId={request_id}, text={normalized_text})"
+                ),
+            );
+            return Ok(());
+        }
 
-        emit_tts_state(&window, &request_id, true)?;
-        let window_clone = window.clone();
-        async_runtime::spawn(async move {
-            let _ = child.wait().await;
-            let _ = emit_tts_state(&window_clone, &request_id, false);
-        });
-        Ok(())
+        let selected_voice = voice
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let provider_chain = match state.config.tts_provider {
+            TtsProviderMode::Local => vec![TtsProviderMode::Local, TtsProviderMode::System],
+            TtsProviderMode::FishAudio => {
+                vec![TtsProviderMode::FishAudio, TtsProviderMode::System]
+            }
+            TtsProviderMode::OpenAI => vec![TtsProviderMode::OpenAI, TtsProviderMode::System],
+            TtsProviderMode::System => vec![TtsProviderMode::System],
+            TtsProviderMode::Auto => {
+                let mut values = Vec::new();
+                if state.config.local_tts_available() {
+                    values.push(TtsProviderMode::Local);
+                }
+                if state.config.openai_tts_available() {
+                    values.push(TtsProviderMode::OpenAI);
+                }
+                values.push(TtsProviderMode::System);
+                values
+            }
+        };
+
+        let mut last_error: Option<String> = None;
+        for (provider_index, provider) in provider_chain.into_iter().enumerate() {
+            let is_fallback = provider_index > 0;
+            let provider_name = tts_provider_name(provider);
+            let result = match provider {
+                TtsProviderMode::Local => {
+                    speak_local_tts(
+                        state.inner(),
+                        &window,
+                        &request_id,
+                        &text,
+                        selected_voice.as_deref(),
+                        is_fallback,
+                    )
+                    .await
+                }
+                TtsProviderMode::FishAudio => {
+                    speak_fish_tts(
+                        state.inner(),
+                        &window,
+                        &request_id,
+                        &text,
+                        selected_voice.as_deref(),
+                        is_fallback,
+                    )
+                    .await
+                }
+                TtsProviderMode::OpenAI => {
+                    speak_openai_tts(
+                        state.inner(),
+                        &window,
+                        &request_id,
+                        &text,
+                        selected_voice.as_deref(),
+                        is_fallback,
+                    )
+                    .await
+                }
+                TtsProviderMode::System => {
+                    // Only apply a selected voice for explicit system mode; in fallback mode,
+                    // let macOS choose a valid default voice.
+                    let system_voice = if state.config.tts_provider == TtsProviderMode::System {
+                        selected_voice.as_deref()
+                    } else {
+                        None
+                    };
+                    speak_system_tts(
+                        &window,
+                        &request_id,
+                        &text,
+                        system_voice,
+                        provider_name,
+                        is_fallback,
+                    )
+                    .await
+                }
+                TtsProviderMode::Auto => unreachable!(),
+            };
+
+            if result.is_ok() {
+                append_log(
+                    &state.config.log_file_path,
+                    format!(
+                        "tts: provider={provider_name} selected (requestId={request_id}, fallback={is_fallback})"
+                    ),
+                );
+                return Ok(());
+            }
+
+            let message = result
+                .err()
+                .unwrap_or_else(|| "Unknown TTS provider error.".to_string());
+            append_log(
+                &state.config.log_file_path,
+                format!(
+                    "tts: provider={provider:?} failed (requestId={request_id}), error={message}"
+                ),
+            );
+            last_error = Some(message);
+        }
+
+        Err(last_error.unwrap_or_else(|| "No TTS provider available.".to_string()))
     }
 
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = state;
         let _ = text;
-        emit_tts_state(&window, &request_id, false)?;
+        let _ = voice;
+        emit_tts_state(&window, &request_id, false, None, None)?;
         Ok(())
     }
+}
+
+#[cfg(target_os = "macos")]
+async fn list_system_tts_voices() -> Result<Vec<String>, String> {
+    let output = Command::new("say")
+        .arg("-v")
+        .arg("?")
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Failed to list TTS voices (exit {}): {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
+    let mut voices: Vec<String> = stdout
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            trimmed.split_whitespace().next().map(str::to_string)
+        })
+        .collect();
+    voices.sort_unstable();
+    voices.dedup();
+    Ok(voices)
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn list_system_tts_voices() -> Result<Vec<String>, String> {
+    Ok(Vec::new())
+}
+
+#[cfg(target_os = "macos")]
+async fn speak_system_tts(
+    window: &WebviewWindow,
+    request_id: &str,
+    text: &str,
+    voice: Option<&str>,
+    provider_name: &str,
+    fallback_used: bool,
+) -> Result<(), String> {
+    let mut command = Command::new("say");
+    if let Some(selected_voice) = voice {
+        command.arg("-v").arg(selected_voice);
+    }
+
+    let mut child = command
+        .arg("-r")
+        .arg("185")
+        .arg(text)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+
+    emit_tts_state(
+        window,
+        request_id,
+        true,
+        Some(provider_name),
+        Some(fallback_used),
+    )?;
+    let window_clone = window.clone();
+    let request_id = request_id.to_string();
+    let provider_name = provider_name.to_string();
+    async_runtime::spawn(async move {
+        let _ = child.wait().await;
+        let _ = emit_tts_state(
+            &window_clone,
+            &request_id,
+            false,
+            Some(provider_name.as_str()),
+            Some(fallback_used),
+        );
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn speak_local_tts(
+    state: &AppState,
+    window: &WebviewWindow,
+    request_id: &str,
+    text: &str,
+    voice: Option<&str>,
+    fallback_used: bool,
+) -> Result<(), String> {
+    let raw_endpoint = state
+        .config
+        .local_tts_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "LOCAL_TTS_URL is missing.".to_string())?;
+
+    let endpoints = local_tts_endpoint_candidates(raw_endpoint);
+    if endpoints.is_empty() {
+        return Err("LOCAL_TTS_URL resolved to no usable endpoint.".to_string());
+    }
+
+    let mut last_error: Option<String> = None;
+    for endpoint in endpoints {
+        append_log(
+            &state.config.log_file_path,
+            format!("tts: provider=local attempt requestId={request_id}, endpoint={endpoint}"),
+        );
+        match speak_http_tts(
+            state,
+            window,
+            request_id,
+            text,
+            voice,
+            endpoint.as_str(),
+            state.config.local_tts_api_key.as_deref(),
+            state.config.local_tts_model.as_str(),
+            state.config.local_tts_default_voice.as_str(),
+            &state.config.local_tts_request_template,
+            state.config.local_tts_response_base64_path.as_deref(),
+            Some(&state.config.local_tts_headers),
+            "local",
+            fallback_used,
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                append_log(
+                    &state.config.log_file_path,
+                    format!(
+                        "tts: provider=local endpoint failed requestId={request_id}, endpoint={endpoint}, error={}",
+                        truncate_for_log(&error, 240)
+                    ),
+                );
+                last_error = Some(error);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "local TTS failed for all endpoint candidates.".to_string()))
+}
+
+#[cfg(target_os = "macos")]
+async fn speak_fish_tts(
+    state: &AppState,
+    window: &WebviewWindow,
+    request_id: &str,
+    text: &str,
+    voice: Option<&str>,
+    fallback_used: bool,
+) -> Result<(), String> {
+    let raw_endpoint = state
+        .config
+        .local_tts_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "LOCAL_TTS_URL is missing.".to_string())?;
+
+    let endpoints = local_tts_endpoint_candidates(raw_endpoint);
+    if endpoints.is_empty() {
+        return Err("LOCAL_TTS_URL resolved to no usable endpoint.".to_string());
+    }
+
+    let mut last_error: Option<String> = None;
+    for endpoint in endpoints {
+        append_log(
+            &state.config.log_file_path,
+            format!("tts: provider=fish attempt requestId={request_id}, endpoint={endpoint}"),
+        );
+        match speak_http_tts(
+            state,
+            window,
+            request_id,
+            text,
+            voice,
+            endpoint.as_str(),
+            state.config.local_tts_api_key.as_deref(),
+            state.config.local_tts_model.as_str(),
+            state.config.local_tts_default_voice.as_str(),
+            &state.config.local_tts_request_template,
+            state.config.local_tts_response_base64_path.as_deref(),
+            Some(&state.config.local_tts_headers),
+            "fish",
+            fallback_used,
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                append_log(
+                    &state.config.log_file_path,
+                    format!(
+                        "tts: provider=fish endpoint failed requestId={request_id}, endpoint={endpoint}, error={}",
+                        truncate_for_log(&error, 240)
+                    ),
+                );
+                last_error = Some(error);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "fish TTS failed for all endpoint candidates.".to_string()))
+}
+
+#[cfg(target_os = "macos")]
+async fn speak_openai_tts(
+    state: &AppState,
+    window: &WebviewWindow,
+    request_id: &str,
+    text: &str,
+    voice: Option<&str>,
+    fallback_used: bool,
+) -> Result<(), String> {
+    let api_key = state
+        .config
+        .openai_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "OPENAI_API_KEY is missing.".to_string())?;
+
+    let openai_request_template =
+        default_local_tts_request_template(TtsHttpRequestFormat::OpenAiCompat);
+
+    speak_http_tts(
+        state,
+        window,
+        request_id,
+        text,
+        voice,
+        "https://api.openai.com/v1/audio/speech",
+        Some(api_key),
+        state.config.openai_tts_model.as_str(),
+        state.config.openai_tts_default_voice.as_str(),
+        &openai_request_template,
+        None,
+        None,
+        "openai",
+        fallback_used,
+    )
+    .await
+}
+
+#[cfg(target_os = "macos")]
+async fn speak_http_tts(
+    state: &AppState,
+    window: &WebviewWindow,
+    request_id: &str,
+    text: &str,
+    voice: Option<&str>,
+    endpoint: &str,
+    api_key: Option<&str>,
+    model: &str,
+    default_voice: &str,
+    request_template: &Value,
+    response_base64_path: Option<&str>,
+    extra_headers: Option<&HashMap<String, String>>,
+    provider_name: &str,
+    fallback_used: bool,
+) -> Result<(), String> {
+    let selected_voice = voice
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default_voice);
+
+    let mut request = state
+        .client
+        .post(endpoint)
+        .header(CONTENT_TYPE, "application/json");
+    if let Some(bearer) = api_key.map(str::trim).filter(|value| !value.is_empty()) {
+        request = request.header(AUTHORIZATION, format!("Bearer {bearer}"));
+    }
+    if let Some(headers) = extra_headers {
+        for (name, value) in headers {
+            let normalized_name = name.trim();
+            let normalized_value = value.trim();
+            if normalized_name.is_empty() || normalized_value.is_empty() {
+                continue;
+            }
+            request = request.header(normalized_name, normalized_value);
+        }
+    }
+    let payload = render_tts_request_template(request_template, text, selected_voice, model);
+    append_log(
+        &state.config.log_file_path,
+        format!(
+            "tts:http start provider={provider_name} requestId={request_id} fallback={fallback_used} endpoint={endpoint} model={model} voice={selected_voice} chars={} payloadKeys={}",
+            text.chars().count(),
+            top_level_json_keys(&payload),
+        ),
+    );
+    let response = request
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| {
+            let message = error.to_string();
+            append_log(
+                &state.config.log_file_path,
+                format!(
+                    "tts:http transport-error provider={provider_name} requestId={request_id} endpoint={endpoint} error={}",
+                    truncate_for_log(&message, 320)
+                ),
+            );
+            message
+        })?;
+
+    let status = response.status();
+    let response_content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| error.to_string())?
+        .to_vec();
+    append_log(
+        &state.config.log_file_path,
+        format!(
+            "tts:http response provider={provider_name} requestId={request_id} endpoint={endpoint} status={} contentType={} bytes={}",
+            status.as_u16(),
+            response_content_type
+                .as_deref()
+                .unwrap_or("<none>"),
+            body.len()
+        ),
+    );
+
+    if !status.is_success() {
+        let raw_preview = truncate_for_log(String::from_utf8_lossy(&body).trim(), 320);
+        append_log(
+            &state.config.log_file_path,
+            format!(
+                "tts:http non-success provider={provider_name} requestId={request_id} endpoint={endpoint} status={} body={}",
+                status.as_u16(),
+                raw_preview
+            ),
+        );
+        let message = serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                let raw = String::from_utf8_lossy(&body);
+                let raw = raw.trim();
+                if raw.is_empty() {
+                    format!("{provider_name} TTS request failed with status {status}.")
+                } else {
+                    format!("{provider_name} TTS request failed with status {status}: {raw}")
+                }
+            });
+        return Err(message);
+    }
+
+    let looks_like_json = body
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .map(|byte| byte == b'{' || byte == b'[')
+        .unwrap_or(false);
+    let is_json_content_type = response_content_type
+        .as_deref()
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .map(|value| value == "application/json" || value.ends_with("+json"))
+        .unwrap_or(false);
+
+    let bytes = if is_json_content_type || looks_like_json {
+        decode_json_tts_audio(&body, provider_name, response_base64_path)?
+    } else {
+        body
+    };
+    if bytes.is_empty() {
+        return Err(format!(
+            "{provider_name} TTS returned an empty audio payload."
+        ));
+    }
+
+    let extension = if is_json_content_type || looks_like_json {
+        "mp3"
+    } else {
+        audio_file_extension_from_content_type(response_content_type.as_deref())
+    };
+    let request_id_safe: String = request_id
+        .chars()
+        .map(|char| {
+            if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
+                char
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let temp_path = env::temp_dir().join(format!(
+        "desktop-avatar-tts-{provider_name}-{request_id_safe}-{timestamp}.{extension}"
+    ));
+    fs::write(&temp_path, &bytes).map_err(|error| error.to_string())?;
+
+    let mut child = Command::new("afplay")
+        .arg(&temp_path)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+
+    emit_tts_state(
+        window,
+        request_id,
+        true,
+        Some(provider_name),
+        Some(fallback_used),
+    )?;
+    let window_clone = window.clone();
+    let request_id = request_id.to_string();
+    let provider_name = provider_name.to_string();
+    async_runtime::spawn(async move {
+        let _ = child.wait().await;
+        let _ = fs::remove_file(&temp_path);
+        let _ = emit_tts_state(
+            &window_clone,
+            &request_id,
+            false,
+            Some(provider_name.as_str()),
+            Some(fallback_used),
+        );
+    });
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -877,9 +1892,10 @@ async fn tts_stop(window: WebviewWindow) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let _ = Command::new("killall").arg("say").spawn();
+        let _ = Command::new("killall").arg("afplay").spawn();
     }
 
-    emit_tts_state(&window, "global", false)
+    emit_tts_state(&window, "global", false, None, None)
 }
 
 fn resize_window_internal(window: &WebviewWindow, width: f64, height: f64) -> Result<(), String> {
@@ -920,7 +1936,10 @@ async fn process_business_stream(
 ) -> Result<(), String> {
     let status = response.status();
     if !status.is_success() {
-        let text = response.text().await.unwrap_or_else(|_| "Unknown error".into());
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
         return Err(format!("Communication Officer returned {status}: {text}"));
     }
 
@@ -991,7 +2010,10 @@ async fn process_desktop_avatar_stream(
 ) -> Result<(), String> {
     let status = response.status();
     if !status.is_success() {
-        let text = response.text().await.unwrap_or_else(|_| "Unknown error".into());
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
         return Err(format!("Desktop Avatar stream returned {status}: {text}"));
     }
 
@@ -1012,8 +2034,8 @@ async fn process_desktop_avatar_stream(
             }
             pending.replace_range(..=index, "");
             if let Some(frame) = parser.push_line(line.as_str()) {
-                let payload: Value =
-                    serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
+                let payload: Value = serde_json::from_str(frame.data().as_str())
+                    .map_err(|error| error.to_string())?;
                 emit_desktop_avatar_stream_event(&window, payload)?;
             }
         }
@@ -1049,7 +2071,10 @@ async fn process_local_stream(
 ) -> Result<(), String> {
     let status = response.status();
     if !status.is_success() {
-        let text = response.text().await.unwrap_or_else(|_| "Unknown error".into());
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
         return Err(format!("LM Studio returned {status}: {text}"));
     }
 
@@ -1186,13 +2211,21 @@ fn emit_desktop_avatar_stream_lifecycle(
         .map_err(|error| error.to_string())
 }
 
-fn emit_tts_state(window: &WebviewWindow, request_id: &str, speaking: bool) -> Result<(), String> {
+fn emit_tts_state(
+    window: &WebviewWindow,
+    request_id: &str,
+    speaking: bool,
+    provider: Option<&str>,
+    fallback: Option<bool>,
+) -> Result<(), String> {
     window
         .emit(
             TTS_STATE_EVENT,
             TtsStateEvent {
                 request_id: request_id.to_string(),
                 speaking,
+                provider: provider.map(str::to_string),
+                fallback,
             },
         )
         .map_err(|error| error.to_string())
@@ -1229,7 +2262,14 @@ fn resolve_manifest_asset_path(path: &str, base_dir: &Path) -> String {
 }
 
 fn resolve_avatar_manifest_paths(manifest: &mut AvatarManifest, base_dir: &Path) {
-    manifest.vrm_url = resolve_manifest_asset_path(&manifest.vrm_url, base_dir);
+    manifest.model_url = manifest
+        .model_url
+        .as_ref()
+        .map(|path| resolve_manifest_asset_path(path, base_dir));
+    manifest.vrm_url = manifest
+        .vrm_url
+        .as_ref()
+        .map(|path| resolve_manifest_asset_path(path, base_dir));
     manifest.idle_animation_urls = manifest
         .idle_animation_urls
         .iter()
@@ -1259,7 +2299,9 @@ async fn load_remote_avatar_asset(path: String) -> Result<AssetPayload, String> 
         .send()
         .await
         .map_err(|error| error.to_string())?;
-    let response = response.error_for_status().map_err(|error| error.to_string())?;
+    let response = response
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
     let mime_type = response
         .headers()
         .get(CONTENT_TYPE)
@@ -1298,6 +2340,23 @@ fn mime_extension(mime: &str) -> &'static str {
     }
 }
 
+fn audio_file_extension_from_content_type(content_type: Option<&str>) -> &'static str {
+    let normalized = content_type
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+
+    match normalized.as_str() {
+        "audio/wav" | "audio/x-wav" => "wav",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/ogg" => "ogg",
+        "audio/flac" => "flac",
+        "audio/aac" => "aac",
+        _ => "mp3",
+    }
+}
+
 fn current_language() -> String {
     env::var("LANG")
         .ok()
@@ -1313,7 +2372,28 @@ pub fn run() {
         client: Client::new(),
         config: Arc::new(AppConfig::load()),
         desktop_avatar_streams: Arc::new(Mutex::new(HashMap::new())),
+        last_tts_text_by_request: Arc::new(Mutex::new(HashMap::new())),
     };
+    let provider_label = tts_provider_name(state.config.tts_provider);
+    let local_tts_url = state
+        .config
+        .local_tts_url
+        .as_deref()
+        .unwrap_or("<none>");
+    append_log(
+        &state.config.log_file_path,
+        format!(
+            "tts: config provider={provider_label} localUrl={local_tts_url} localModel={} openaiEnabled={} localTemplateKeys={} localResponsePath={}",
+            state.config.local_tts_model,
+            state.config.openai_tts_available(),
+            top_level_json_keys(&state.config.local_tts_request_template),
+            state
+                .config
+                .local_tts_response_base64_path
+                .as_deref()
+                .unwrap_or("<auto>")
+        ),
+    );
 
     tauri::Builder::default()
         .manage(state)
@@ -1332,6 +2412,7 @@ pub fn run() {
             chat_send_business,
             chat_send_local,
             speech_transcribe,
+            tts_list_voices,
             tts_speak,
             tts_stop
         ])
@@ -1341,34 +2422,38 @@ pub fn run() {
             let _ = window.set_position(Position::Logical(LogicalPosition::new(64.0, 280.0)));
 
             // --- System tray ---
-            let show_hide =
-                MenuItemBuilder::with_id("show_hide", "Show / Hide").build(app)?;
+            let show_hide_label = ui_text("tray.showHide");
+            let show_hide = MenuItemBuilder::with_id("show_hide", &show_hide_label).build(app)?;
 
             // Size submenu
-            let size_collapsed =
-                MenuItemBuilder::with_id("size_collapsed", "Collapsed (520 x 780)").build(app)?;
+            let size_collapsed_label = ui_text("tray.sizeCollapsed");
+            let size_collapsed = MenuItemBuilder::with_id("size_collapsed", &size_collapsed_label)
+                .build(app)?;
+            let size_expanded_label = ui_text("tray.sizeExpanded");
             let size_expanded =
-                MenuItemBuilder::with_id("size_expanded", "Expanded (720 x 920)").build(app)?;
-            let size_submenu = SubmenuBuilder::with_id(app, "size", "Size")
+                MenuItemBuilder::with_id("size_expanded", &size_expanded_label).build(app)?;
+            let size_label = ui_text("tray.size");
+            let size_submenu = SubmenuBuilder::with_id(app, "size", &size_label)
                 .item(&size_collapsed)
                 .item(&size_expanded)
                 .build()?;
 
             // TTS toggle
-            let tts_toggle =
-                MenuItemBuilder::with_id("tts_toggle", "Toggle TTS").build(app)?;
+            let tts_toggle_label = ui_text("tray.toggleTts");
+            let tts_toggle = MenuItemBuilder::with_id("tts_toggle", &tts_toggle_label).build(app)?;
 
             // Always on top toggle
-            let always_on_top =
-                MenuItemBuilder::with_id("always_on_top", "Toggle Always on Top").build(app)?;
+            let always_on_top_label = ui_text("tray.toggleAlwaysOnTop");
+            let always_on_top = MenuItemBuilder::with_id("always_on_top", &always_on_top_label)
+                .build(app)?;
 
             // API URL display (informational + click to copy)
             let config = app.state::<AppState>();
             let llm_label = format!("LLM: {}", config.config.local_llm_base_url);
-            let api_url_item =
-                MenuItemBuilder::with_id("api_url", &llm_label).build(app)?;
+            let api_url_item = MenuItemBuilder::with_id("api_url", &llm_label).build(app)?;
 
-            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let quit_label = ui_text("tray.quit");
+            let quit = MenuItemBuilder::with_id("quit", &quit_label).build(app)?;
 
             let menu = MenuBuilder::new(app)
                 .item(&show_hide)
@@ -1384,7 +2469,10 @@ pub fn run() {
                 .build()?;
 
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(Image::from_bytes(include_bytes!(
+                    "../icons/menubar-icon.png"
+                ))?)
+                .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .tooltip("DesktopAvatar")
@@ -1403,20 +2491,14 @@ pub fn run() {
                         }
                         "size_collapsed" => {
                             if let Some(win) = app.get_webview_window("main") {
-                                let _ = resize_window_internal(
-                                    &win,
-                                    COLLAPSED_WIDTH,
-                                    COLLAPSED_HEIGHT,
-                                );
+                                let _ =
+                                    resize_window_internal(&win, COLLAPSED_WIDTH, COLLAPSED_HEIGHT);
                             }
                         }
                         "size_expanded" => {
                             if let Some(win) = app.get_webview_window("main") {
-                                let _ = resize_window_internal(
-                                    &win,
-                                    EXPANDED_WIDTH,
-                                    EXPANDED_HEIGHT,
-                                );
+                                let _ =
+                                    resize_window_internal(&win, EXPANDED_WIDTH, EXPANDED_HEIGHT);
                             }
                         }
                         "tts_toggle" => {
@@ -1491,19 +2573,29 @@ mod tests {
         };
 
         assert!(parser.push_line("event: final").is_none());
-        assert!(parser.push_line("data: {\"speechText\":\"Hallo\",").is_none());
-        assert!(parser.push_line("data: \"displayText\":\"Hallo\"}").is_none());
+        assert!(parser
+            .push_line("data: {\"speechText\":\"Hallo\",")
+            .is_none());
+        assert!(parser
+            .push_line("data: \"displayText\":\"Hallo\"}")
+            .is_none());
 
         let frame = parser.push_line("").unwrap();
         assert_eq!(frame.event, "final");
-        assert_eq!(frame.data(), "{\"speechText\":\"Hallo\",\n\"displayText\":\"Hallo\"}");
+        assert_eq!(
+            frame.data(),
+            "{\"speechText\":\"Hallo\",\n\"displayText\":\"Hallo\"}"
+        );
     }
 
     #[test]
     fn mime_type_mapping_supports_vrm_assets() {
         assert_eq!(mime_type_for_path("/tmp/avatar.vrm"), "model/gltf-binary");
         assert_eq!(mime_type_for_path("/tmp/idle.vrma"), "model/gltf-binary");
-        assert_eq!(mime_type_for_path("/tmp/idle.fbx"), "application/octet-stream");
+        assert_eq!(
+            mime_type_for_path("/tmp/idle.fbx"),
+            "application/octet-stream"
+        );
     }
 
     #[test]
@@ -1512,7 +2604,12 @@ mod tests {
             display_name: Some("Mint".to_string()),
             license: Some("CC0".to_string()),
             thumbnail_url: None,
-            vrm_url: "./sample-assets/mint.vrm".to_string(),
+            model_url: Some("./sample-assets/mint-packed.glb".to_string()),
+            animation_mapping: Some(HashMap::from([(
+                "working".to_string(),
+                "thinking".to_string(),
+            )])),
+            vrm_url: Some("./sample-assets/mint.vrm".to_string()),
             idle_animation_urls: vec![
                 "https://www.opensourceavatars.com/animations/Warrior%20Idle.fbx".to_string(),
                 "./sample-assets/fallback.vrma".to_string(),
@@ -1526,7 +2623,14 @@ mod tests {
 
         resolve_avatar_manifest_paths(&mut manifest, Path::new("/tmp/avatar-config"));
 
-        assert_eq!(manifest.vrm_url, "/tmp/avatar-config/./sample-assets/mint.vrm");
+        assert_eq!(
+            manifest.model_url.as_deref(),
+            Some("/tmp/avatar-config/./sample-assets/mint-packed.glb")
+        );
+        assert_eq!(
+            manifest.vrm_url.as_deref(),
+            Some("/tmp/avatar-config/./sample-assets/mint.vrm")
+        );
         assert_eq!(
             manifest.idle_animation_urls[0],
             "https://www.opensourceavatars.com/animations/Warrior%20Idle.fbx"
@@ -1542,6 +2646,90 @@ mod tests {
         assert_eq!(
             manifest.talking_animation_url.as_deref(),
             Some("https://www.opensourceavatars.com/animations/Looking.fbx")
+        );
+    }
+
+    #[test]
+    fn tts_provider_name_is_stable_for_devtools() {
+        assert_eq!(tts_provider_name(TtsProviderMode::Local), "local");
+        assert_eq!(tts_provider_name(TtsProviderMode::FishAudio), "fish");
+        assert_eq!(tts_provider_name(TtsProviderMode::OpenAI), "openai");
+        assert_eq!(tts_provider_name(TtsProviderMode::System), "system");
+    }
+
+    #[test]
+    fn tts_state_event_serialization_skips_optional_fields_when_absent() {
+        let event = TtsStateEvent {
+            request_id: "req-1".to_string(),
+            speaking: false,
+            provider: None,
+            fallback: None,
+        };
+        let value = serde_json::to_value(event).expect("event to serialize");
+        let object = value
+            .as_object()
+            .expect("serialized tts event to be an object");
+        assert_eq!(object.get("requestId").and_then(Value::as_str), Some("req-1"));
+        assert_eq!(object.get("speaking").and_then(Value::as_bool), Some(false));
+        assert!(!object.contains_key("provider"));
+        assert!(!object.contains_key("fallback"));
+    }
+
+    #[test]
+    fn normalize_tts_text_collapses_whitespace() {
+        assert_eq!(normalize_tts_text("  Hallo   zusammen  "), "Hallo zusammen");
+        assert_eq!(normalize_tts_text("A\n\nB\t C"), "A B C");
+    }
+
+    #[test]
+    fn duplicate_tts_detection_is_request_scoped() {
+        let mut cache = HashMap::<String, String>::new();
+        let first_text = normalize_tts_text("Zeig   mir  Bestellungen");
+        let same_text = normalize_tts_text("Zeig mir Bestellungen");
+        let next_text = normalize_tts_text("Zeig mir offene Bestellungen");
+
+        assert!(!should_skip_duplicate_tts_entry(
+            &mut cache,
+            "req-1",
+            &first_text
+        ));
+        assert!(should_skip_duplicate_tts_entry(
+            &mut cache,
+            "req-1",
+            &same_text
+        ));
+        assert!(!should_skip_duplicate_tts_entry(
+            &mut cache,
+            "req-1",
+            &next_text
+        ));
+        assert!(!should_skip_duplicate_tts_entry(
+            &mut cache,
+            "req-2",
+            &same_text
+        ));
+    }
+
+    #[test]
+    fn local_tts_endpoint_candidates_include_raw_then_audio_fallback() {
+        assert_eq!(
+            local_tts_endpoint_candidates("http://127.0.0.1:1234"),
+            vec![
+                "http://127.0.0.1:1234/".to_string(),
+                "http://127.0.0.1:1234/v1".to_string(),
+                "http://127.0.0.1:1234/v1/audio/speech".to_string()
+            ]
+        );
+        assert_eq!(
+            local_tts_endpoint_candidates("http://127.0.0.1:1234/v1"),
+            vec![
+                "http://127.0.0.1:1234/v1".to_string(),
+                "http://127.0.0.1:1234/v1/audio/speech".to_string()
+            ]
+        );
+        assert_eq!(
+            local_tts_endpoint_candidates("http://127.0.0.1:1234/v1/audio/speech"),
+            vec!["http://127.0.0.1:1234/v1/audio/speech".to_string()]
         );
     }
 }

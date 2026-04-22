@@ -1,0 +1,689 @@
+{
+  "mode": "full",
+  "meshGlb": "/Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/assets/avatar-build/female_avatar_1/source/female_avatar_1.glb",
+  "baseFbx": "/Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/assets/avatar-build/female_avatar_1/source/female_avatar_1_base.fbx",
+  "clipsDir": "/Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/assets/avatar-build/clips",
+  "outputGlb": "/Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/assets/avatar-build/female_avatar_1/build/female_avatar_1_packed.glb",
+  "reviewBlend": "/Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/assets/avatar-build/female_avatar_1/build/female_avatar_1_packed.review.blend",
+  "usedClips": {
+    "idle": "idle.fbx",
+    "walking": "walking.fbx",
+    "working": "thinking.fbx",
+    "communicating": "communicating.fbx",
+    "coffee-break": "coffee-break.fbx",
+    "at-phone": "at-phone.fbx",
+    "teleport-out": "teleport-out.fbx",
+    "teleport-in": "teleport-in.fbx",
+    "talking": "talking.fbx"
+  },
+  "warnings": [],
+  "removedBaseObjects": [
+    "tripo_node_0d7adc96"
+  ],
+  "selectedBaseMesh": {
+    "name": "tripo_node_0d7adc96",
+    "vertexCount": 7377,
+    "vertexGroupCount": 34,
+    "boundsSize": [
+      0.7753906846046448,
+      0.9980467567627184,
+      0.4472656697034836
+    ],
+    "dominantAxis": "Y"
+  },
+  "targetReferenceMesh": {
+    "name": "tripo_node_bdc6506c-989e-47fd-9b79-9aa5d40cae29",
+    "vertexCount": 10331,
+    "boundsSize": [
+      0.447265625,
+      0.775390625,
+      0.998046875
+    ],
+    "dominantAxis": "Z"
+  },
+  "baseMeshOverride": "",
+  "armatureOrientation": {
+    "beforeNormalization": {
+      "detectedUpWorld": [
+        0.0,
+        -0.9960409998893738,
+        0.08889422565698624
+      ],
+      "snappedUpAxis": "-Y",
+      "source": "bones:mixamorig:Hips->mixamorig:Head"
+    },
+    "afterNormalization": {
+      "detectedUpWorld": [
+        0.0,
+        0.08889415860176086,
+        0.9960411190986633
+      ],
+      "snappedUpAxis": "+Z",
+      "source": "bones:mixamorig:Hips->mixamorig:Head"
+    }
+  },
+  "baseRotationFix": {
+    "applied": true,
+    "degrees": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "source": "normalize",
+    "inferredDegrees": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "target": "normalize",
+    "baseNormalization": {
+      "applied": true,
+      "detectedUpWorld": [
+        0.0,
+        -0.9960409998893738,
+        0.08889422565698624
+      ],
+      "snappedUpAxis": "-Y",
+      "rotationEulerDegrees": [
+        -89.999995674289,
+        0.0,
+        0.0
+      ],
+      "rotatedRoots": [
+        "Armature"
+      ]
+    },
+    "targetNormalization": {
+      "applied": false,
+      "detectedUpWorld": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "snappedUpAxis": "+Z",
+      "rotationEulerDegrees": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotatedRoots": [
+        "tripo_node_bdc6506c-989e-47fd-9b79-9aa5d40cae29"
+      ],
+      "source": "bounds-dominant"
+    }
+  },
+  "forwardAxisAlignment": {
+    "applied": true,
+    "rawAngleDegrees": 270.0,
+    "snappedAngleDegrees": 270.0,
+    "ambiguous": false,
+    "mode": "manual-override",
+    "rotatedRoots": [
+      "tripo_node_bdc6506c-989e-47fd-9b79-9aa5d40cae29"
+    ],
+    "baseSidewaysSource": "bones:mixamorig:LeftShoulder->mixamorig:RightShoulder",
+    "targetSidewaysSource": "y-dominant-footprint",
+    "baseSidewaysWorld": [
+      -0.9999923706054688,
+      -0.003917801659554243,
+      0.0
+    ],
+    "targetSidewaysWorld": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "targetSidewaysWorldAfter": [
+      1.0,
+      0.0,
+      0.0
+    ]
+  },
+  "targetAlignment": {
+    "enabled": true,
+    "upAxisIndex": 2,
+    "translationWarnThreshold": 0.05,
+    "report": {
+      "upAxis": "Z",
+      "translation": [
+        -2.9802322387695312e-08,
+        5.21540641784668e-08,
+        -2.3192006093353257e-09
+      ],
+      "sourceBounds": {
+        "min": [
+          -0.3876953721046448,
+          -0.2236327975988388,
+          -2.3192006093353257e-09
+        ],
+        "max": [
+          0.3876953125,
+          0.22363287210464478,
+          0.9980467557907104
+        ],
+        "size": [
+          0.7753906846046448,
+          0.4472656697034836,
+          0.9980467581099111
+        ]
+      },
+      "targetBoundsBefore": {
+        "min": [
+          -0.3876952826976776,
+          -0.2236328274011612,
+          0.0
+        ],
+        "max": [
+          0.3876952826976776,
+          0.2236327975988388,
+          0.998046875
+        ],
+        "size": [
+          0.7753905653953552,
+          0.447265625,
+          0.998046875
+        ]
+      },
+      "targetBoundsAfter": {
+        "min": [
+          -0.3876952826976776,
+          -0.2236328274011612,
+          0.0
+        ],
+        "max": [
+          0.3876952826976776,
+          0.2236327975988388,
+          0.998046875
+        ],
+        "size": [
+          0.7753905653953552,
+          0.447265625,
+          0.998046875
+        ]
+      }
+    }
+  },
+  "rootMotionLock": {
+    "enabled": true,
+    "rootBone": "mixamorig:Hips",
+    "referenceState": "idle",
+    "referenceBaselines": {
+      "0": 0.0,
+      "1": 0.0,
+      "2": 0.0
+    },
+    "alignAxes": [
+      0,
+      1,
+      2
+    ],
+    "states": {
+      "idle": {
+        "changed": true,
+        "matchedCurves": 3,
+        "flattenedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "fcurveSource": "layered-action",
+        "baselines": {
+          "0": 0.16107115149497986,
+          "1": 0.057377755641937256,
+          "2": -0.7228622436523438
+        },
+        "objectLocationCurves": 0
+      },
+      "walking": {
+        "changed": true,
+        "matchedCurves": 3,
+        "flattenedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "fcurveSource": "layered-action",
+        "baselines": {
+          "0": 0.05106651037931442,
+          "1": 0.3184264004230499,
+          "2": -0.3691596984863281
+        },
+        "objectLocationCurves": 0
+      },
+      "working": {
+        "changed": true,
+        "matchedCurves": 3,
+        "flattenedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "fcurveSource": "layered-action",
+        "baselines": {
+          "0": -0.626481294631958,
+          "1": 0.20095641911029816,
+          "2": -0.7719039916992188
+        },
+        "objectLocationCurves": 0
+      },
+      "communicating": {
+        "changed": true,
+        "matchedCurves": 3,
+        "flattenedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "fcurveSource": "layered-action",
+        "baselines": {
+          "0": -1.273983359336853,
+          "1": 0.7590420246124268,
+          "2": -0.9596938490867615
+        },
+        "objectLocationCurves": 0
+      },
+      "coffee-break": {
+        "changed": true,
+        "matchedCurves": 3,
+        "flattenedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "fcurveSource": "layered-action",
+        "baselines": {
+          "0": -1.273983359336853,
+          "1": 0.7590420246124268,
+          "2": -0.9596938490867615
+        },
+        "objectLocationCurves": 0
+      },
+      "at-phone": {
+        "changed": true,
+        "matchedCurves": 3,
+        "flattenedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "fcurveSource": "layered-action",
+        "baselines": {
+          "0": 0.6409283876419067,
+          "1": 0.19403496384620667,
+          "2": -0.8020057678222656
+        },
+        "objectLocationCurves": 0
+      },
+      "teleport-out": {
+        "changed": true,
+        "matchedCurves": 3,
+        "flattenedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "fcurveSource": "layered-action",
+        "baselines": {
+          "0": -0.602751612663269,
+          "1": 0.6451208591461182,
+          "2": -0.9259414672851562
+        },
+        "objectLocationCurves": 0
+      },
+      "teleport-in": {
+        "changed": true,
+        "matchedCurves": 3,
+        "flattenedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "fcurveSource": "layered-action",
+        "baselines": {
+          "0": 0.01951388455927372,
+          "1": 0.14477354288101196,
+          "2": 0.008323675952851772
+        },
+        "objectLocationCurves": 0
+      },
+      "talking": {
+        "changed": true,
+        "matchedCurves": 3,
+        "flattenedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "fcurveSource": "layered-action",
+        "baselines": {
+          "0": -1.273983359336853,
+          "1": 0.7590420246124268,
+          "2": -0.9596938490867615
+        },
+        "objectLocationCurves": 0
+      }
+    },
+    "alignment": {
+      "idle": {
+        "changed": true,
+        "matchedCurves": 3,
+        "alignedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "axes": [
+          0,
+          1,
+          2
+        ],
+        "targetBaselines": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "fcurveSource": "layered-action"
+      },
+      "walking": {
+        "changed": true,
+        "matchedCurves": 3,
+        "alignedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "axes": [
+          0,
+          1,
+          2
+        ],
+        "targetBaselines": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "fcurveSource": "layered-action"
+      },
+      "working": {
+        "changed": true,
+        "matchedCurves": 3,
+        "alignedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "axes": [
+          0,
+          1,
+          2
+        ],
+        "targetBaselines": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "fcurveSource": "layered-action"
+      },
+      "communicating": {
+        "changed": true,
+        "matchedCurves": 3,
+        "alignedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "axes": [
+          0,
+          1,
+          2
+        ],
+        "targetBaselines": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "fcurveSource": "layered-action"
+      },
+      "coffee-break": {
+        "changed": true,
+        "matchedCurves": 3,
+        "alignedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "axes": [
+          0,
+          1,
+          2
+        ],
+        "targetBaselines": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "fcurveSource": "layered-action"
+      },
+      "at-phone": {
+        "changed": true,
+        "matchedCurves": 3,
+        "alignedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "axes": [
+          0,
+          1,
+          2
+        ],
+        "targetBaselines": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "fcurveSource": "layered-action"
+      },
+      "teleport-out": {
+        "changed": true,
+        "matchedCurves": 3,
+        "alignedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "axes": [
+          0,
+          1,
+          2
+        ],
+        "targetBaselines": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "fcurveSource": "layered-action"
+      },
+      "teleport-in": {
+        "changed": true,
+        "matchedCurves": 3,
+        "alignedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "axes": [
+          0,
+          1,
+          2
+        ],
+        "targetBaselines": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "fcurveSource": "layered-action"
+      },
+      "talking": {
+        "changed": true,
+        "matchedCurves": 3,
+        "alignedCurves": 3,
+        "rootBone": "mixamorig:Hips",
+        "axes": [
+          0,
+          1,
+          2
+        ],
+        "targetBaselines": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "fcurveSource": "layered-action"
+      }
+    }
+  },
+  "worldSnap": {
+    "enabled": true,
+    "report": {
+      "upAxis": "Z",
+      "translation": [
+        -5.289912223815918e-07,
+        0.03877199441194534,
+        -0.0
+      ],
+      "method": "foot-bone-center+mesh-ground",
+      "dataBake": {
+        "worldDelta": [
+          -5.289912223815918e-07,
+          0.03877199441194534,
+          -0.0
+        ],
+        "armatureLocalDelta": [
+          -5.289912223815918e-07,
+          0.03877199441194534,
+          0.0
+        ],
+        "meshLocalDelta": {
+          "tripo_node_bdc6506c-989e-47fd-9b79-9aa5d40cae29": [
+            -5.289912223815918e-07,
+            0.03877199441194534,
+            0.0
+          ]
+        }
+      },
+      "boundsBefore": {
+        "min": [
+          -0.3876952826976776,
+          -0.2236328274011612,
+          0.0
+        ],
+        "max": [
+          0.3876952826976776,
+          0.2236327975988388,
+          0.998046875
+        ],
+        "size": [
+          0.7753905653953552,
+          0.447265625,
+          0.998046875
+        ],
+        "center": [
+          0.0,
+          -1.4901161193847656e-08,
+          0.4990234375
+        ],
+        "footprintCenter": [
+          -0.0011501565023704812,
+          -0.08287759673333278
+        ],
+        "footBoneCenter": [
+          5.289912223815918e-07,
+          -0.03877199441194534
+        ],
+        "footBoneGround": 0.002314014360308647
+      },
+      "boundsAfter": {
+        "min": [
+          -0.3876958191394806,
+          -0.18486082553863525,
+          0.0
+        ],
+        "max": [
+          0.38769474625587463,
+          0.26240479946136475,
+          0.998046875
+        ],
+        "size": [
+          0.7753905653953552,
+          0.447265625,
+          0.998046875
+        ],
+        "center": [
+          -5.364418029785156e-07,
+          0.038771986961364746,
+          0.4990234375
+        ],
+        "footprintCenter": [
+          -0.0011506844449926305,
+          -0.0441056023179381
+        ],
+        "footBoneCenter": [
+          -5.364418029785156e-07,
+          0.03877199441194534
+        ],
+        "footBoneGround": 0.002314014360308647
+      },
+      "meshOriginReset": {
+        "origin": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "objects": {
+          "tripo_node_bdc6506c-989e-47fd-9b79-9aa5d40cae29": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "boundsAfterOriginReset": {
+        "min": [
+          -0.3876958191394806,
+          -0.18486082553863525,
+          0.0
+        ],
+        "max": [
+          0.38769474625587463,
+          0.26240479946136475,
+          0.998046875
+        ],
+        "size": [
+          0.7753905653953552,
+          0.447265625,
+          0.998046875
+        ],
+        "center": [
+          -5.364418029785156e-07,
+          0.038771986961364746,
+          0.4990234375
+        ]
+      },
+      "armatureLocation": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "fbxImportOptions": {
+    "axisForward": "auto",
+    "axisUp": "auto",
+    "ignoreLeafBones": true
+  },
+  "transferModeRequested": "data-transfer",
+  "weightTransfer": {
+    "tripo_node_bdc6506c-989e-47fd-9b79-9aa5d40cae29": "data-transfer"
+  },
+  "meshBoundsBeforeBind": {
+    "min": [
+      -0.3876952826976776,
+      -0.2236328274011612,
+      0.0
+    ],
+    "max": [
+      0.3876952826976776,
+      0.2236327975988388,
+      0.998046875
+    ],
+    "size": [
+      0.7753905653953552,
+      0.447265625,
+      0.998046875
+    ]
+  },
+  "meshBoundsAfterBind": {
+    "min": [
+      -0.3876952826976776,
+      -0.2236328274011612,
+      0.0
+    ],
+    "max": [
+      0.3876952826976776,
+      0.2236327975988388,
+      0.998046875
+    ],
+    "size": [
+      0.7753905653953552,
+      0.447265625,
+      0.998046875
+    ]
+  },
+  "requiredStatesValidated": [
+    "idle",
+    "walking",
+    "working",
+    "communicating",
+    "coffee-break",
+    "at-phone",
+    "teleport-out",
+    "teleport-in"
+  ],
+  "optionalStates": [
+    "talking"
+  ],
+  "previewAction": "idle",
+  "previewTracksMuted": false,
+  "removedForeignActions": [],
+  "result": "glb_exported"
+}

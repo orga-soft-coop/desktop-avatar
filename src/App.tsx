@@ -4,6 +4,7 @@ import {
   formatAvatarCameraConfig,
   type AvatarCameraConfig
 } from "./lib/avatar-stage-config";
+import { MIN_CONTENT_WINDOW_HEIGHT } from "./lib/window-layout";
 import { getWindowSizesForPreset } from "./lib/window-presets";
 import { ChatPanel } from "./components/ChatPanel";
 import { AvatarStage } from "./components/AvatarStage";
@@ -13,6 +14,9 @@ import { DesktopAvatarWidgetPanel } from "./components/DesktopAvatarWidgetPanel"
 import { DemoKpiCard } from "./components/KpiCard";
 import { SpeechBubble } from "./components/SpeechBubble";
 import { useDesktopCompanion } from "./hooks/useDesktopCompanion";
+import { t } from "./lib/i18n";
+
+const TEXT_WIDGET_BUBBLE_ONLY_MAX_CHARS = 220;
 
 export default function App() {
   const companion = useDesktopCompanion();
@@ -22,52 +26,52 @@ export default function App() {
     DEFAULT_AVATAR_CAMERA_CONFIG
   );
   const [forcedAnimation, setForcedAnimation] = useState<string | null>(null);
+  const [avatarDebug, setAvatarDebug] = useState<{
+    assetKind: "legacy-vrm" | "packed-glb" | null;
+    selectedClip: string | null;
+    resolvedAnimationMapping: Record<string, string>;
+  }>({
+    assetKind: null,
+    selectedClip: null,
+    resolvedAnimationMapping: {}
+  });
 
-  const bottomStackRef = useRef<HTMLDivElement>(null);
-  // Approximate height the bottom stack occupies when only the launcher is shown
-  const baseBottomHeight = 60;
-  // Bottom offset (px) used to float the data panel just above the chat panel
-  const stackBottomMargin = 26; // matches .bottom-stack { bottom: 26px }
-  const dataPanelGap = 8;
-  const [dataPanelBottom, setDataPanelBottom] = useState(90);
+  const appShellRef = useRef<HTMLElement>(null);
 
   const handleAnimationsLoaded = useCallback((names: string[]) => {
     setAnimationNames(names);
   }, []);
 
   const lastResizedHeight = useRef(0);
+  const resizeWindowRef = useRef(companion.resizeWindow);
+  resizeWindowRef.current = companion.resizeWindow;
 
-  // Dynamically resize window to fit the bottom stack content,
-  // and keep the data panel anchored just above the chat panel.
+  // Fit the native window to the measured layout (avatar + optional data panel + chat).
   const syncWindowHeight = useCallback(() => {
-    const el = bottomStackRef.current;
-    if (!el) return;
-    const stackHeight = el.scrollHeight;
-    // Float data panel just above the bottom stack
-    setDataPanelBottom(stackHeight + stackBottomMargin + dataPanelGap);
+    const shell = appShellRef.current;
+    if (!shell) return;
+
     const preset = getWindowSizesForPreset(companion.sizePreset);
     const baseSize = companion.isExpanded ? preset.expanded : preset.collapsed;
-    // The base window height already accounts for the default chat bar (~baseBottomHeight).
-    // We only add the *extra* pixels the stack needs beyond that default.
-    const extra = Math.max(0, stackHeight - baseBottomHeight);
-    const targetHeight = baseSize.height + extra;
-    // Avoid redundant resizes
+    const measured = Math.ceil(
+      Math.max(shell.scrollHeight, shell.getBoundingClientRect().height)
+    );
+    const targetHeight = Math.max(MIN_CONTENT_WINDOW_HEIGHT, measured);
+
     if (Math.abs(targetHeight - lastResizedHeight.current) < 2) return;
     lastResizedHeight.current = targetHeight;
-    void companion.resizeWindow(baseSize.width, targetHeight);
-  }, [companion.sizePreset, companion.isExpanded]);
+    void resizeWindowRef.current(baseSize.width, targetHeight);
+  }, [companion.isExpanded, companion.sizePreset]);
 
-  // Observe the bottom stack for size changes and auto-resize window
   useEffect(() => {
-    const el = bottomStackRef.current;
-    if (!el) return;
+    const shell = appShellRef.current;
+    if (!shell) return;
     let rafId = 0;
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => syncWindowHeight());
     });
-    observer.observe(el);
-    // Initial measurement
+    observer.observe(shell);
     syncWindowHeight();
     return () => {
       observer.disconnect();
@@ -82,18 +86,30 @@ export default function App() {
     companion.error ??
     companion.status ??
     latestAssistantMessage?.text ??
-    (companion.isExpanded ? "Ask me anything. I can stay local or check live business data." : "");
+    (companion.isExpanded ? t("app.defaultBubble") : "");
   const bubbleTone = companion.error
     ? "error"
     : companion.status && companion.companionState !== "idle"
       ? "status"
       : "default";
   const activeWidget = latestAssistantMessage?.widget ?? null;
+  const bubbleOnlyTextWidget =
+    activeWidget?.type === "text" &&
+    activeWidget.text.trim().length > 0 &&
+    activeWidget.text.trim().length <= TEXT_WIDGET_BUBBLE_ONLY_MAX_CHARS &&
+    (latestAssistantMessage?.followUpQuestions?.length ?? 0) === 0;
+  const panelWidget = bubbleOnlyTextWidget ? null : activeWidget;
   const cameraConfigSnippet = formatAvatarCameraConfig(cameraConfig);
+
+  const dataPanelOpen = showDemo || Boolean(panelWidget);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => syncWindowHeight());
+    return () => cancelAnimationFrame(id);
+  }, [dataPanelOpen, syncWindowHeight]);
 
   const adjustWindowHeight = useCallback(
     (delta: number) => {
-      const nextHeight = Math.max(480, companion.windowSize.height + delta);
+      const nextHeight = Math.max(MIN_CONTENT_WINDOW_HEIGHT, companion.windowSize.height + delta);
       lastResizedHeight.current = nextHeight;
       void companion.resizeWindow(companion.windowSize.width, nextHeight);
     },
@@ -101,7 +117,10 @@ export default function App() {
   );
 
   return (
-    <main className={`app-shell ${companion.isExpanded ? "is-expanded" : "is-collapsed"}`}>
+    <main
+      ref={appShellRef}
+      className={`app-shell ${companion.isExpanded ? "is-expanded" : "is-collapsed"}`}
+    >
       <SpeechBubble
         text={bubbleText}
         tone={bubbleTone}
@@ -117,26 +136,27 @@ export default function App() {
         suggestedAnimation={companion.activeAnimation}
         onDragStart={companion.startWindowDrag}
         onAnimationsLoaded={handleAnimationsLoaded}
+        onAnimationDebugChange={setAvatarDebug}
       />
 
       {showDemo ? (
-        <div className="data-panel" style={{ bottom: dataPanelBottom }}>
+        <div className="data-panel">
           <DataPanelSlider onClose={() => setShowDemo(false)}>
             <DemoDataTable onClose={() => setShowDemo(false)} />
             <DemoKpiCard onClose={() => setShowDemo(false)} />
           </DataPanelSlider>
         </div>
-      ) : activeWidget ? (
-        <div className="data-panel" style={{ bottom: dataPanelBottom }}>
+      ) : panelWidget ? (
+        <div className="data-panel">
           <DesktopAvatarWidgetPanel
-            widget={activeWidget}
+            widget={panelWidget}
             followUpQuestions={latestAssistantMessage?.followUpQuestions}
             onSuggestionSelect={companion.submitSuggestion}
           />
         </div>
       ) : null}
 
-      <div className="bottom-stack" ref={bottomStackRef}>
+      <div className="bottom-stack">
         <ChatPanel
           draft={companion.draft}
           error={companion.error}
@@ -144,10 +164,16 @@ export default function App() {
           isRecording={companion.isRecording}
           sizePreset={companion.sizePreset}
           ttsEnabled={companion.ttsEnabled}
+          ttsVoices={companion.ttsVoices}
+          selectedTtsVoice={companion.selectedTtsVoice}
+          latencyDebug={companion.latencyDebug}
           animationNames={animationNames}
           cameraConfig={cameraConfig}
           cameraConfigSnippet={cameraConfigSnippet}
           forcedAnimation={forcedAnimation}
+          avatarAssetKind={avatarDebug.assetKind}
+          selectedAnimationClip={avatarDebug.selectedClip}
+          resolvedAnimationMapping={avatarDebug.resolvedAnimationMapping}
           windowSize={companion.windowSize}
           onDraftChange={companion.setDraft}
           onAdjustWindowHeight={adjustWindowHeight}
@@ -158,6 +184,7 @@ export default function App() {
           onToggleExpanded={companion.toggleExpanded}
           onToggleRecording={companion.toggleRecording}
           onToggleTts={companion.toggleTts}
+          onSelectTtsVoice={companion.selectTtsVoice}
           onRetry={companion.retryLastPrompt}
           onDragStart={companion.startWindowDrag}
           onToggleDemo={() => setShowDemo((v) => !v)}

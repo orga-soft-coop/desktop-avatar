@@ -12,6 +12,7 @@ import type {
   StreamEnvelope,
   TtsStateEvent
 } from "./contracts";
+import { t } from "./i18n";
 import { DEFAULT_SIZE_PRESET, getWindowSizesForPreset } from "./window-presets";
 
 export const COLLAPSED_SIZE = getWindowSizesForPreset(DEFAULT_SIZE_PRESET).collapsed;
@@ -23,7 +24,7 @@ export function isTauriRuntime(): boolean {
 
 function requireTauriRuntime(feature: string): void {
   if (!isTauriRuntime()) {
-    throw new Error(`${feature} requires the Tauri desktop shell.`);
+    throw new Error(t("errors.tauriRequired", { feature }));
   }
 }
 
@@ -99,7 +100,7 @@ export async function frontendLog(level: string, message: string): Promise<void>
 export async function createDesktopAvatarRequest(
   request: CreateDesktopAvatarRequestInput
 ): Promise<CreateDesktopAvatarRequestResult> {
-  requireTauriRuntime("Desktop Avatar request");
+  requireTauriRuntime("Desktop Avatar Anfrage");
   return invoke<CreateDesktopAvatarRequestResult>("desktop_avatar_request_create", { request });
 }
 
@@ -107,7 +108,7 @@ export async function getDesktopAvatarRequest(args: {
   avatarRequestId?: string;
   pollUrl?: string;
 }): Promise<DesktopAvatarRequestDocument> {
-  requireTauriRuntime("Desktop Avatar polling");
+  requireTauriRuntime("Desktop Avatar Polling");
   return invoke<DesktopAvatarRequestDocument>("desktop_avatar_request_get", args);
 }
 
@@ -115,7 +116,7 @@ export async function startDesktopAvatarStream(args: {
   avatarRequestId?: string;
   streamUrl?: string;
 }): Promise<void> {
-  requireTauriRuntime("Desktop Avatar stream");
+  requireTauriRuntime("Desktop Avatar Stream");
   await invoke("desktop_avatar_request_stream", args);
 }
 
@@ -127,22 +128,37 @@ export async function stopDesktopAvatarStream(avatarRequestId: string): Promise<
 }
 
 export async function sendLocalChat(request: LocalChatRequest): Promise<void> {
-  requireTauriRuntime("Local chat");
+  requireTauriRuntime("Lokaler Chat");
   await invoke("chat_send_local", { request });
 }
 
 export async function transcribeAudio(
   request: SpeechTranscriptionRequest
 ): Promise<string> {
-  requireTauriRuntime("Voice transcription");
+  requireTauriRuntime(t("features.voiceTranscription"));
   return invoke<string>("speech_transcribe", { request });
 }
 
-export async function speakText(requestId: string, text: string): Promise<void> {
+export async function listTtsVoices(): Promise<string[]> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+  return invoke<string[]>("tts_list_voices");
+}
+
+export async function speakText(
+  requestId: string,
+  text: string,
+  voice?: string | null
+): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
-  await invoke("tts_speak", { requestId, text });
+  await invoke("tts_speak", {
+    requestId,
+    text,
+    voice: voice?.trim() ? voice : null
+  });
 }
 
 export async function stopSpeaking(): Promise<void> {

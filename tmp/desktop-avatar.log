@@ -1,8 +1,8 @@
-[1776852714] tts: config provider=openai localUrl=<none> localModel=fish-audio-s2-pro openaiEnabled=true localTemplateKeys=input,model,voice localResponsePath=<auto>
-[1776852715] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1776852715] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1776852715] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1776852715] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1776852715] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
-[1776852716] frontend:info: loaded packed GLB avatar with 9 action entries
-[1776852716] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1776857371] tts: config provider=openai localUrl=<none> localModel=fish-audio-s2-pro openaiEnabled=true localTemplateKeys=input,model,voice localResponsePath=<auto>
+[1776857374] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1776857374] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1776857374] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = [1776857374] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+
+[1776857374] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1776857374] frontend:info: loaded packed GLB avatar with 9 action entries
+[1776857374] frontend:info: avatar runtime ready: 9 animation actions loaded

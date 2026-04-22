@@ -8,10 +8,7 @@ import { MIN_CONTENT_WINDOW_HEIGHT } from "./lib/window-layout";
 import { getWindowSizesForPreset } from "./lib/window-presets";
 import { ChatPanel } from "./components/ChatPanel";
 import { AvatarStage } from "./components/AvatarStage";
-import { DataPanelSlider } from "./components/DataPanelSlider";
-import { DemoDataTable } from "./components/DataTable";
 import { DesktopAvatarWidgetPanel } from "./components/DesktopAvatarWidgetPanel";
-import { DemoKpiCard } from "./components/KpiCard";
 import { SpeechBubble } from "./components/SpeechBubble";
 import { useDesktopCompanion } from "./hooks/useDesktopCompanion";
 import { t } from "./lib/i18n";
@@ -20,7 +17,9 @@ const TEXT_WIDGET_BUBBLE_ONLY_MAX_CHARS = 220;
 
 export default function App() {
   const companion = useDesktopCompanion();
-  const [showDemo, setShowDemo] = useState(false);
+  const [dismissedWidgetMessageIds, setDismissedWidgetMessageIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const [animationNames, setAnimationNames] = useState<string[]>([]);
   const [cameraConfig, setCameraConfig] = useState<AvatarCameraConfig>(
     DEFAULT_AVATAR_CAMERA_CONFIG
@@ -99,9 +98,13 @@ export default function App() {
     activeWidget.text.trim().length <= TEXT_WIDGET_BUBBLE_ONLY_MAX_CHARS &&
     (latestAssistantMessage?.followUpQuestions?.length ?? 0) === 0;
   const panelWidget = bubbleOnlyTextWidget ? null : activeWidget;
+  const panelWidgetMessageId = panelWidget ? (latestAssistantMessage?.id ?? null) : null;
+  const panelWidgetDismissed =
+    panelWidgetMessageId !== null && dismissedWidgetMessageIds.has(panelWidgetMessageId);
+  const visiblePanelWidget = panelWidgetDismissed ? null : panelWidget;
   const cameraConfigSnippet = formatAvatarCameraConfig(cameraConfig);
 
-  const dataPanelOpen = showDemo || Boolean(panelWidget);
+  const dataPanelOpen = Boolean(visiblePanelWidget);
   useEffect(() => {
     const id = requestAnimationFrame(() => syncWindowHeight());
     return () => cancelAnimationFrame(id);
@@ -115,6 +118,20 @@ export default function App() {
     },
     [companion]
   );
+
+  const dismissWidgetPanel = useCallback(() => {
+    if (!panelWidgetMessageId) {
+      return;
+    }
+    setDismissedWidgetMessageIds((previous) => {
+      if (previous.has(panelWidgetMessageId)) {
+        return previous;
+      }
+      const next = new Set(previous);
+      next.add(panelWidgetMessageId);
+      return next;
+    });
+  }, [panelWidgetMessageId]);
 
   return (
     <main
@@ -139,19 +156,13 @@ export default function App() {
         onAnimationDebugChange={setAvatarDebug}
       />
 
-      {showDemo ? (
-        <div className="data-panel">
-          <DataPanelSlider onClose={() => setShowDemo(false)}>
-            <DemoDataTable onClose={() => setShowDemo(false)} />
-            <DemoKpiCard onClose={() => setShowDemo(false)} />
-          </DataPanelSlider>
-        </div>
-      ) : panelWidget ? (
+      {visiblePanelWidget ? (
         <div className="data-panel">
           <DesktopAvatarWidgetPanel
-            widget={panelWidget}
+            widget={visiblePanelWidget}
             followUpQuestions={latestAssistantMessage?.followUpQuestions}
             onSuggestionSelect={companion.submitSuggestion}
+            onDismiss={dismissWidgetPanel}
           />
         </div>
       ) : null}
@@ -187,7 +198,6 @@ export default function App() {
           onSelectTtsVoice={companion.selectTtsVoice}
           onRetry={companion.retryLastPrompt}
           onDragStart={companion.startWindowDrag}
-          onToggleDemo={() => setShowDemo((v) => !v)}
           onSelectAnimation={setForcedAnimation}
         />
       </div>

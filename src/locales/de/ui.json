@@ -15,8 +15,6 @@
   },
   "devTools": {
     "title": "Entwicklerwerkzeuge",
-    "demo": "Demo",
-    "showDemoComponents": "Demo-Komponenten anzeigen",
     "voice": "Stimme",
     "systemDefault": "Systemstandard",
     "latency": "Latenz",
@@ -69,29 +67,7 @@
     "dismiss": "Schließen",
     "yes": "Ja",
     "no": "Nein",
-    "businessMetrics": "Geschäftskennzahlen",
-    "demoOrdersTitle": "Aktuelle Bestellungen",
-    "order": "Bestellung",
-    "customer": "Kunde",
-    "total": "Summe",
-    "status": "Status",
-    "date": "Datum",
-    "statusShipped": "Versendet",
-    "statusProcessing": "In Bearbeitung",
-    "statusPending": "Offen",
-    "statusDelivered": "Geliefert",
-    "revenue": "Umsatz",
-    "orders": "Bestellungen",
-    "averageOrder": "Ø Bestellung",
-    "fulfillment": "Erfüllung",
-    "weeklyPerformance": "Wochenleistung",
-    "week11Range": "KW 11 · 10.–14. März"
-  },
-  "slider": {
-    "navigation": "Slider-Navigation",
-    "previous": "Zurück",
-    "next": "Weiter",
-    "slide": "Folie {{index}}"
+    "businessMetrics": "Geschäftskennzahlen"
   },
   "status": {
     "sendingRequest": "Anfrage wird gesendet…",

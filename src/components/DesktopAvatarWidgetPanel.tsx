@@ -1,11 +1,13 @@
 import type { DesktopAvatarWidgetPayload } from "../lib/contracts";
 import { t } from "../lib/i18n";
 import { DataTable } from "./DataTable";
+import { WidgetHeader } from "./WidgetHeader";
 
 interface DesktopAvatarWidgetPanelProps {
   widget: DesktopAvatarWidgetPayload;
   followUpQuestions?: string[];
   onSuggestionSelect?: (suggestion: string) => void;
+  onDismiss?: () => void;
 }
 
 function formatScalar(value: string | number | boolean | null): string {
@@ -21,7 +23,8 @@ function formatScalar(value: string | number | boolean | null): string {
 export function DesktopAvatarWidgetPanel({
   widget,
   followUpQuestions = [],
-  onSuggestionSelect
+  onSuggestionSelect,
+  onDismiss
 }: DesktopAvatarWidgetPanelProps) {
   if (widget.type === "table") {
     return (
@@ -32,6 +35,7 @@ export function DesktopAvatarWidgetPanel({
           label: column.label
         }))}
         rows={widget.rows}
+        onClose={onDismiss}
       />
     );
   }
@@ -39,9 +43,7 @@ export function DesktopAvatarWidgetPanel({
   if (widget.type === "keyValue") {
     return (
       <section className="widget-card widget-card--key-value">
-        <header className="widget-card__header">
-          <h4>{widget.title}</h4>
-        </header>
+        <WidgetHeader title={widget.title} onClose={onDismiss} />
         <dl className="widget-card__list">
           {widget.items.map((item) => (
             <div key={item.key} className="widget-card__list-row">
@@ -57,9 +59,7 @@ export function DesktopAvatarWidgetPanel({
   if (widget.type === "text") {
     return (
       <section className="widget-card widget-card--text">
-        <header className="widget-card__header">
-          <h4>{widget.title}</h4>
-        </header>
+        <WidgetHeader title={widget.title} onClose={onDismiss} />
         <p className="widget-card__body-text">{widget.text}</p>
         {followUpQuestions.length > 0 ? (
           <div className="widget-card__chips">
@@ -82,9 +82,7 @@ export function DesktopAvatarWidgetPanel({
   if (widget.type === "clarification") {
     return (
       <section className="widget-card widget-card--clarification">
-        <header className="widget-card__header">
-          <h4>{widget.title}</h4>
-        </header>
+        <WidgetHeader title={widget.title} onClose={onDismiss} />
         <p className="widget-card__body-text">{widget.question}</p>
         <div className="widget-card__chips">
           {widget.suggestions.map((suggestion) => (
@@ -104,9 +102,7 @@ export function DesktopAvatarWidgetPanel({
 
   return (
     <section className="widget-card widget-card--error">
-      <header className="widget-card__header">
-        <h4>{widget.title}</h4>
-      </header>
+      <WidgetHeader title={widget.title} onClose={onDismiss} />
       <p className="widget-card__body-text">{widget.message}</p>
     </section>
   );

@@ -169,6 +169,12 @@ export default function App() {
       : displayedActivePanelIndex >= 0
         ? displayedActivePanelIndex
         : displayedPanelEntries.length - 1;
+  const displayedActiveWidget =
+    clampedDisplayedActivePanelIndex >= 0
+      ? displayedPanelEntries[clampedDisplayedActivePanelIndex]?.widget ?? null
+      : null;
+  const hasWidgetSliderNav = displayedPanelEntries.length > 1;
+  const widgetArrowTone = displayedActiveWidget?.type === "error" ? "error" : "default";
   const cameraConfigSnippet = formatAvatarCameraConfig(cameraConfig);
   const presetSizes = getWindowSizesForPreset(companion.sizePreset);
   const expandedContentWidth = presetSizes.expanded.width;
@@ -502,7 +508,12 @@ export default function App() {
       </div>
 
       {widgetPanelState !== "closed" ? (
-        <div className="widget-tooltip-panel" data-state={widgetPanelState}>
+        <div
+          className="widget-tooltip-panel"
+          data-state={widgetPanelState}
+          data-has-nav={hasWidgetSliderNav ? "true" : "false"}
+          data-widget-tone={widgetArrowTone}
+        >
           <div className="widget-tooltip-panel__arrow" aria-hidden="true" />
           <DataPanelSlider
             activeIndex={Math.max(0, clampedDisplayedActivePanelIndex)}

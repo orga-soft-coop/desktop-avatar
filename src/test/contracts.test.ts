@@ -35,6 +35,21 @@ describe("desktop avatar contracts", () => {
     expect(response.widget?.type).toBe("keyValue");
   });
 
+  it("accepts area chart widgets", () => {
+    const widget: DesktopAvatarWidgetPayload = {
+      type: "areaChart",
+      title: "Nachfrage",
+      xKey: "monat",
+      series: [{ key: "value", label: "Wert" }],
+      rows: [
+        { monat: "Jan", value: 10 },
+        { monat: "Feb", value: 15 }
+      ]
+    };
+
+    expect(widget.type).toBe("areaChart");
+  });
+
   it("accepts talk stream events", () => {
     const event: DesktopAvatarStreamEvent = {
       type: "talk",

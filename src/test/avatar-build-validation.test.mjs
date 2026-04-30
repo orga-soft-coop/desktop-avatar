@@ -15,6 +15,14 @@ function createClipsDir(files) {
   return dir;
 }
 
+function createTempFile(name) {
+  const dir = mkdtempSync(join(tmpdir(), "avatar-build-validation-file-"));
+  tempDirs.push(dir);
+  const file = join(dir, name);
+  writeFileSync(file, "dummy");
+  return file;
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0, tempDirs.length)) {
     rmSync(dir, { recursive: true, force: true });
@@ -22,7 +30,7 @@ afterEach(() => {
 });
 
 describe("avatar build validation", () => {
-  it("passes with required clips and warns only for optional talking", () => {
+  it("still supports clip-only validation args", () => {
     const dir = createClipsDir([
       "idle.fbx",
       "walking.fbx",
@@ -35,6 +43,34 @@ describe("avatar build validation", () => {
     ]);
 
     const result = validateAvatarBuildArgs(["--mode", "semi", "--clips-dir", dir]);
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("passes with required clips and warns only for optional talking", () => {
+    const dir = createClipsDir([
+      "idle.fbx",
+      "walking.fbx",
+      "thinking.fbx",
+      "communicating.fbx",
+      "coffee-break.fbx",
+      "at-phone.fbx",
+      "teleport-out.fbx",
+      "teleport-in.fbx"
+    ]);
+    const meshGlb = createTempFile("mesh.glb");
+    const baseFbx = createTempFile("base.fbx");
+
+    const result = validateAvatarBuildArgs([
+      "--mode",
+      "semi",
+      "--mesh-glb",
+      meshGlb,
+      "--base-fbx",
+      baseFbx,
+      "--clips-dir",
+      dir
+    ]);
     expect(result.ok).toBe(true);
     expect(result.errors).toHaveLength(0);
     expect(result.warnings.join(" ")).toContain("Optional talking clip missing");
@@ -50,9 +86,47 @@ describe("avatar build validation", () => {
       "teleport-out.fbx",
       "teleport-in.fbx"
     ]);
+    const meshGlb = createTempFile("mesh.glb");
+    const baseFbx = createTempFile("base.fbx");
 
-    const result = validateAvatarBuildArgs(["--mode", "semi", "--clips-dir", dir]);
+    const result = validateAvatarBuildArgs([
+      "--mode",
+      "semi",
+      "--mesh-glb",
+      meshGlb,
+      "--base-fbx",
+      baseFbx,
+      "--clips-dir",
+      dir
+    ]);
     expect(result.ok).toBe(false);
     expect(result.errors.join(" ")).toContain("communicating");
+  });
+
+  it("fails when base FBX path is missing", () => {
+    const dir = createClipsDir([
+      "idle.fbx",
+      "walking.fbx",
+      "thinking.fbx",
+      "communicating.fbx",
+      "coffee-break.fbx",
+      "at-phone.fbx",
+      "teleport-out.fbx",
+      "teleport-in.fbx"
+    ]);
+    const meshGlb = createTempFile("mesh.glb");
+
+    const result = validateAvatarBuildArgs([
+      "--mode",
+      "semi",
+      "--mesh-glb",
+      meshGlb,
+      "--base-fbx",
+      join(dir, "does-not-exist.fbx"),
+      "--clips-dir",
+      dir
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.errors.join(" ")).toContain("base FBX does not exist");
   });
 });

@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "avatar:build": "node ./tools/avatar-build/run-avatar-build.mjs",
+    "avatar:build:tripo": "node ./tools/avatar-build/run-avatar-build-tripo.mjs",
     "avatar:validate": "node ./tools/avatar-build/validate-avatar-build.mjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
@@ -22,6 +23,7 @@
     "@tauri-apps/api": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "recharts": "2.15.0",
     "three": "0.182.0"
   },
   "devDependencies": {

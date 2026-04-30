@@ -143,4 +143,33 @@ describe("desktop avatar orchestrator", () => {
     expect(state.error).toContain("not found");
     expect(state.animation).toBe("attention");
   });
+
+  it("keeps backend status messages unchanged", () => {
+    let state = reduceDesktopAvatarState(desktopAvatarInitialState, {
+      type: "createAccepted",
+      result: {
+        accepted: true,
+        avatarRequestId: "req-4",
+        status: "RECEIVED",
+        streamUrl: "/stream",
+        pollUrl: "/poll",
+        idempotent: false
+      }
+    });
+
+    state = reduceDesktopAvatarState(state, {
+      type: "streamEvent",
+      event: {
+        type: "status",
+        avatarRequestId: "req-4",
+        status: "FETCHING_DATA",
+        message: "Calculate forecast values from the prepared time-series input.",
+        emittedAt: "2026-04-30T10:00:00.000Z"
+      }
+    });
+
+    expect(state.statusMessage).toBe(
+      "Calculate forecast values from the prepared time-series input."
+    );
+  });
 });

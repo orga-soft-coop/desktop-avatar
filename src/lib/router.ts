@@ -64,17 +64,17 @@ const casualKeywords = [
 export function routePrompt(prompt: string): PromptRoute {
   const normalized = prompt.toLowerCase();
 
-  if (businessKeywords.some((keyword) => normalized.includes(keyword))) {
-    return "backendBusiness";
-  }
-
   if (casualKeywords.some((keyword) => normalized.includes(keyword))) {
     return "localChat";
+  }
+
+  if (businessKeywords.some((keyword) => normalized.includes(keyword))) {
+    return "backendBusiness";
   }
 
   if (backendReviewKeywords.some((keyword) => normalized.includes(keyword))) {
     return "backendReview";
   }
 
-  return "localChat";
+  return "backendBusiness";
 }

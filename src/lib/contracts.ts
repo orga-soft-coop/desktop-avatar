@@ -60,6 +60,19 @@ export interface DesktopAvatarTextWidget {
   text: string;
 }
 
+export interface DesktopAvatarAreaChartWidget {
+  type: "areaChart";
+  title: string;
+  xKey: string;
+  series: Array<{
+    key: string;
+    label: string;
+    color?: string;
+  }>;
+  rows: Array<Record<string, string | number | null>>;
+  summary?: string;
+}
+
 export interface DesktopAvatarClarificationWidget {
   type: "clarification";
   title: string;
@@ -77,6 +90,7 @@ export type DesktopAvatarWidgetPayload =
   | DesktopAvatarTableWidget
   | DesktopAvatarKeyValueWidget
   | DesktopAvatarTextWidget
+  | DesktopAvatarAreaChartWidget
   | DesktopAvatarClarificationWidget
   | DesktopAvatarErrorWidget;
 

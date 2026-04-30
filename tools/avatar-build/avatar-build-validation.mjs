@@ -65,6 +65,22 @@ export function validateAvatarBuildArgs(args) {
     errors.push("Missing or invalid --mode (expected: semi|full).");
   }
 
+  const meshGlbArg = readArgValue(args, "--mesh-glb");
+  if (meshGlbArg) {
+    const meshGlb = resolve(process.cwd(), meshGlbArg);
+    if (!existsSync(meshGlb) || !statSync(meshGlb).isFile()) {
+      errors.push(`mesh GLB does not exist: ${meshGlb}`);
+    }
+  }
+
+  const baseFbxArg = readArgValue(args, "--base-fbx");
+  if (baseFbxArg) {
+    const baseFbx = resolve(process.cwd(), baseFbxArg);
+    if (!existsSync(baseFbx) || !statSync(baseFbx).isFile()) {
+      errors.push(`base FBX does not exist: ${baseFbx}`);
+    }
+  }
+
   const clipsDirArg = readArgValue(args, "--clips-dir");
   if (!clipsDirArg) {
     errors.push("Missing --clips-dir.");

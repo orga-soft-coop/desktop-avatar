@@ -1,6 +1,7 @@
 import type { DesktopAvatarWidgetPayload } from "../lib/contracts";
 import { t } from "../lib/i18n";
 import { DataTable } from "./DataTable";
+import { WidgetAreaChart } from "./WidgetAreaChart";
 import { WidgetHeader } from "./WidgetHeader";
 
 interface DesktopAvatarWidgetPanelProps {
@@ -98,6 +99,10 @@ export function DesktopAvatarWidgetPanel({
         </div>
       </section>
     );
+  }
+
+  if (widget.type === "areaChart") {
+    return <WidgetAreaChart widget={widget} onClose={onDismiss} />;
   }
 
   return (

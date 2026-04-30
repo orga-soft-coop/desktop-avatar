@@ -61,13 +61,45 @@
     "fieldOfViewValue": "Wert Sichtfeld",
     "reset": "Zurücksetzen",
     "copyConfig": "Konfiguration kopieren",
-    "copied": "Kopiert!"
+    "copied": "Kopiert!",
+    "collapseAll": "Alle einklappen",
+    "widgetDemo": "Widget Demo",
+    "closeDemo": "Demo schließen",
+    "clearDemoSelection": "Auswahl leeren",
+    "demoTable": "Tabelle",
+    "demoKeyValue": "Key/Value",
+    "demoText": "Text",
+    "demoClarification": "Rückfrage",
+    "demoAreaChart": "Flächenchart",
+    "demoError": "Fehlerkarte",
+    "demoSummary": {
+      "none": "keins aktiv",
+      "multiple": "{{count}} aktiv",
+      "table": "Tabelle",
+      "keyValue": "Key/Value",
+      "text": "Text",
+      "clarification": "Rückfrage",
+      "areaChart": "Flächenchart",
+      "error": "Fehlerkarte"
+    }
   },
   "widgets": {
     "dismiss": "Schließen",
     "yes": "Ja",
     "no": "Nein",
-    "businessMetrics": "Geschäftskennzahlen"
+    "businessMetrics": "Geschäftskennzahlen",
+    "table": {
+      "previousPage": "Zurück",
+      "nextPage": "Weiter",
+      "pageXofY": "Seite {{current}} / {{total}}",
+      "rowsRange": "{{from}}-{{to}} von {{total}}"
+    }
+  },
+  "slider": {
+    "navigation": "Slider-Navigation",
+    "previous": "Zurück",
+    "next": "Weiter",
+    "slide": "Folie {{index}}"
   },
   "status": {
     "sendingRequest": "Anfrage wird gesendet…",

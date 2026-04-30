@@ -266,6 +266,30 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
   });
 
+  it("uses API-first routing for non-casual prompts", async () => {
+    mocks.createRequestMock.mockResolvedValue({
+      accepted: true,
+      avatarRequestId: "req-api-first",
+      status: "RECEIVED",
+      streamUrl: "/stream/req-api-first",
+      pollUrl: "/poll/req-api-first",
+      idempotent: false
+    });
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    act(() => {
+      result.current.setDraft("Welche Artikel muss ich nachbestellen?");
+    });
+    await act(async () => {
+      await result.current.submitCurrentDraft();
+    });
+
+    expect(mocks.createRequestMock).toHaveBeenCalledTimes(1);
+    expect(mocks.sendLocalChatMock).not.toHaveBeenCalled();
+  });
+
   it("tracks actual TTS provider and fallback usage in latency debug", async () => {
     mocks.getBootstrapStateMock.mockResolvedValue({
       avatarManifest: null,
@@ -389,7 +413,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
   });
 
-  it("surfaces backend create errors when the runtime rejects with a string", async () => {
+  it("falls back to local chat on unsupported/no-match backend errors", async () => {
     mocks.createRequestMock.mockRejectedValueOnce(
       "Desktop Avatar create returned 409 Conflict: No active studio agents support READ_SQL_SERVER_QUERY."
     );
@@ -405,7 +429,29 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
 
     await waitFor(() => {
-      expect(result.current.error).toContain("No active studio agents support READ_SQL_SERVER_QUERY");
+      expect(mocks.sendLocalChatMock).toHaveBeenCalledTimes(1);
+      expect(result.current.error).toBeNull();
+      expect(result.current.messages.filter((message) => message.role === "assistant")).toHaveLength(1);
+      expect(result.current.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    });
+  });
+
+  it("does not fall back to local chat on technical backend errors", async () => {
+    mocks.createRequestMock.mockRejectedValueOnce(new Error("network timeout"));
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    act(() => {
+      result.current.setDraft("Zeig mir die letzten 10 Bestellungen von gestern");
+    });
+    await act(async () => {
+      await result.current.submitCurrentDraft();
+    });
+
+    await waitFor(() => {
+      expect(mocks.sendLocalChatMock).not.toHaveBeenCalled();
+      expect(result.current.error).toContain("network timeout");
     });
   });
 

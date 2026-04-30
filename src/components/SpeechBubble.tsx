@@ -1,12 +1,14 @@
 interface SpeechBubbleProps {
   text: string;
   tone?: "default" | "status" | "error";
+  showThinkingIndicator?: boolean;
   onDragStart?: () => void;
 }
 
 export function SpeechBubble({
   text,
   tone = "default",
+  showThinkingIndicator = false,
   onDragStart
 }: SpeechBubbleProps) {
   if (!text.trim()) {
@@ -25,7 +27,19 @@ export function SpeechBubble({
         onDragStart?.();
       }}
     >
-      <p>{text}</p>
+      <p>
+        {text}
+        <span
+          className="speech-bubble__thinking"
+          data-visible={showThinkingIndicator ? "true" : "false"}
+          aria-hidden="true"
+          data-testid="speech-bubble-thinking"
+        >
+          <span className="speech-bubble__thinking-dot" />
+          <span className="speech-bubble__thinking-dot" />
+          <span className="speech-bubble__thinking-dot" />
+        </span>
+      </p>
       <span className="speech-bubble__tail" aria-hidden="true" />
     </div>
   );

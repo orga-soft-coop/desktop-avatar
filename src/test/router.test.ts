@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { routePrompt } from "../lib/router";
 
 describe("routePrompt", () => {
+  it("routes reorder-style operational prompts to backend by default", () => {
+    expect(routePrompt("Welche Artikel muss ich nachbestellen?")).toBe(
+      "backendBusiness"
+    );
+  });
+
   it("routes business prompts to the backend path", () => {
     expect(routePrompt("Welche Bestellungen sind gestern Nacht eingegangen?")).toBe(
       "backendBusiness"
@@ -22,5 +28,9 @@ describe("routePrompt", () => {
     expect(routePrompt("Gib mir den Forecast fuer naechste Woche")).toBe(
       "backendBusiness"
     );
+  });
+
+  it("routes unknown non-casual prompts to backend by default", () => {
+    expect(routePrompt("Bitte analysiere das")).toBe("backendBusiness");
   });
 });

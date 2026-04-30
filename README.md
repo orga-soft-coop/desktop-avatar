@@ -82,11 +82,10 @@ User input (text or voice)
     ├─ Voice → OpenAI STT → transcript
     │
     ▼
-routePrompt(text)  ──→  keyword classifier
+routePrompt(text)  ──→  API-first classifier
     │
-    ├─ "localChat"       → LM Studio (local LLM, SSE streaming)
-    ├─ "backendBusiness"  → Desktop Avatar backend API (create + SSE stream)
-    └─ "backendReview"    → Desktop Avatar backend API (same create + SSE flow)
+    ├─ clear smalltalk      → LM Studio (local LLM, SSE streaming)
+    └─ non-casual prompts   → Desktop Avatar backend API (create + SSE stream)
     │
     ▼
 SSE stream events → Tauri emits to frontend
@@ -98,6 +97,13 @@ SSE stream events → Tauri emits to frontend
     ▼
 TTS (macOS `say` command) → speaking animation
 ```
+
+### Routing Policy (API-first)
+
+- Default behavior is API-first: non-casual prompts are sent to the Desktop Avatar backend API.
+- Local LM Studio chat is reserved for clear smalltalk/greeting prompts.
+- If backend request creation returns an explicit unsupported/no-match routing error (for example no capable active agent), the client falls back once to local chat and reuses the existing placeholder message.
+- Technical backend failures (timeout/network/5xx) do not auto-fallback; the error is shown to the user.
 
 ### Directory Structure
 
@@ -116,7 +122,7 @@ src/
   lib/
     contracts.ts             All TypeScript interfaces
     tauri.ts                 Tauri IPC bridge (invoke + listen wrappers)
-    router.ts                Prompt routing (keyword → local/business/review)
+    router.ts                Prompt routing (API-first + local smalltalk exception)
     avatar-assets.ts         Asset resolution (file paths, relative, HTTPS → blob URLs)
     vrm-animation.ts         VRMA + FBX loading with Mixamo bone mapping
     window-presets.ts        Size presets (S/M/L) + localStorage persistence
@@ -147,7 +153,7 @@ src-tauri/
 | thinking | thinking clip |
 | speaking | talking clip |
 
-**`router.ts`** — Classifies user prompts into routes via keyword matching. Business terms (Bestellung, Kunde, Rechnung, etc.) route to the backend. Casual phrases (hallo, witz, explain) stay local. Operational terms (check, status, gestern) go to the review endpoint.
+**`router.ts`** — API-first prompt classification. Casual phrases (hallo, witz, who are you, etc.) stay local; all other prompts route to backend paths (`backendBusiness` or `backendReview`).
 
 **`main.rs` (Rust)** — Tauri backend with commands for:
 - Window management (resize, drag, expand/collapse, click-through)
@@ -288,8 +294,20 @@ pnpm --dir desktop-avatar avatar:build \
   --output-glb /abs/path/build/female_avatar_1.glb
 ```
 
+For Tripo-rigged base FBX files, run:
+
+```bash
+pnpm --dir desktop-avatar avatar:build:tripo \
+  --mode semi \
+  --mesh-glb /abs/path/neutral_avatar_2.glb \
+  --base-fbx /abs/path/neutral_avatar_2_base.fbx \
+  --clips-dir /abs/path/clips \
+  --output-glb /abs/path/build/neutral_avatar_2.glb
+```
+
 Use `--mode full` for final export.  
 Optional in `full` mode: `--desktop-target` and `--studio-target` to copy the generated GLB to separate runtime paths.  
+The build narrows unusually wide lower-body rest stance automatically and keeps capped vertical hips motion on a shared clip baseline so walking/working feet stay grounded.
 Details: `tools/avatar-build/README.md`.
 
 ## Environment

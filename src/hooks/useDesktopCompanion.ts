@@ -211,6 +211,21 @@ function errorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function isUnsupportedNoMatchErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("unsupported") ||
+    normalized.includes("no-match") ||
+    normalized.includes("no match") ||
+    normalized.includes("no active studio agents support") ||
+    normalized.includes("does not support required actions") ||
+    normalized.includes("ops routing found no active domain target supporting") ||
+    normalized.includes("no active studio agents available for desktop avatar routing") ||
+    normalized.includes("studio agent is not active and cannot be routed") ||
+    normalized.includes("studio agent not found")
+  );
+}
+
 function nextPollDelay(attempt: number): number {
   if (attempt <= 0) {
     return 500;
@@ -908,6 +923,101 @@ export function useDesktopCompanion() {
     setCompanionState("thinking");
   }
 
+  async function startLocalChatRequest(input: {
+    prompt: string;
+    source: MessageSource;
+    route: PromptRoute;
+    existingAssistantMessageId?: string;
+    statusText?: string;
+  }) {
+    const startedAtMs = Date.now();
+    await stopSpeaking();
+    await cleanupDesktopAvatarRuntime();
+
+    let requestId: string;
+    let nextMessages: ChatMessage[];
+    if (input.existingAssistantMessageId) {
+      requestId = input.existingAssistantMessageId;
+      nextMessages = messagesRef.current.map((message) =>
+        message.id === requestId
+          ? {
+              ...message,
+              text: "",
+              isStreaming: true,
+              widget: null,
+              followUpQuestions: [],
+              requestStatus: null,
+              avatarRequestId: null,
+              clientRequestId: null
+            }
+          : message
+      );
+    } else {
+      const userMessage = buildUserMessage(input.prompt, input.source);
+      const assistantMessage = buildAssistantPlaceholder(input.source);
+      requestId = assistantMessage.id;
+      nextMessages = [...messagesRef.current, userMessage, assistantMessage];
+    }
+
+    messagesRef.current = nextMessages;
+    setMessages(nextMessages);
+    setDraft("");
+    requestContextsRef.current.set(requestId, {
+      prompt: input.prompt,
+      source: input.source,
+      route: "localChat"
+    });
+    activeLocalRequestIdRef.current = requestId;
+    activeDesktopAvatarRequestRef.current = null;
+    desktopAvatarDispatch({ type: "reset" });
+    setLatencyTimeline({
+      requestKey: requestId,
+      requestKind: "local-chat",
+      route: input.route,
+      source: input.source,
+      status: "starting",
+      startedAtMs,
+      startedAt: new Date(startedAtMs).toISOString(),
+      usedPolling: false,
+      ttsProvider: null,
+      ttsFallbackUsed: null,
+      lastError: null,
+      clientRequestId: null,
+      avatarRequestId: null,
+      ttsRequestId: null
+    });
+
+    if (!isExpanded) {
+      await toggleExpanded();
+    }
+
+    setCompanionState("thinking");
+    setStatus(input.statusText ?? t("status.thinkingLocally"));
+
+    try {
+      const request: LocalChatRequest = {
+        requestId,
+        prompt: input.prompt,
+        messages: buildLocalHistory(nextMessages)
+      };
+      await sendLocalChat(request);
+    } catch (caughtError) {
+      const message = errorMessage(caughtError, t("status.requestCouldNotStart"));
+      patchLatencyByRequestKey(requestId, (current) => ({
+        ...current,
+        status: "error",
+        failedAtMs: current.failedAtMs ?? Date.now(),
+        lastError: message
+      }));
+      await handleLocalStreamEvent({
+        requestId,
+        source: "local",
+        kind: "error",
+        payload: { message }
+      });
+    }
+  }
+
   async function submitDesktopAvatarPrompt(
     prompt: string,
     source: MessageSource,
@@ -983,6 +1093,18 @@ export function useDesktopCompanion() {
       await connectDesktopAvatarStream(result.avatarRequestId, result.streamUrl, result.pollUrl);
     } catch (caughtError) {
       const message = errorMessage(caughtError, t("status.requestCouldNotStart"));
+      if (isUnsupportedNoMatchErrorMessage(message)) {
+        await startLocalChatRequest({
+          prompt,
+          source,
+          route,
+          existingAssistantMessageId:
+            activeDesktopAvatarRequestRef.current?.assistantMessageId ??
+            assistantMessage.id,
+          statusText: t("status.continuingLocally")
+        });
+        return;
+      }
       patchLatencyByRequestKey(requestId, (current) => ({
         ...current,
         status: "FAILED",
@@ -1008,65 +1130,7 @@ export function useDesktopCompanion() {
     setError(null);
 
     if (route === "localChat") {
-      const startedAtMs = Date.now();
-      await stopSpeaking();
-      await cleanupDesktopAvatarRuntime();
-      const userMessage = buildUserMessage(prompt, source);
-      const assistantMessage = buildAssistantPlaceholder(source);
-      const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
-      messagesRef.current = nextMessages;
-      setMessages(nextMessages);
-      setDraft("");
-      requestContextsRef.current.set(assistantMessage.id, { prompt, source, route });
-      activeLocalRequestIdRef.current = assistantMessage.id;
-      activeDesktopAvatarRequestRef.current = null;
-      desktopAvatarDispatch({ type: "reset" });
-      setLatencyTimeline({
-        requestKey: assistantMessage.id,
-        requestKind: "local-chat",
-        route,
-        source,
-        status: "starting",
-        startedAtMs,
-        startedAt: new Date(startedAtMs).toISOString(),
-        usedPolling: false,
-        ttsProvider: null,
-        ttsFallbackUsed: null,
-        lastError: null,
-        clientRequestId: null,
-        avatarRequestId: null,
-        ttsRequestId: null
-      });
-
-      if (!isExpanded) {
-        await toggleExpanded();
-      }
-
-      setCompanionState("thinking");
-      setStatus(t("status.thinkingLocally"));
-
-      try {
-        const request: LocalChatRequest = {
-          requestId: assistantMessage.id,
-          prompt,
-          messages: buildLocalHistory(nextMessages)
-        };
-        await sendLocalChat(request);
-      } catch (caughtError) {
-        const message = errorMessage(caughtError, t("status.requestCouldNotStart"));
-        patchLatencyByRequestKey(assistantMessage.id, (current) => ({
-          ...current,
-          status: "error",
-          failedAtMs: current.failedAtMs ?? Date.now(),
-          lastError: message
-        }));
-        await handleLocalStreamEvent({
-          requestId: assistantMessage.id,
-          source: "local",
-          kind: "error",
-          payload: { message }
-        });
-      }
+      await startLocalChatRequest({ prompt, source, route });
       return;
     }
 

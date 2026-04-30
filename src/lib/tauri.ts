@@ -7,6 +7,8 @@ import type {
   DesktopAvatarRequestDocument,
   DesktopAvatarStreamEvent,
   DesktopAvatarStreamLifecycleEvent,
+  PeekMode,
+  PeekPosition,
   LocalChatRequest,
   SpeechTranscriptionRequest,
   StreamEnvelope,
@@ -45,18 +47,62 @@ export async function startWindowDrag(): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
-  await invoke("window_start_drag");
+  await invoke("window_start_drag", { mode: undefined });
+}
+
+export async function startWindowDragForMode(mode: PeekMode): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  await invoke("window_start_drag", { mode });
 }
 
 export async function toggleExpandedWindow(
   expanded: boolean,
   width?: number,
-  height?: number
+  height?: number,
+  collapsedWidth?: number,
+  collapsedHeight?: number
 ): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
-  await invoke("window_toggle_expanded", { expanded, width, height });
+  await invoke("window_set_peek_mode", {
+    mode: expanded ? "expanded" : "peek",
+    width,
+    height,
+    collapsedWidth,
+    collapsedHeight,
+    animated: false
+  });
+}
+
+export async function setPeekMode(
+  mode: PeekMode,
+  width?: number,
+  height?: number,
+  collapsedWidth?: number,
+  collapsedHeight?: number,
+  animated = true
+): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  await invoke("window_set_peek_mode", {
+    mode,
+    width,
+    height,
+    collapsedWidth,
+    collapsedHeight,
+    animated
+  });
+}
+
+export async function setPeekPosition(position: PeekPosition): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  await invoke("window_set_peek_position", { position });
 }
 
 export async function resizeWindow(width: number, height: number): Promise<void> {
@@ -66,11 +112,20 @@ export async function resizeWindow(width: number, height: number): Promise<void>
   await invoke("window_resize", { width, height });
 }
 
-export async function setClickThrough(ignore: boolean): Promise<void> {
+export interface WindowGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  screenWidth: number;
+  screenHeight: number;
+}
+
+export async function getWindowGeometry(): Promise<WindowGeometry | null> {
   if (!isTauriRuntime()) {
-    return;
+    return null;
   }
-  await invoke("window_set_click_through", { ignore });
+  return invoke<WindowGeometry>("window_get_geometry");
 }
 
 export async function loadAvatarAsset(path: string): Promise<string> {
@@ -207,4 +262,27 @@ export function onTtsState(
     return Promise.resolve(() => {});
   }
   return listen<TtsStateEvent>("tts-state", ({ payload }) => listener(payload));
+}
+
+export function onTrayPeekOpen(listener: () => void): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return Promise.resolve(() => {});
+  }
+  return listen("peek-open", () => listener());
+}
+
+export function onTrayPeekCollapse(listener: () => void): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return Promise.resolve(() => {});
+  }
+  return listen("peek-collapse", () => listener());
+}
+
+export function onTrayPeekPositionChanged(
+  listener: (position: PeekPosition) => void
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return Promise.resolve(() => {});
+  }
+  return listen<PeekPosition>("peek-position-changed", ({ payload }) => listener(payload));
 }

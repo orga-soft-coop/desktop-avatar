@@ -152,7 +152,18 @@ function CameraController({ config }: { config: AvatarCameraConfig }) {
     targetLookAt.current.set(config.target.x, config.target.y, config.target.z);
     camera.fov = config.fov;
     camera.updateProjectionMatrix();
-  }, [camera, config, size.height]);
+  }, [
+    camera,
+    config.fov,
+    config.position.x,
+    config.position.y,
+    config.position.z,
+    config.referenceHeight,
+    config.target.x,
+    config.target.y,
+    config.target.z,
+    size.height
+  ]);
 
   useFrame(() => {
     const target = targetPosition.current;
@@ -182,7 +193,7 @@ function PlaceholderOrb({ companionState }: { companionState: CompanionState }) 
   return (
     <mesh ref={meshRef} position={[0, 0.15, 0]}>
       <sphereGeometry args={[0.88, 64, 64]} />
-      <meshStandardMaterial color="#8de8d8" metalness={0.5} roughness={0.2} />
+      <meshStandardMaterial color="#7FB6DA" metalness={0.5} roughness={0.2} />
     </mesh>
   );
 }
@@ -512,54 +523,58 @@ export function AvatarStage({
 
   return (
     <section className={`avatar-stage ${expanded ? "is-expanded" : "is-collapsed"}`}>
-      <div
-        className="avatar-stage__surface"
-        data-tauri-drag-region
-        onMouseDown={(event) => {
-          if ((event.target as HTMLElement).closest("button, textarea, input")) {
-            return;
-          }
-          onDragStart();
-        }}
-      >
-        <Canvas
-          camera={{
-            position: [
-              cameraConfig.position.x,
-              cameraConfig.position.y,
-              cameraConfig.position.z
-            ],
-            fov: cameraConfig.fov
-          }}
-          gl={{ alpha: true }}
-          onCreated={({ scene, gl }) => {
-            scene.background = null;
-            gl.shadowMap.enabled = false;
+      <div className="avatar-stage__shadow" aria-hidden="true" />
+      <div className="avatar-stage__frame">
+        <div
+          className="avatar-stage__surface"
+          data-tauri-drag-region
+          onMouseDown={(event) => {
+            if ((event.target as HTMLElement).closest("button, textarea, input")) {
+              return;
+            }
+            onDragStart();
           }}
         >
-          <CameraController config={cameraConfig} />
-          <ambientLight intensity={1.1} />
-          <directionalLight position={[2.4, 4, 2.8]} intensity={2.8} />
-          <pointLight position={[-2, 1.3, 2]} intensity={10} />
-          <group position={[0, -1.05, 0]}>
-            <AvatarRig
-              companionState={companionState}
-              manifest={manifest}
-              forcedAnimation={forcedAnimation}
-              suggestedAnimation={suggestedAnimation}
-              onLoadError={setLoadError}
-              onAnimationsLoaded={onAnimationsLoaded}
-              onAnimationDebugChange={onAnimationDebugChange}
-            />
-          </group>
-          <OrbitControls enabled={false} />
-        </Canvas>
-        {loadError ? (
-          <div className="avatar-stage__error" role="status">
-            {loadError}
-          </div>
-        ) : null}
+          <Canvas
+            camera={{
+              position: [
+                cameraConfig.position.x,
+                cameraConfig.position.y,
+                cameraConfig.position.z
+              ],
+              fov: cameraConfig.fov
+            }}
+            gl={{ alpha: true }}
+            onCreated={({ scene, gl }) => {
+              scene.background = null;
+              gl.shadowMap.enabled = false;
+            }}
+          >
+            <CameraController config={cameraConfig} />
+            <ambientLight intensity={1.1} />
+            <directionalLight position={[2.4, 4, 2.8]} intensity={2.8} />
+            <pointLight position={[-2, 1.3, 2]} intensity={10} />
+            <group position={[0, -1.05, 0]}>
+              <AvatarRig
+                companionState={companionState}
+                manifest={manifest}
+                forcedAnimation={forcedAnimation}
+                suggestedAnimation={suggestedAnimation}
+                onLoadError={setLoadError}
+                onAnimationsLoaded={onAnimationsLoaded}
+                onAnimationDebugChange={onAnimationDebugChange}
+              />
+            </group>
+            <OrbitControls enabled={false} />
+          </Canvas>
+          {loadError ? (
+            <div className="avatar-stage__error" role="status">
+              {loadError}
+            </div>
+          ) : null}
+        </div>
       </div>
+      <div className="avatar-stage__ring" aria-hidden="true" />
       <div className="avatar-stage__pulse" data-state={companionState} />
     </section>
   );

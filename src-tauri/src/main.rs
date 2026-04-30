@@ -22,8 +22,8 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, State,
-    WebviewWindow,
+    Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, State,
+    WebviewWindow, WindowEvent,
 };
 use tokio::{process::Command, sync::Mutex};
 
@@ -31,10 +31,17 @@ const CHAT_STREAM_EVENT: &str = "chat-stream-event";
 const DESKTOP_AVATAR_STREAM_EVENT: &str = "desktop-avatar-stream-event";
 const DESKTOP_AVATAR_STREAM_LIFECYCLE_EVENT: &str = "desktop-avatar-stream-lifecycle";
 const TTS_STATE_EVENT: &str = "tts-state";
-const COLLAPSED_WIDTH: f64 = 520.0;
-const COLLAPSED_HEIGHT: f64 = 600.0;
+const DEFAULT_PEEK_WIDTH: f64 = 235.0;
+const DEFAULT_PEEK_HEIGHT: f64 = 235.0;
+const MAX_PEEK_WIDTH: f64 = 360.0;
+const MAX_PEEK_HEIGHT: f64 = 360.0;
 const EXPANDED_WIDTH: f64 = 720.0;
 const EXPANDED_HEIGHT: f64 = 700.0;
+const PEEK_WINDOW_MARGIN: f64 = 48.0;
+const EXPANDED_WINDOW_MARGIN: f64 = 24.0;
+const TRANSITION_STEPS: u32 = 14;
+const TRANSITION_DURATION_MS: u64 = 240;
+const TRANSITION_STAGE_DURATION_MS: u64 = 150;
 
 #[derive(Clone)]
 struct AppState {
@@ -42,6 +49,42 @@ struct AppState {
     config: Arc<AppConfig>,
     desktop_avatar_streams: Arc<Mutex<HashMap<String, async_runtime::JoinHandle<()>>>>,
     last_tts_text_by_request: Arc<Mutex<HashMap<String, String>>>,
+    peek_position: Arc<Mutex<PeekPosition>>,
+    current_window_mode: Arc<Mutex<WindowMode>>,
+    last_peek_rect: Arc<Mutex<Option<WindowRect>>>,
+    last_expanded_rect: Arc<Mutex<Option<WindowRect>>>,
+    suppress_window_tracking: Arc<Mutex<bool>>,
+    drag_tracking_mode: Arc<Mutex<Option<WindowMode>>>,
+    drag_tracking_revision: Arc<Mutex<u64>>,
+    peek_size: Arc<Mutex<WindowSize>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum PeekPosition {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl Default for PeekPosition {
+    fn default() -> Self {
+        Self::TopRight
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum WindowMode {
+    Peek,
+    Expanded,
+}
+
+impl Default for WindowMode {
+    fn default() -> Self {
+        Self::Expanded
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +108,7 @@ struct AppConfig {
     local_tts_headers: HashMap<String, String>,
     avatar_asset_manifest: Option<PathBuf>,
     log_file_path: PathBuf,
+    window_state_path: PathBuf,
     enable_tts: bool,
     local_llm_base_url: String,
     local_llm_model: String,
@@ -102,11 +146,42 @@ struct BootstrapState {
     tts_enabled: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowSize {
     width: f64,
     height: f64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedWindowState {
+    #[serde(default)]
+    peek_position: PeekPosition,
+    #[serde(default = "default_peek_size")]
+    peek_size: WindowSize,
+    #[serde(default)]
+    last_peek_rect: Option<WindowRect>,
+    #[serde(default)]
+    last_expanded_rect: Option<WindowRect>,
+}
+
+impl Default for PersistedWindowState {
+    fn default() -> Self {
+        Self {
+            peek_position: PeekPosition::default(),
+            peek_size: default_peek_size(),
+            last_peek_rect: None,
+            last_expanded_rect: None,
+        }
+    }
+}
+
+fn default_peek_size() -> WindowSize {
+    WindowSize {
+        width: DEFAULT_PEEK_WIDTH,
+        height: DEFAULT_PEEK_HEIGHT,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -462,6 +537,7 @@ impl AppConfig {
                 .exists()
                 .then_some(default_manifest.clone()));
         let log_file_path = workspace_root.join("tmp").join("desktop-avatar.log");
+        let window_state_path = workspace_root.join("tmp").join("desktop-avatar-window-state.json");
 
         let _ = fs::create_dir_all(log_file_path.parent().unwrap_or_else(|| Path::new(".")));
         let _ = fs::write(&log_file_path, "");
@@ -547,6 +623,7 @@ impl AppConfig {
             local_tts_headers,
             avatar_asset_manifest,
             log_file_path,
+            window_state_path,
             enable_tts: env::var("ENABLE_TTS")
                 .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
                 .unwrap_or(true),
@@ -749,8 +826,8 @@ async fn load_bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapSta
     Ok(BootstrapState {
         avatar_manifest,
         collapsed_size: WindowSize {
-            width: COLLAPSED_WIDTH,
-            height: COLLAPSED_HEIGHT,
+            width: DEFAULT_PEEK_WIDTH,
+            height: DEFAULT_PEEK_HEIGHT,
         },
         expanded_size: WindowSize {
             width: EXPANDED_WIDTH,
@@ -791,40 +868,455 @@ async fn frontend_log(
 }
 
 #[tauri::command]
-async fn window_toggle_expanded(
-    window: WebviewWindow,
-    expanded: bool,
-    width: Option<f64>,
-    height: Option<f64>,
-) -> Result<(), String> {
-    let width = width.unwrap_or(if expanded {
-        EXPANDED_WIDTH
-    } else {
-        COLLAPSED_WIDTH
-    });
-    let height = height.unwrap_or(if expanded {
-        EXPANDED_HEIGHT
-    } else {
-        COLLAPSED_HEIGHT
-    });
-    resize_window_internal(&window, width, height)
-}
-
-#[tauri::command]
 async fn window_resize(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
     resize_window_internal(&window, width, height)
 }
 
-#[tauri::command]
-async fn window_start_drag(window: WebviewWindow) -> Result<(), String> {
-    window.start_dragging().map_err(|error| error.to_string())
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowGeometry {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    screen_width: f64,
+    screen_height: f64,
 }
 
 #[tauri::command]
-async fn window_set_click_through(window: WebviewWindow, ignore: bool) -> Result<(), String> {
+async fn window_get_geometry(window: WebviewWindow) -> Result<WindowGeometry, String> {
+    let rect = current_window_rect(&window)?;
+    let (screen_width, screen_height) = monitor_logical_size(&window)?;
+    Ok(WindowGeometry {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        screen_width,
+        screen_height,
+    })
+}
+
+#[tauri::command]
+async fn window_start_drag(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    mode: Option<String>,
+) -> Result<(), String> {
+    let dragged_mode = if mode
+        .as_deref()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("peek"))
+    {
+        WindowMode::Peek
+    } else if mode
+        .as_deref()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("expanded"))
+    {
+        WindowMode::Expanded
+    } else {
+        *state.current_window_mode.lock().await
+    };
+
+    {
+        let mut guard = state.drag_tracking_mode.lock().await;
+        *guard = Some(dragged_mode);
+    }
+    let drag_revision = {
+        let mut guard = state.drag_tracking_revision.lock().await;
+        *guard += 1;
+        *guard
+    };
+    let drag_tracking_mode = state.drag_tracking_mode.clone();
+    let drag_tracking_revision = state.drag_tracking_revision.clone();
+    let app_state = state.inner().clone();
+    let tracked_window = window.clone();
+    async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(260)).await;
+        let current_revision = *drag_tracking_revision.lock().await;
+        if current_revision != drag_revision {
+            return;
+        }
+        let active_mode = *drag_tracking_mode.lock().await;
+        let Some(active_mode) = active_mode else {
+            return;
+        };
+        let Ok(rect) = current_window_rect(&tracked_window) else {
+            let mut guard = drag_tracking_mode.lock().await;
+            *guard = None;
+            return;
+        };
+        match active_mode {
+            WindowMode::Peek => {
+                let peek_size = *app_state.peek_size.lock().await;
+                let mut guard = app_state.last_peek_rect.lock().await;
+                *guard = peek_rect_for_origin(&tracked_window, rect.x, rect.y, peek_size).ok();
+            }
+            WindowMode::Expanded => {
+                let mut guard = app_state.last_expanded_rect.lock().await;
+                *guard = clamp_window_rect_to_monitor(&tracked_window, rect).ok();
+            }
+        }
+        {
+            let mut guard = drag_tracking_mode.lock().await;
+            *guard = None;
+        }
+        persist_window_state(&app_state).await;
+    });
+
+    window.start_dragging().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+fn ease_out_cubic(value: f64) -> f64 {
+    1.0 - (1.0 - value).powi(3)
+}
+
+fn rect_origin_delta(a: WindowRect, b: WindowRect) -> f64 {
+    (a.x - b.x).abs().max((a.y - b.y).abs())
+}
+
+fn current_window_rect(window: &WebviewWindow) -> Result<WindowRect, String> {
+    let position = window.outer_position().map_err(|error| error.to_string())?;
+    let size = window.outer_size().map_err(|error| error.to_string())?;
+    let scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
+    if scale_factor <= 0.0 {
+        return Err("Invalid window scale factor".to_string());
+    }
+    Ok(WindowRect {
+        x: position.x as f64 / scale_factor,
+        y: position.y as f64 / scale_factor,
+        width: size.width as f64 / scale_factor,
+        height: size.height as f64 / scale_factor,
+    })
+}
+
+fn read_persisted_window_state(path: &Path) -> PersistedWindowState {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<PersistedWindowState>(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn write_persisted_window_state(path: &Path, value: &PersistedWindowState) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let _ = fs::create_dir_all(parent);
+    let Ok(serialized) = serde_json::to_string_pretty(value) else {
+        return;
+    };
+    let _ = fs::write(path, serialized);
+}
+
+async fn persist_window_state(state: &AppState) {
+    let snapshot = PersistedWindowState {
+        peek_position: *state.peek_position.lock().await,
+        peek_size: *state.peek_size.lock().await,
+        last_peek_rect: *state.last_peek_rect.lock().await,
+        last_expanded_rect: *state.last_expanded_rect.lock().await,
+    };
+    write_persisted_window_state(&state.config.window_state_path, &snapshot);
+}
+
+fn apply_window_rect(window: &WebviewWindow, rect: WindowRect) -> Result<(), String> {
     window
-        .set_ignore_cursor_events(ignore)
+        .set_size(Size::Logical(LogicalSize::new(rect.width, rect.height)))
+        .map_err(|error| error.to_string())?;
+    window
+        .set_position(Position::Logical(LogicalPosition::new(rect.x, rect.y)))
         .map_err(|error| error.to_string())
+}
+
+fn monitor_logical_size(window: &WebviewWindow) -> Result<(f64, f64), String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .ok_or_else(|| "No monitor available".to_string())?;
+    let scale_factor = monitor.scale_factor();
+    let size = monitor.size();
+    Ok((
+        size.width as f64 / scale_factor,
+        size.height as f64 / scale_factor,
+    ))
+}
+
+fn normalize_peek_size(width: f64, height: f64) -> WindowSize {
+    let diameter = width.min(height).clamp(150.0, MAX_PEEK_WIDTH.min(MAX_PEEK_HEIGHT));
+    WindowSize {
+        width: diameter,
+        height: diameter,
+    }
+}
+
+fn clamp_window_rect_to_monitor(window: &WebviewWindow, rect: WindowRect) -> Result<WindowRect, String> {
+    let (screen_width, screen_height) = monitor_logical_size(window)?;
+    Ok(WindowRect {
+        x: rect.x.clamp(0.0, (screen_width - rect.width).max(0.0)),
+        y: rect.y.clamp(0.0, (screen_height - rect.height).max(0.0)),
+        width: rect.width,
+        height: rect.height,
+    })
+}
+
+fn peek_rect_for_position(
+    window: &WebviewWindow,
+    position: PeekPosition,
+    peek_size: WindowSize,
+) -> Result<WindowRect, String> {
+    let (screen_width, screen_height) = monitor_logical_size(window)?;
+    let x = match position {
+        PeekPosition::TopLeft | PeekPosition::BottomLeft => PEEK_WINDOW_MARGIN,
+        PeekPosition::TopRight | PeekPosition::BottomRight => {
+            (screen_width - peek_size.width - PEEK_WINDOW_MARGIN).max(PEEK_WINDOW_MARGIN)
+        }
+    };
+    let y = match position {
+        PeekPosition::TopLeft | PeekPosition::TopRight => PEEK_WINDOW_MARGIN,
+        PeekPosition::BottomLeft | PeekPosition::BottomRight => {
+            (screen_height - peek_size.height - PEEK_WINDOW_MARGIN).max(PEEK_WINDOW_MARGIN)
+        }
+    };
+    Ok(WindowRect {
+        x,
+        y,
+        width: peek_size.width,
+        height: peek_size.height,
+    })
+}
+
+fn peek_rect_for_origin(
+    window: &WebviewWindow,
+    x: f64,
+    y: f64,
+    peek_size: WindowSize,
+) -> Result<WindowRect, String> {
+    clamp_window_rect_to_monitor(
+        window,
+        WindowRect {
+            x,
+            y,
+            width: peek_size.width,
+            height: peek_size.height,
+        },
+    )
+}
+
+fn expanded_rect_for_position(
+    window: &WebviewWindow,
+    position: PeekPosition,
+    width: f64,
+    height: f64,
+) -> Result<WindowRect, String> {
+    let (screen_width, screen_height) = monitor_logical_size(window)?;
+    let x = match position {
+        PeekPosition::TopLeft | PeekPosition::BottomLeft => EXPANDED_WINDOW_MARGIN,
+        PeekPosition::TopRight | PeekPosition::BottomRight => {
+            (screen_width - width - EXPANDED_WINDOW_MARGIN).max(EXPANDED_WINDOW_MARGIN)
+        }
+    };
+    let y = match position {
+        PeekPosition::TopLeft | PeekPosition::TopRight => EXPANDED_WINDOW_MARGIN,
+        PeekPosition::BottomLeft | PeekPosition::BottomRight => {
+            (screen_height - height - EXPANDED_WINDOW_MARGIN).max(EXPANDED_WINDOW_MARGIN)
+        }
+    };
+    Ok(WindowRect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+fn expanded_rect_for_origin(
+    window: &WebviewWindow,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<WindowRect, String> {
+    clamp_window_rect_to_monitor(
+        window,
+        WindowRect {
+            x,
+            y,
+            width,
+            height,
+        },
+    )
+}
+
+async fn animate_window_rect(
+    window: &WebviewWindow,
+    from: WindowRect,
+    to: WindowRect,
+    duration_ms: u64,
+) -> Result<(), String> {
+    for step in 1..=TRANSITION_STEPS {
+        let progress = step as f64 / TRANSITION_STEPS as f64;
+        let eased = ease_out_cubic(progress);
+        let frame = WindowRect {
+            x: from.x + (to.x - from.x) * eased,
+            y: from.y + (to.y - from.y) * eased,
+            width: from.width + (to.width - from.width) * eased,
+            height: from.height + (to.height - from.height) * eased,
+        };
+        apply_window_rect(window, frame)?;
+        let per_step = (duration_ms / TRANSITION_STEPS as u64).max(8);
+        tokio::time::sleep(std::time::Duration::from_millis(per_step)).await;
+    }
+    apply_window_rect(window, to)
+}
+
+#[tauri::command]
+async fn window_set_peek_position(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    position: PeekPosition,
+) -> Result<(), String> {
+    {
+        let mut guard = state.peek_position.lock().await;
+        *guard = position;
+    }
+    let peek_size = *state.peek_size.lock().await;
+    let snapped_target = peek_rect_for_position(&window, position, peek_size)?;
+    {
+        let mut guard = state.last_peek_rect.lock().await;
+        *guard = Some(snapped_target);
+    }
+    let current = current_window_rect(&window)?;
+    if current.width <= MAX_PEEK_WIDTH + 2.0 && current.height <= MAX_PEEK_HEIGHT + 2.0 {
+        apply_window_rect(&window, snapped_target)?;
+    }
+    persist_window_state(state.inner()).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn window_set_peek_mode(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    mode: String,
+    width: Option<f64>,
+    height: Option<f64>,
+    collapsed_width: Option<f64>,
+    collapsed_height: Option<f64>,
+    animated: Option<bool>,
+) -> Result<(), String> {
+    let animate = animated.unwrap_or(true);
+    let next_mode = if mode.trim().eq_ignore_ascii_case("peek") {
+        WindowMode::Peek
+    } else {
+        WindowMode::Expanded
+    };
+    let current = current_window_rect(&window)?;
+    let current_peek_size = *state.peek_size.lock().await;
+    let requested_peek_size = normalize_peek_size(
+        collapsed_width.unwrap_or(current_peek_size.width),
+        collapsed_height.unwrap_or(current_peek_size.height),
+    );
+    {
+        let mut guard = state.peek_size.lock().await;
+        *guard = requested_peek_size;
+    }
+    let current_mode = *state.current_window_mode.lock().await;
+    match current_mode {
+        WindowMode::Peek => {
+            let mut guard = state.last_peek_rect.lock().await;
+            *guard = Some(current);
+        }
+        WindowMode::Expanded => {
+            let mut guard = state.last_expanded_rect.lock().await;
+            *guard = Some(current);
+        }
+    }
+
+    let target = if next_mode == WindowMode::Peek {
+        if let Some(saved_rect) = *state.last_peek_rect.lock().await {
+            peek_rect_for_origin(&window, saved_rect.x, saved_rect.y, requested_peek_size)?
+        } else {
+            let position = *state.peek_position.lock().await;
+            if current_mode == WindowMode::Expanded {
+                peek_rect_for_origin(&window, current.x, current.y, requested_peek_size)?
+            } else {
+                peek_rect_for_position(&window, position, requested_peek_size)?
+            }
+        }
+    } else {
+        let target_width = width.unwrap_or(EXPANDED_WIDTH).max(420.0);
+        let target_height = height.unwrap_or(EXPANDED_HEIGHT).max(420.0);
+        if let Some(saved_rect) = *state.last_expanded_rect.lock().await {
+            expanded_rect_for_origin(
+                &window,
+                saved_rect.x,
+                saved_rect.y,
+                target_width,
+                target_height,
+            )?
+        } else {
+            expanded_rect_for_origin(&window, current.x, current.y, target_width, target_height)?
+        }
+    };
+
+    {
+        let mut guard = state.suppress_window_tracking.lock().await;
+        *guard = true;
+    }
+    let transition_result = if animate && current_mode != next_mode {
+        let stage_target = match next_mode {
+            WindowMode::Peek => {
+                peek_rect_for_origin(&window, current.x, current.y, requested_peek_size)?
+            }
+            WindowMode::Expanded => {
+                expanded_rect_for_origin(&window, current.x, current.y, target.width, target.height)?
+            }
+        };
+        if rect_origin_delta(stage_target, target) <= 1.0 {
+            animate_window_rect(&window, current, target, TRANSITION_DURATION_MS).await
+        } else {
+            animate_window_rect(&window, current, stage_target, TRANSITION_STAGE_DURATION_MS).await?;
+            apply_window_rect(&window, target)
+        }
+    } else if animate {
+        animate_window_rect(&window, current, target, TRANSITION_DURATION_MS).await
+    } else {
+        apply_window_rect(&window, target)
+    };
+    if let Err(error) = transition_result {
+        let mut guard = state.suppress_window_tracking.lock().await;
+        *guard = false;
+        return Err(error);
+    }
+    match next_mode {
+        WindowMode::Peek => {
+            let mut guard = state.last_peek_rect.lock().await;
+            *guard = Some(target);
+        }
+        WindowMode::Expanded => {
+            let mut guard = state.last_expanded_rect.lock().await;
+            *guard = Some(target);
+        }
+    }
+    {
+        let mut guard = state.current_window_mode.lock().await;
+        *guard = next_mode;
+    }
+    {
+        let mut guard = state.suppress_window_tracking.lock().await;
+        *guard = false;
+    }
+    persist_window_state(state.inner()).await;
+    Ok(())
 }
 
 fn comm_officer_credentials(config: &AppConfig) -> Result<(String, String), String> {
@@ -2368,11 +2860,31 @@ fn current_language() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let bootstrap_config = AppConfig::load();
+    let mut persisted_window_state = read_persisted_window_state(&bootstrap_config.window_state_path);
+    let normalized_peek_size = normalize_peek_size(
+        persisted_window_state.peek_size.width,
+        persisted_window_state.peek_size.height,
+    );
+    persisted_window_state.peek_size = normalized_peek_size;
+    persisted_window_state.last_peek_rect = persisted_window_state.last_peek_rect.map(|rect| WindowRect {
+        width: normalized_peek_size.width,
+        height: normalized_peek_size.height,
+        ..rect
+    });
     let state = AppState {
         client: Client::new(),
-        config: Arc::new(AppConfig::load()),
+        config: Arc::new(bootstrap_config),
         desktop_avatar_streams: Arc::new(Mutex::new(HashMap::new())),
         last_tts_text_by_request: Arc::new(Mutex::new(HashMap::new())),
+        peek_position: Arc::new(Mutex::new(persisted_window_state.peek_position)),
+        current_window_mode: Arc::new(Mutex::new(WindowMode::default())),
+        last_peek_rect: Arc::new(Mutex::new(persisted_window_state.last_peek_rect)),
+        last_expanded_rect: Arc::new(Mutex::new(persisted_window_state.last_expanded_rect)),
+        suppress_window_tracking: Arc::new(Mutex::new(false)),
+        drag_tracking_mode: Arc::new(Mutex::new(None)),
+        drag_tracking_revision: Arc::new(Mutex::new(0)),
+        peek_size: Arc::new(Mutex::new(persisted_window_state.peek_size)),
     };
     let provider_label = tts_provider_name(state.config.tts_provider);
     let local_tts_url = state
@@ -2401,10 +2913,11 @@ pub fn run() {
             load_bootstrap_state,
             load_avatar_asset,
             frontend_log,
-            window_toggle_expanded,
+            window_set_peek_mode,
+            window_set_peek_position,
             window_resize,
+            window_get_geometry,
             window_start_drag,
-            window_set_click_through,
             desktop_avatar_request_create,
             desktop_avatar_request_get,
             desktop_avatar_request_stream,
@@ -2416,27 +2929,119 @@ pub fn run() {
             tts_speak,
             tts_stop
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let _ = window.set_always_on_top(true);
-            let _ = window.set_position(Position::Logical(LogicalPosition::new(64.0, 280.0)));
+            let initial_position = persisted_window_state
+                .last_expanded_rect
+                .map(|rect| (rect.x, rect.y))
+                .unwrap_or((64.0, 280.0));
+            let _ = window.set_position(Position::Logical(LogicalPosition::new(
+                initial_position.0,
+                initial_position.1,
+            )));
+            let drag_tracking_mode_state = app.state::<AppState>().drag_tracking_mode.clone();
+            let drag_tracking_revision_state =
+                app.state::<AppState>().drag_tracking_revision.clone();
+            let suppress_window_tracking_state =
+                app.state::<AppState>().suppress_window_tracking.clone();
+            let app_state = app.state::<AppState>().inner().clone();
+            let tracked_window = window.clone();
+            window.on_window_event(move |event| {
+                if !matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
+                    return;
+                }
+                let drag_tracking_mode_state = drag_tracking_mode_state.clone();
+                let drag_tracking_revision_state = drag_tracking_revision_state.clone();
+                let suppress_window_tracking_state = suppress_window_tracking_state.clone();
+                let app_state = app_state.clone();
+                let tracked_window = tracked_window.clone();
+                async_runtime::spawn(async move {
+                    if *suppress_window_tracking_state.lock().await {
+                        return;
+                    }
+                    let active_mode = *drag_tracking_mode_state.lock().await;
+                    let Some(active_mode) = active_mode else {
+                        return;
+                    };
+                    let Ok(rect) = current_window_rect(&tracked_window) else {
+                        return;
+                    };
+                    match active_mode {
+                        WindowMode::Peek => {
+                            let peek_size = *app_state.peek_size.lock().await;
+                            let mut guard = app_state.last_peek_rect.lock().await;
+                            *guard =
+                                peek_rect_for_origin(&tracked_window, rect.x, rect.y, peek_size)
+                                    .ok();
+                        }
+                        WindowMode::Expanded => {
+                            let mut guard = app_state.last_expanded_rect.lock().await;
+                            *guard = clamp_window_rect_to_monitor(&tracked_window, rect).ok();
+                        }
+                    }
+                    let revision = {
+                        let mut guard = drag_tracking_revision_state.lock().await;
+                        *guard += 1;
+                        *guard
+                    };
+                    let drag_tracking_mode_state = drag_tracking_mode_state.clone();
+                    let drag_tracking_revision_state = drag_tracking_revision_state.clone();
+                    let app_state = app_state.clone();
+                    async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(170)).await;
+                        let current_revision = *drag_tracking_revision_state.lock().await;
+                        if current_revision != revision {
+                            return;
+                        }
+                        let active_mode = *drag_tracking_mode_state.lock().await;
+                        if active_mode.is_none() {
+                            return;
+                        }
+                        {
+                            let mut guard = drag_tracking_mode_state.lock().await;
+                            *guard = None;
+                        }
+                        persist_window_state(&app_state).await;
+                    });
+                });
+            });
 
             // --- System tray ---
             let show_hide_label = ui_text("tray.showHide");
             let show_hide = MenuItemBuilder::with_id("show_hide", &show_hide_label).build(app)?;
-
-            // Size submenu
-            let size_collapsed_label = ui_text("tray.sizeCollapsed");
-            let size_collapsed = MenuItemBuilder::with_id("size_collapsed", &size_collapsed_label)
-                .build(app)?;
-            let size_expanded_label = ui_text("tray.sizeExpanded");
-            let size_expanded =
-                MenuItemBuilder::with_id("size_expanded", &size_expanded_label).build(app)?;
-            let size_label = ui_text("tray.size");
-            let size_submenu = SubmenuBuilder::with_id(app, "size", &size_label)
-                .item(&size_collapsed)
-                .item(&size_expanded)
-                .build()?;
+            let open_agent_label = ui_text("tray.openAgent");
+            let open_agent = MenuItemBuilder::with_id("peek_open", &open_agent_label).build(app)?;
+            let collapse_to_peek_label = ui_text("tray.collapseToPeek");
+            let collapse_to_peek =
+                MenuItemBuilder::with_id("peek_collapse", &collapse_to_peek_label).build(app)?;
+            let peek_pos_top_left =
+                MenuItemBuilder::with_id("peek_pos_top_left", ui_text("tray.peekTopLeft"))
+                    .build(app)?;
+            let peek_pos_top_right =
+                MenuItemBuilder::with_id("peek_pos_top_right", ui_text("tray.peekTopRight"))
+                    .build(app)?;
+            let peek_pos_bottom_left =
+                MenuItemBuilder::with_id("peek_pos_bottom_left", ui_text("tray.peekBottomLeft"))
+                    .build(app)?;
+            let peek_pos_bottom_right =
+                MenuItemBuilder::with_id("peek_pos_bottom_right", ui_text("tray.peekBottomRight"))
+                    .build(app)?;
+            let peek_position_menu = SubmenuBuilder::with_id(
+                app,
+                "peek_position",
+                ui_text("tray.peekPosition"),
+            )
+            .item(&peek_pos_top_left)
+            .item(&peek_pos_top_right)
+            .item(&peek_pos_bottom_left)
+            .item(&peek_pos_bottom_right)
+            .build()?;
+            let reset_window_position = MenuItemBuilder::with_id(
+                "peek_reset_position",
+                ui_text("tray.resetWindowPosition"),
+            )
+            .build(app)?;
 
             // TTS toggle
             let tts_toggle_label = ui_text("tray.toggleTts");
@@ -2457,8 +3062,10 @@ pub fn run() {
 
             let menu = MenuBuilder::new(app)
                 .item(&show_hide)
-                .item(&PredefinedMenuItem::separator(app)?)
-                .item(&size_submenu)
+                .item(&open_agent)
+                .item(&collapse_to_peek)
+                .item(&peek_position_menu)
+                .item(&reset_window_position)
                 .item(&PredefinedMenuItem::separator(app)?)
                 .item(&tts_toggle)
                 .item(&always_on_top)
@@ -2486,19 +3093,131 @@ pub fn run() {
                                 } else {
                                     let _ = win.show();
                                     let _ = win.set_focus();
+                                    let _ = win.emit("peek-open", ());
                                 }
                             }
                         }
-                        "size_collapsed" => {
+                        "peek_open" => {
                             if let Some(win) = app.get_webview_window("main") {
-                                let _ =
-                                    resize_window_internal(&win, COLLAPSED_WIDTH, COLLAPSED_HEIGHT);
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                                let _ = win.emit("peek-open", ());
                             }
                         }
-                        "size_expanded" => {
+                        "peek_collapse" => {
                             if let Some(win) = app.get_webview_window("main") {
-                                let _ =
-                                    resize_window_internal(&win, EXPANDED_WIDTH, EXPANDED_HEIGHT);
+                                let _ = win.emit("peek-collapse", ());
+                            }
+                        }
+                        "peek_pos_top_left"
+                        | "peek_pos_top_right"
+                        | "peek_pos_bottom_left"
+                        | "peek_pos_bottom_right" => {
+                            if let Some(win) = app.get_webview_window("main") {
+                                let next = match id {
+                                    "peek_pos_top_left" => PeekPosition::TopLeft,
+                                    "peek_pos_top_right" => PeekPosition::TopRight,
+                                    "peek_pos_bottom_left" => PeekPosition::BottomLeft,
+                                    _ => PeekPosition::BottomRight,
+                                };
+                                let state = app.state::<AppState>();
+                                let peek_state = state.peek_position.clone();
+                                let peek_rect_state = state.last_peek_rect.clone();
+                                let peek_size_state = state.peek_size.clone();
+                                let app_state = state.inner().clone();
+                                let win_for_state = win.clone();
+                                async_runtime::spawn(async move {
+                                    let mut guard = peek_state.lock().await;
+                                    *guard = next;
+                                    let peek_size = *peek_size_state.lock().await;
+                                    let mut peek_rect_guard = peek_rect_state.lock().await;
+                                    *peek_rect_guard =
+                                        peek_rect_for_position(&win_for_state, next, peek_size).ok();
+                                    persist_window_state(&app_state).await;
+                                });
+                                if let Ok(current) = current_window_rect(&win) {
+                                    if current.width <= MAX_PEEK_WIDTH + 2.0
+                                        && current.height <= MAX_PEEK_HEIGHT + 2.0
+                                    {
+                                        let state = app.state::<AppState>();
+                                        let peek_size = *state.peek_size.blocking_lock();
+                                        if let Ok(target) =
+                                            peek_rect_for_position(&win, next, peek_size)
+                                        {
+                                            let _ = apply_window_rect(&win, target);
+                                        }
+                                    }
+                                }
+                                let _ = win.emit(
+                                    "peek-position-changed",
+                                    match next {
+                                        PeekPosition::TopLeft => "top-left",
+                                        PeekPosition::TopRight => "top-right",
+                                        PeekPosition::BottomLeft => "bottom-left",
+                                        PeekPosition::BottomRight => "bottom-right",
+                                    },
+                                );
+                            }
+                        }
+                        "peek_reset_position" => {
+                            if let Some(win) = app.get_webview_window("main") {
+                                let state = app.state::<AppState>();
+                                let app_state = state.inner().clone();
+                                async_runtime::spawn(async move {
+                                    let default_position = PeekPosition::default();
+                                    let current = current_window_rect(&win).ok();
+                                    let current_mode = *app_state.current_window_mode.lock().await;
+                                    let saved_expanded_rect = *app_state.last_expanded_rect.lock().await;
+                                    let expanded_size = saved_expanded_rect
+                                        .map(|rect| (rect.width, rect.height))
+                                        .unwrap_or((
+                                            current.map(|rect| rect.width).unwrap_or(EXPANDED_WIDTH),
+                                            current.map(|rect| rect.height).unwrap_or(EXPANDED_HEIGHT),
+                                        ));
+                                    let peek_size = *app_state.peek_size.lock().await;
+                                    let default_peek_rect =
+                                        peek_rect_for_position(&win, default_position, peek_size).ok();
+                                    let default_expanded_rect = expanded_rect_for_position(
+                                        &win,
+                                        default_position,
+                                        expanded_size.0.max(420.0),
+                                        expanded_size.1.max(420.0),
+                                    )
+                                    .ok();
+
+                                    {
+                                        let mut guard = app_state.peek_position.lock().await;
+                                        *guard = default_position;
+                                    }
+                                    {
+                                        let mut guard = app_state.last_peek_rect.lock().await;
+                                        *guard = default_peek_rect;
+                                    }
+                                    {
+                                        let mut guard = app_state.last_expanded_rect.lock().await;
+                                        *guard = default_expanded_rect;
+                                    }
+
+                                    let target = match current_mode {
+                                        WindowMode::Peek => default_peek_rect,
+                                        WindowMode::Expanded => default_expanded_rect,
+                                    };
+                                    if let Some(rect) = target {
+                                        {
+                                            let mut guard =
+                                                app_state.suppress_window_tracking.lock().await;
+                                            *guard = true;
+                                        }
+                                        let _ = apply_window_rect(&win, rect);
+                                        {
+                                            let mut guard =
+                                                app_state.suppress_window_tracking.lock().await;
+                                            *guard = false;
+                                        }
+                                    }
+                                    persist_window_state(&app_state).await;
+                                    let _ = win.emit("peek-position-changed", "top-right");
+                                });
                             }
                         }
                         "tts_toggle" => {
@@ -2547,6 +3266,7 @@ pub fn run() {
                         if let Some(win) = app.get_webview_window("main") {
                             let _ = win.show();
                             let _ = win.set_focus();
+                            let _ = win.emit("peek-open", ());
                         }
                     }
                 })

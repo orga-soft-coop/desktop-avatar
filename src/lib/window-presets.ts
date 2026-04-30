@@ -19,19 +19,19 @@ export const SIZE_PRESET_OPTIONS: WindowPresetConfig[] = [
   {
     id: "small",
     label: "S",
-    collapsed: { width: 440, height: 500 },
+    collapsed: { width: 170, height: 170 },
     expanded: { width: 440, height: 580 }
   },
   {
     id: "medium",
     label: "M",
-    collapsed: { width: 520, height: 520 },
+    collapsed: { width: 235, height: 235 },
     expanded: { width: 520, height: 620 }
   },
   {
     id: "large",
     label: "L",
-    collapsed: { width: 600, height: 540 },
+    collapsed: { width: 300, height: 300 },
     expanded: { width: 600, height: 660 }
   }
 ];

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { AvatarCameraConfig } from "../lib/avatar-stage-config";
 import type { DevToolsLatencySnapshot } from "../lib/contracts";
 import { t } from "../lib/i18n";
@@ -136,6 +136,7 @@ export function ChatPanel({
     camera: false
   });
   const [configCopied, setConfigCopied] = useState(false);
+  const draftTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const hasVoiceControls = Boolean(onSelectTtsVoice && (ttsVoices?.length ?? 0) > 0);
   const hasLatency = Boolean(latencyDebug);
@@ -225,7 +226,16 @@ export function ChatPanel({
     });
   };
 
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+  useLayoutEffect(() => {
+    const textarea = draftTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [draft]);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       onSubmit();
@@ -263,10 +273,10 @@ export function ChatPanel({
     <section className={`chat-panel ${isExpanded ? "is-expanded" : "is-collapsed"}`}>
       {isExpanded ? (
         <div
-          className="chat-panel__dock"
+          className="chat-panel__dock backdrop-blur"
           data-tauri-drag-region
           onMouseDown={(event) => {
-            if ((event.target as HTMLElement).closest("button, input, select")) {
+            if ((event.target as HTMLElement).closest("button, textarea, input, select")) {
               return;
             }
             onDragStart();
@@ -294,12 +304,13 @@ export function ChatPanel({
           ) : null}
 
           <div className="chat-panel__composer">
-            <input
-              type="text"
+            <textarea
+              ref={draftTextareaRef}
               value={draft}
               onChange={(event) => onDraftChange(event.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={t("chat.placeholder")}
+              rows={1}
               autoFocus
             />
             <button className="chat-panel__send" type="button" onClick={onSubmit} title={t("chat.send")}>
@@ -383,19 +394,20 @@ export function ChatPanel({
                   </svg>
                 )}
               </button>
-              <button type="button" onClick={onToggleExpanded} title={t("chat.closeChat")}>
+              <button type="button" onClick={onToggleExpanded} title={t("chat.toPeek")}>
                 <svg
-                  width="14"
-                  height="14"
+                  width="16"
+                  height="16"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2.5"
+                  strokeWidth="2.2"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
+                  <path d="M12 5v10" />
+                  <path d="m8 11 4 4 4-4" />
+                  <rect x="5" y="18" width="14" height="2" rx="1" />
                 </svg>
               </button>
             </div>
@@ -685,6 +697,7 @@ export function ChatPanel({
                           </div>
                         </div>
                       ) : null}
+
                     </DevToolsSection>
                   ) : null}
 
@@ -815,7 +828,7 @@ export function ChatPanel({
           ) : null}
         </div>
       ) : (
-        <button className="chat-panel__launcher" type="button" onClick={onToggleExpanded}>
+        <button className="chat-panel__launcher backdrop-blur" type="button" onClick={onToggleExpanded}>
           <span>{draft || t("chat.placeholder")}</span>
           <small>{t("chat.launcherHint")}</small>
         </button>

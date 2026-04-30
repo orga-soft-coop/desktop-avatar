@@ -43,7 +43,7 @@ export function DesktopAvatarWidgetPanel({
 
   if (widget.type === "keyValue") {
     return (
-      <section className="widget-card widget-card--key-value">
+      <section className="widget-card widget-card--key-value backdrop-blur">
         <WidgetHeader title={widget.title} onClose={onDismiss} />
         <dl className="widget-card__list">
           {widget.items.map((item) => (
@@ -59,7 +59,7 @@ export function DesktopAvatarWidgetPanel({
 
   if (widget.type === "text") {
     return (
-      <section className="widget-card widget-card--text">
+      <section className="widget-card widget-card--text backdrop-blur">
         <WidgetHeader title={widget.title} onClose={onDismiss} />
         <p className="widget-card__body-text">{widget.text}</p>
         {followUpQuestions.length > 0 ? (
@@ -82,7 +82,7 @@ export function DesktopAvatarWidgetPanel({
 
   if (widget.type === "clarification") {
     return (
-      <section className="widget-card widget-card--clarification">
+      <section className="widget-card widget-card--clarification backdrop-blur">
         <WidgetHeader title={widget.title} onClose={onDismiss} />
         <p className="widget-card__body-text">{widget.question}</p>
         <div className="widget-card__chips">
@@ -106,7 +106,7 @@ export function DesktopAvatarWidgetPanel({
   }
 
   return (
-    <section className="widget-card widget-card--error">
+    <section className="widget-card widget-card--error backdrop-blur">
       <WidgetHeader title={widget.title} onClose={onDismiss} />
       <p className="widget-card__body-text">{widget.message}</p>
     </section>

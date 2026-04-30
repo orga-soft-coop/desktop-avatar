@@ -5,9 +5,15 @@ interface DataPanelSliderProps {
   children: ReactNode[];
   activeIndex: number;
   onSelectIndex: (index: number) => void;
+  onCloseAll?: () => void;
 }
 
-export function DataPanelSlider({ children, activeIndex, onSelectIndex }: DataPanelSliderProps) {
+export function DataPanelSlider({
+  children,
+  activeIndex,
+  onSelectIndex,
+  onCloseAll
+}: DataPanelSliderProps) {
   const count = children.length;
 
   if (count === 0) {
@@ -82,6 +88,17 @@ export function DataPanelSlider({ children, activeIndex, onSelectIndex }: DataPa
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </button>
+
+        {onCloseAll ? (
+          <button
+            className="data-panel-slider__close-all"
+            type="button"
+            onClick={onCloseAll}
+            title={t("slider.closeAll")}
+          >
+            {t("slider.closeAll")}
+          </button>
+        ) : null}
       </nav>
     </div>
   );

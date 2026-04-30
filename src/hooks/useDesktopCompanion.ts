@@ -10,6 +10,8 @@ import type {
   LocalChatMessageInput,
   LocalChatRequest,
   MessageSource,
+  PeekMode,
+  PeekPosition,
   PromptRoute,
   StreamDeltaPayload,
   StreamEnvelope,
@@ -29,15 +31,18 @@ import { t } from "../lib/i18n";
 import {
   getBootstrapState,
   listTtsVoices,
+  onTrayPeekCollapse,
+  onTrayPeekOpen,
+  onTrayPeekPositionChanged,
   onStreamEvent,
   onTtsState,
   resizeWindow,
   sendLocalChat,
-  setClickThrough,
+  setPeekMode,
+  setPeekPosition,
+  startWindowDragForMode,
   speakText,
-  startWindowDrag,
   stopSpeaking,
-  toggleExpandedWindow,
   transcribeAudio
 } from "../lib/tauri";
 import {
@@ -50,8 +55,26 @@ import {
 
 const TTS_VOICE_STORAGE_KEY = "desktop-avatar.ttsVoice";
 const TTS_ENABLED_STORAGE_KEY = "desktop-avatar.ttsEnabled";
+const PEEK_MODE_STORAGE_KEY = "desktop-avatar.peekMode";
+const PEEK_POSITION_STORAGE_KEY = "desktop-avatar.peekPosition";
+const PEEK_ANIMATION_ENABLED_STORAGE_KEY = "desktop-avatar.peekAnimationEnabled";
+const LAST_EXPANDED_SIZE_STORAGE_KEY = "desktop-avatar.lastExpandedSize";
 const LOCAL_CHAT_SYSTEM_PROMPT = t("localChat.systemPrompt");
 const LOCAL_CHAT_FALLBACK_RESPONSE = t("status.localFallback");
+const DEFAULT_PEEK_MODE: PeekMode = "expanded";
+const DEFAULT_PEEK_POSITION: PeekPosition = "top-right";
+const MODE_TRANSITION_COLLAPSE_OUT_MS = 210;
+const MODE_TRANSITION_EXPAND_REVEAL_MS = 240;
+const MODE_TRANSITION_PEEK_REVEAL_MS = 220;
+const MODE_TRANSITION_PEEK_OUT_MS = 190;
+
+type ModeTransitionPhase =
+  | "idle"
+  | "collapse-out"
+  | "peek-out"
+  | "peek-in"
+  | "expand-prep"
+  | "expand-in";
 
 interface SubmissionContext {
   prompt: string;
@@ -236,6 +259,12 @@ function nextPollDelay(attempt: number): number {
   return 2000;
 }
 
+function waitMs(durationMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, durationMs);
+  });
+}
+
 function readStoredTtsVoice(): string | null {
   if (typeof window === "undefined") {
     return null;
@@ -300,6 +329,121 @@ function storeTtsEnabled(enabled: boolean): void {
   }
 }
 
+function isPeekMode(value: string | null): value is PeekMode {
+  return value === "peek" || value === "expanded";
+}
+
+function isPeekPosition(value: string | null): value is PeekPosition {
+  return (
+    value === "top-left" ||
+    value === "top-right" ||
+    value === "bottom-left" ||
+    value === "bottom-right"
+  );
+}
+
+function readStoredPeekMode(): PeekMode {
+  if (typeof window === "undefined") {
+    return DEFAULT_PEEK_MODE;
+  }
+  try {
+    const raw = window.localStorage.getItem(PEEK_MODE_STORAGE_KEY);
+    return isPeekMode(raw) ? raw : DEFAULT_PEEK_MODE;
+  } catch {
+    return DEFAULT_PEEK_MODE;
+  }
+}
+
+function storePeekMode(mode: PeekMode): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(PEEK_MODE_STORAGE_KEY, mode);
+  } catch {
+    // no-op
+  }
+}
+
+function readStoredPeekPosition(): PeekPosition {
+  if (typeof window === "undefined") {
+    return DEFAULT_PEEK_POSITION;
+  }
+  try {
+    const raw = window.localStorage.getItem(PEEK_POSITION_STORAGE_KEY);
+    return isPeekPosition(raw) ? raw : DEFAULT_PEEK_POSITION;
+  } catch {
+    return DEFAULT_PEEK_POSITION;
+  }
+}
+
+function storePeekPosition(position: PeekPosition): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(PEEK_POSITION_STORAGE_KEY, position);
+  } catch {
+    // no-op
+  }
+}
+
+function readStoredAnimationEnabled(): boolean {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  try {
+    const raw = window.localStorage.getItem(PEEK_ANIMATION_ENABLED_STORAGE_KEY);
+    return raw?.trim().toLowerCase() !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function storeAnimationEnabled(enabled: boolean): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(PEEK_ANIMATION_ENABLED_STORAGE_KEY, String(enabled));
+  } catch {
+    // no-op
+  }
+}
+
+function readStoredLastExpandedHeight(fallbackHeight: number): number {
+  if (typeof window === "undefined") {
+    return fallbackHeight;
+  }
+  try {
+    const raw = window.localStorage.getItem(LAST_EXPANDED_SIZE_STORAGE_KEY);
+    if (!raw) {
+      return fallbackHeight;
+    }
+    const parsed = JSON.parse(raw) as { width?: number; height?: number };
+    if (typeof parsed.height === "number" && Number.isFinite(parsed.height)) {
+      return Math.max(420, Math.round(parsed.height));
+    }
+    return fallbackHeight;
+  } catch {
+    return fallbackHeight;
+  }
+}
+
+function storeLastExpandedSize(width: number, height: number): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      LAST_EXPANDED_SIZE_STORAGE_KEY,
+      JSON.stringify({ width: Math.round(width), height: Math.round(height) })
+    );
+  } catch {
+    // no-op
+  }
+}
+
 function elapsed(startedAtMs: number, timestamp?: number): number | null {
   if (typeof timestamp !== "number") {
     return null;
@@ -352,16 +496,24 @@ export function useDesktopCompanion() {
   const [companionState, setCompanionState] = useState<CompanionState>("idle");
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [peekMode, setPeekModeState] = useState<PeekMode>(() => readStoredPeekMode());
+  const [peekPosition, setPeekPositionState] = useState<PeekPosition>(() => readStoredPeekPosition());
+  const [isModeTransitioning, setIsModeTransitioning] = useState(false);
+  const [modeTransitionPhase, setModeTransitionPhase] = useState<ModeTransitionPhase>("idle");
+  const [animationEnabled] = useState<boolean>(() => readStoredAnimationEnabled());
   const [ttsEnabled, setTtsEnabled] = useState(() => readStoredTtsEnabled() ?? true);
   const [ttsVoices, setTtsVoices] = useState<string[]>([]);
   const [selectedTtsVoice, setSelectedTtsVoiceState] = useState<string | null>(() =>
     readStoredTtsVoice()
   );
   const [sizePreset, setSizePresetState] = useState<SizePreset>(() => readStoredSizePreset());
-  const [windowSize, setWindowSize] = useState(
-    () => getWindowSizesForPreset(DEFAULT_SIZE_PRESET).collapsed
-  );
+  const [windowSize, setWindowSize] = useState(() => {
+    const preset = getWindowSizesForPreset(DEFAULT_SIZE_PRESET);
+    return {
+      width: preset.expanded.width,
+      height: readStoredLastExpandedHeight(preset.expanded.height)
+    };
+  });
   const [isRecording, setIsRecording] = useState(false);
   const [desktopAvatarState, desktopAvatarDispatch] = useReducer(
     reduceDesktopAvatarState,
@@ -384,6 +536,8 @@ export function useDesktopCompanion() {
   const desktopAvatarPollErrorCountRef = useRef(0);
   const lastSpokenDesktopAvatarKeyRef = useRef<string | null>(null);
   const isTtsSpeakingRef = useRef(false);
+  const peekModeRef = useRef<PeekMode>(peekMode);
+  const applyPeekModeRef = useRef<(mode: PeekMode) => Promise<void>>(async () => {});
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -392,6 +546,10 @@ export function useDesktopCompanion() {
   useEffect(() => {
     desktopAvatarStateRef.current = desktopAvatarState;
   }, [desktopAvatarState]);
+
+  useEffect(() => {
+    peekModeRef.current = peekMode;
+  }, [peekMode]);
 
   const patchLatencyByRequestKey = useCallback(
     (requestKey: string, updater: (current: LatencyTimeline) => LatencyTimeline) => {
@@ -404,6 +562,83 @@ export function useDesktopCompanion() {
     },
     []
   );
+
+  const applyPeekPosition = useCallback(async (position: PeekPosition) => {
+    setPeekPositionState(position);
+    storePeekPosition(position);
+    await setPeekPosition(position);
+  }, []);
+
+  const applyPeekMode = useCallback(
+    async (mode: PeekMode, options?: { animate?: boolean }) => {
+      const presetSizes = getWindowSizesForPreset(sizePreset);
+      const expandedWidth = presetSizes.expanded.width;
+      const collapsedWidth = presetSizes.collapsed.width;
+      const collapsedHeight = presetSizes.collapsed.height;
+      const expandedHeight =
+        mode === "expanded"
+          ? Math.max(presetSizes.expanded.height, windowSize.height)
+          : Math.max(presetSizes.expanded.height, readStoredLastExpandedHeight(windowSize.height));
+      const shouldAnimate = options?.animate ?? animationEnabled;
+
+      const clearTransition = () => {
+        requestAnimationFrame(() => {
+          setModeTransitionPhase("idle");
+          setIsModeTransitioning(false);
+        });
+      };
+
+      if (shouldAnimate && mode === "peek") {
+        setModeTransitionPhase("collapse-out");
+        setIsModeTransitioning(true);
+        await waitMs(MODE_TRANSITION_COLLAPSE_OUT_MS);
+      } else if (shouldAnimate) {
+        setModeTransitionPhase("peek-out");
+        setIsModeTransitioning(true);
+        await waitMs(MODE_TRANSITION_PEEK_OUT_MS);
+        setModeTransitionPhase("expand-prep");
+      }
+
+      try {
+        await setPeekMode(
+          mode,
+          expandedWidth,
+          expandedHeight,
+          collapsedWidth,
+          collapsedHeight,
+          shouldAnimate
+        );
+        setPeekModeState(mode);
+        storePeekMode(mode);
+        if (mode === "expanded") {
+          const nextSize = { width: expandedWidth, height: expandedHeight };
+          setWindowSize(nextSize);
+          storeLastExpandedSize(nextSize.width, nextSize.height);
+        }
+
+        if (shouldAnimate) {
+          if (mode === "peek") {
+            setModeTransitionPhase("peek-in");
+            setIsModeTransitioning(true);
+            await waitMs(MODE_TRANSITION_PEEK_REVEAL_MS);
+          } else {
+            setModeTransitionPhase("expand-in");
+            setIsModeTransitioning(true);
+            await waitMs(MODE_TRANSITION_EXPAND_REVEAL_MS);
+          }
+        }
+      } finally {
+        if (shouldAnimate) {
+          clearTransition();
+        }
+      }
+    },
+    [animationEnabled, sizePreset, windowSize.height]
+  );
+
+  useEffect(() => {
+    applyPeekModeRef.current = (mode: PeekMode) => applyPeekMode(mode);
+  }, [applyPeekMode]);
 
   const markDesktopStreamEvent = useCallback(
     (event: DesktopAvatarStreamEvent) => {
@@ -671,6 +906,9 @@ export function useDesktopCompanion() {
   useEffect(() => {
     let unlistenStream: (() => void) | undefined;
     let unlistenTts: (() => void) | undefined;
+    let unlistenTrayPeekOpen: (() => void) | undefined;
+    let unlistenTrayPeekCollapse: (() => void) | undefined;
+    let unlistenTrayPeekPositionChanged: (() => void) | undefined;
 
     void (async () => {
       const bootstrap = await getBootstrapState();
@@ -682,8 +920,20 @@ export function useDesktopCompanion() {
         return next;
       });
       const presetSizes = getWindowSizesForPreset(sizePreset);
-      setWindowSize(presetSizes.collapsed);
-      void resizeWindow(presetSizes.collapsed.width, presetSizes.collapsed.height);
+      const expandedHeight = Math.max(
+        presetSizes.expanded.height,
+        readStoredLastExpandedHeight(presetSizes.expanded.height)
+      );
+      setWindowSize({ width: presetSizes.expanded.width, height: expandedHeight });
+      await setPeekPosition(peekPosition);
+      await setPeekMode(
+        peekMode,
+        presetSizes.expanded.width,
+        expandedHeight,
+        presetSizes.collapsed.width,
+        presetSizes.collapsed.height,
+        false
+      );
 
       try {
         const voices = await listTtsVoices();
@@ -748,9 +998,34 @@ export function useDesktopCompanion() {
       unlistenTts = unlisten;
     });
 
+    void onTrayPeekOpen(() => {
+      void applyPeekModeRef.current("expanded");
+    }).then((unlisten) => {
+      unlistenTrayPeekOpen = unlisten;
+    });
+
+    void onTrayPeekCollapse(() => {
+      void applyPeekModeRef.current("peek");
+    }).then((unlisten) => {
+      unlistenTrayPeekCollapse = unlisten;
+    });
+
+    void onTrayPeekPositionChanged((position) => {
+      setPeekPositionState(position);
+      storePeekPosition(position);
+      if (peekModeRef.current === "peek") {
+        void setPeekPosition(position);
+      }
+    }).then((unlisten) => {
+      unlistenTrayPeekPositionChanged = unlisten;
+    });
+
     return () => {
       unlistenStream?.();
       unlistenTts?.();
+      unlistenTrayPeekOpen?.();
+      unlistenTrayPeekCollapse?.();
+      unlistenTrayPeekPositionChanged?.();
       void cleanupDesktopAvatarRuntime();
     };
   }, [cleanupDesktopAvatarRuntime]);
@@ -987,8 +1262,8 @@ export function useDesktopCompanion() {
       ttsRequestId: null
     });
 
-    if (!isExpanded) {
-      await toggleExpanded();
+    if (peekMode === "peek") {
+      await applyPeekMode("expanded");
     }
 
     setCompanionState("thinking");
@@ -1062,8 +1337,8 @@ export function useDesktopCompanion() {
       ttsRequestId: null
     });
 
-    if (!isExpanded) {
-      await toggleExpanded();
+    if (peekMode === "peek") {
+      await applyPeekMode("expanded");
     }
 
     await stopSpeaking();
@@ -1137,17 +1412,16 @@ export function useDesktopCompanion() {
     await submitDesktopAvatarPrompt(prompt, source, route, retryClientRequestId);
   }
 
-  async function toggleExpanded() {
-    const nextExpanded = !isExpanded;
-    const presetSizes = getWindowSizesForPreset(sizePreset);
-    const targetSize = nextExpanded ? presetSizes.expanded : presetSizes.collapsed;
-    setIsExpanded(nextExpanded);
-    // Keep current height until the layout pass measures content (avoids a tall preset flash).
-    await toggleExpandedWindow(nextExpanded, targetSize.width, windowSize.height);
-    setWindowSize({ width: targetSize.width, height: windowSize.height });
-    if (nextExpanded) {
-      await setClickThrough(false);
+  async function setUiMode(mode: PeekMode, options?: { animate?: boolean }) {
+    if (mode === peekMode) {
+      return;
     }
+    await applyPeekMode(mode, options);
+  }
+
+  async function toggleExpanded() {
+    const nextMode: PeekMode = peekMode === "expanded" ? "peek" : "expanded";
+    await setUiMode(nextMode);
   }
 
   async function setSizePreset(preset: SizePreset) {
@@ -1159,9 +1433,33 @@ export function useDesktopCompanion() {
     setSizePresetState(preset);
     storeSizePreset(preset);
 
-    const targetSize = isExpanded ? presetSizes.expanded : presetSizes.collapsed;
-    await resizeWindow(targetSize.width, windowSize.height);
-    setWindowSize({ width: targetSize.width, height: windowSize.height });
+    const targetSize = {
+      width: presetSizes.expanded.width,
+      height: Math.max(windowSize.height, presetSizes.expanded.height)
+    };
+    if (peekMode === "expanded") {
+      await resizeWindow(targetSize.width, targetSize.height);
+      setWindowSize(targetSize);
+      storeLastExpandedSize(targetSize.width, targetSize.height);
+      await setPeekMode(
+        "expanded",
+        targetSize.width,
+        targetSize.height,
+        presetSizes.collapsed.width,
+        presetSizes.collapsed.height,
+        false
+      );
+      return;
+    }
+
+    await setPeekMode(
+      "peek",
+      targetSize.width,
+      targetSize.height,
+      presetSizes.collapsed.width,
+      presetSizes.collapsed.height,
+      false
+    );
   }
 
   async function retryLastPrompt() {
@@ -1273,7 +1571,12 @@ export function useDesktopCompanion() {
     companionState,
     draft,
     error,
-    isExpanded,
+    isExpanded: peekMode === "expanded",
+    isModeTransitioning,
+    modeTransitionPhase,
+    peekMode,
+    peekPosition,
+    animationEnabled,
     isRecording,
     messages,
     latencyDebug,
@@ -1291,6 +1594,9 @@ export function useDesktopCompanion() {
     submitCurrentDraft: () => submitPrompt(draft, "text"),
     submitSuggestion: (value: string) => submitPrompt(value, "text"),
     toggleExpanded,
+    openAgent: () => setUiMode("expanded"),
+    collapseToPeek: () => setUiMode("peek"),
+    setPeekPosition: (position: PeekPosition) => applyPeekPosition(position),
     toggleRecording,
     retryLastPrompt,
     selectTtsVoice: (voice: string | null) => {
@@ -1312,7 +1618,8 @@ export function useDesktopCompanion() {
     resizeWindow: async (width: number, height: number) => {
       await resizeWindow(width, height);
       setWindowSize({ width, height });
+      storeLastExpandedSize(width, height);
     },
-    startWindowDrag
+    startWindowDrag: () => startWindowDragForMode(peekModeRef.current)
   };
 }

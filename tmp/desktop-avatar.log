@@ -1,30 +1,58 @@
-[1777545697] tts: config provider=openai localUrl=<none> localModel=fish-audio-s2-pro openaiEnabled=true localTemplateKeys=input,model,voice localResponsePath=<auto>
-[1777545699[] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-1777545699] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1777545699] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1777545699] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1777545699] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
-[1777545700] frontend:info: loaded packed GLB avatar with 9 action entries
-[1777545700] frontend:info: avatar runtime ready: 9 animation actions loaded
-[1777545720] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1777545720] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1777545720] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
-[1777545720] frontend:info: loaded packed GLB avatar with 9 action entries
-[1777545720] frontend:info: avatar runtime ready: 9 animation actions loaded
-[1777546127] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1777546127] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1777546127[1777546127] ] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1777546127] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
-[1777546128[] 1777546128frontend:info: loaded packed GLB avatar with 9 action entries] 
-frontend:info: avatar runtime ready: 9 animation actions loaded
-[1777546218] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1777546218] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1777546218] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
-[1777546218] frontend:info: loaded packed GLB avatar with 9 action entries
-[1777546218] frontend:info: avatar runtime ready: 9 animation actions loaded
-[1777546243] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1777546243] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1777546243] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
-[1777546243] frontend:info: loaded packed GLB avatar with 9 action entries
-[1777546243] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777573791] tts: config provider=openai localUrl=<none> localModel=fish-audio-s2-pro openaiEnabled=true localTemplateKeys=input,model,voice localResponsePath=<auto>
+[1777573792] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777573792] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777573792] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777573792] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777573792] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777573793] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777573793] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777574068] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777574068] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777574068] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777574068] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777574068] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777574298] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777574298] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777574298] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777574298] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777574298] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777574349] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777574349] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777574349] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777574349] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777574349] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777574539] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777574539] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777574539] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777574539] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777574539] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777574607] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777574607] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777574607] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777574607] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777574607] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777574791] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777574791] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777574791] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777574791] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777574791] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777574935] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777574935] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777574935] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777574935] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777574935] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777575020] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777575020] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777575020] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777575020] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777575020] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777575038] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777575038] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777575038] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777575039[] 1777575039frontend:info: avatar runtime ready: 9 animation actions loaded] 
+frontend:info: loaded packed GLB avatar with 9 action entries
+[1777575115] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777575115] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777575115] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777575116] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777575116] frontend:info: avatar runtime ready: 9 animation actions loaded

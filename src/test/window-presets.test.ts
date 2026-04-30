@@ -8,7 +8,7 @@ import {
 describe("window preset sizing", () => {
   it("defaults to medium when the preset is missing", () => {
     const preset = getWindowSizesForPreset(DEFAULT_SIZE_PRESET);
-    expect(preset.collapsed.width).toBe(520);
+    expect(preset.collapsed.width).toBe(235);
     expect(preset.expanded.height).toBe(620);
   });
 

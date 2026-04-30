@@ -15,7 +15,7 @@ interface WidgetAreaChartProps {
   onClose?: () => void;
 }
 
-const FALLBACK_SERIES_COLORS = ["#8de8d8", "#80c7ff", "#f7b267", "#d4a5ff"];
+const FALLBACK_SERIES_COLORS = ["#7FB6DA", "#80c7ff", "#f7b267", "#d4a5ff"];
 
 function tooltipValue(value: number | string | null | undefined): string {
   if (typeof value === "number") {
@@ -31,7 +31,7 @@ export function WidgetAreaChart({ widget, onClose }: WidgetAreaChartProps) {
   const series = widget.series.filter((entry) => entry.key.trim().length > 0);
 
   return (
-    <section className="widget-card widget-card--chart">
+    <section className="widget-card widget-card--chart backdrop-blur">
       <WidgetHeader title={widget.title} onClose={onClose} />
       <div className="widget-card__chart-wrap">
         <ResponsiveContainer width="100%" height={220}>
@@ -63,7 +63,7 @@ export function WidgetAreaChart({ widget, onClose }: WidgetAreaChartProps) {
             />
             <YAxis tickLine={false} axisLine={false} width={36} stroke="rgba(255,255,255,0.45)" />
             <Tooltip
-              cursor={{ stroke: "rgba(141, 232, 216, 0.45)", strokeWidth: 1 }}
+              cursor={{ stroke: "rgb(127 182 218 / 0.45)", strokeWidth: 1 }}
               contentStyle={{
                 borderRadius: 12,
                 border: "1px solid rgba(255,255,255,0.15)",

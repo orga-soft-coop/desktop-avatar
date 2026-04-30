@@ -24,6 +24,8 @@ export type DesktopAvatarRequestStatus =
   | "FAILED";
 export type DesktopAvatarWidgetScalar = string | number | boolean | null;
 export type DesktopAvatarAnimationKey = "idle" | "attention" | "thinking" | "talking";
+export type PeekMode = "peek" | "expanded";
+export type PeekPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 export type PackedAvatarAnimationState =
   | "idle"
   | "walking"

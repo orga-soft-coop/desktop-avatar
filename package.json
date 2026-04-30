@@ -35,7 +35,10 @@
     "@types/react-dom": "latest",
     "@types/three": "0.182.0",
     "@vitejs/plugin-react": "latest",
+    "autoprefixer": "^10.4.24",
     "jsdom": "latest",
+    "postcss": "^8.5.12",
+    "tailwindcss": "^3.4.19",
     "typescript": "latest",
     "vite": "latest",
     "vitest": "latest"

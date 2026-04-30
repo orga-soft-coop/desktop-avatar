@@ -14,13 +14,45 @@ const mocks = vi.hoisted(() => {
     onEvent: ((event: DesktopAvatarStreamEvent) => void) | null;
     onDisconnect: ((event: DesktopAvatarStreamLifecycleEvent) => void) | null;
     onTtsState: ((event: TtsStateEvent) => void) | null;
-  } = { onEvent: null, onDisconnect: null, onTtsState: null };
+    onTrayPeekOpen: (() => void) | null;
+    onTrayPeekCollapse: (() => void) | null;
+    onTrayPeekPositionChanged: ((position: "top-left" | "top-right" | "bottom-left" | "bottom-right") => void) | null;
+  } = {
+    onEvent: null,
+    onDisconnect: null,
+    onTtsState: null,
+    onTrayPeekOpen: null,
+    onTrayPeekCollapse: null,
+    onTrayPeekPositionChanged: null
+  };
 
   return {
     streamHandlers,
     getBootstrapStateMock: vi.fn(),
     listTtsVoicesMock: vi.fn(),
     onStreamEventMock: vi.fn(),
+    onTrayPeekCollapseMock: vi.fn(async (handler: () => void) => {
+      streamHandlers.onTrayPeekCollapse = handler;
+      return () => {
+        streamHandlers.onTrayPeekCollapse = null;
+      };
+    }),
+    onTrayPeekOpenMock: vi.fn(async (handler: () => void) => {
+      streamHandlers.onTrayPeekOpen = handler;
+      return () => {
+        streamHandlers.onTrayPeekOpen = null;
+      };
+    }),
+    onTrayPeekPositionChangedMock: vi.fn(
+      async (
+        handler: (position: "top-left" | "top-right" | "bottom-left" | "bottom-right") => void
+      ) => {
+        streamHandlers.onTrayPeekPositionChanged = handler;
+        return () => {
+          streamHandlers.onTrayPeekPositionChanged = null;
+        };
+      }
+    ),
     onTtsStateMock: vi.fn(async (handler: (event: TtsStateEvent) => void) => {
       streamHandlers.onTtsState = handler;
       return () => {
@@ -29,11 +61,11 @@ const mocks = vi.hoisted(() => {
     }),
     resizeWindowMock: vi.fn(),
     sendLocalChatMock: vi.fn(),
-    setClickThroughMock: vi.fn(),
+    setPeekModeMock: vi.fn(),
+    setPeekPositionMock: vi.fn(),
     speakTextMock: vi.fn(),
     startWindowDragMock: vi.fn(),
     stopSpeakingMock: vi.fn(),
-    toggleExpandedWindowMock: vi.fn(),
     transcribeAudioMock: vi.fn(),
     createRequestMock: vi.fn(),
     getRequestMock: vi.fn(),
@@ -67,14 +99,18 @@ vi.mock("../lib/tauri", () => ({
   getBootstrapState: mocks.getBootstrapStateMock,
   listTtsVoices: mocks.listTtsVoicesMock,
   onStreamEvent: mocks.onStreamEventMock,
+  onTrayPeekCollapse: mocks.onTrayPeekCollapseMock,
+  onTrayPeekOpen: mocks.onTrayPeekOpenMock,
+  onTrayPeekPositionChanged: mocks.onTrayPeekPositionChangedMock,
   onTtsState: mocks.onTtsStateMock,
   resizeWindow: mocks.resizeWindowMock,
   sendLocalChat: mocks.sendLocalChatMock,
-  setClickThrough: mocks.setClickThroughMock,
+  setPeekMode: mocks.setPeekModeMock,
+  setPeekPosition: mocks.setPeekPositionMock,
   speakText: mocks.speakTextMock,
   startWindowDrag: mocks.startWindowDragMock,
+  startWindowDragForMode: mocks.startWindowDragMock,
   stopSpeaking: mocks.stopSpeakingMock,
-  toggleExpandedWindow: mocks.toggleExpandedWindowMock,
   transcribeAudio: mocks.transcribeAudioMock
 }));
 
@@ -94,6 +130,9 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     mocks.streamHandlers.onEvent = null;
     mocks.streamHandlers.onDisconnect = null;
     mocks.streamHandlers.onTtsState = null;
+    mocks.streamHandlers.onTrayPeekOpen = null;
+    mocks.streamHandlers.onTrayPeekCollapse = null;
+    mocks.streamHandlers.onTrayPeekPositionChanged = null;
     mocks.getBootstrapStateMock.mockReset().mockResolvedValue({
       avatarManifest: null,
       collapsedSize: { width: 520, height: 780 },
@@ -102,14 +141,40 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
     mocks.listTtsVoicesMock.mockReset().mockResolvedValue([]);
     mocks.onStreamEventMock.mockReset().mockResolvedValue(() => {});
+    mocks.onTrayPeekCollapseMock.mockReset().mockImplementation(async (handler: () => void) => {
+      mocks.streamHandlers.onTrayPeekCollapse = handler;
+      return () => {
+        mocks.streamHandlers.onTrayPeekCollapse = null;
+      };
+    });
+    mocks.onTrayPeekOpenMock.mockReset().mockImplementation(async (handler: () => void) => {
+      mocks.streamHandlers.onTrayPeekOpen = handler;
+      return () => {
+        mocks.streamHandlers.onTrayPeekOpen = null;
+      };
+    });
+    mocks.onTrayPeekPositionChangedMock
+      .mockReset()
+      .mockImplementation(
+        async (
+          handler: (
+            position: "top-left" | "top-right" | "bottom-left" | "bottom-right"
+          ) => void
+        ) => {
+          mocks.streamHandlers.onTrayPeekPositionChanged = handler;
+          return () => {
+            mocks.streamHandlers.onTrayPeekPositionChanged = null;
+          };
+        }
+      );
     mocks.onTtsStateMock.mockClear();
     mocks.resizeWindowMock.mockReset().mockResolvedValue(undefined);
     mocks.sendLocalChatMock.mockReset().mockResolvedValue(undefined);
-    mocks.setClickThroughMock.mockReset().mockResolvedValue(undefined);
+    mocks.setPeekModeMock.mockReset().mockResolvedValue(undefined);
+    mocks.setPeekPositionMock.mockReset().mockResolvedValue(undefined);
     mocks.speakTextMock.mockReset().mockResolvedValue(undefined);
     mocks.startWindowDragMock.mockReset();
     mocks.stopSpeakingMock.mockReset().mockResolvedValue(undefined);
-    mocks.toggleExpandedWindowMock.mockReset().mockResolvedValue(undefined);
     mocks.transcribeAudioMock.mockReset();
     mocks.createRequestMock.mockReset();
     mocks.getRequestMock.mockReset();
@@ -185,6 +250,42 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
     await waitFor(() => expect(result.current.ttsEnabled).toBe(false));
     expect(window.localStorage.getItem("desktop-avatar.ttsEnabled")).toBe("false");
+  });
+
+  it("starts in expanded peek mode by default", async () => {
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    expect(result.current.peekMode).toBe("expanded");
+    expect(mocks.setPeekModeMock).toHaveBeenCalledWith(
+      "expanded",
+      expect.any(Number),
+      expect.any(Number),
+      expect.any(Number),
+      expect.any(Number),
+      false
+    );
+  });
+
+  it("reacts to tray peek collapse/open and position events", async () => {
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    act(() => {
+      mocks.streamHandlers.onTrayPeekCollapse?.();
+    });
+    await waitFor(() => expect(result.current.peekMode).toBe("peek"));
+
+    act(() => {
+      mocks.streamHandlers.onTrayPeekPositionChanged?.("bottom-left");
+    });
+    await waitFor(() => expect(result.current.peekPosition).toBe("bottom-left"));
+    expect(window.localStorage.getItem("desktop-avatar.peekPosition")).toBe("bottom-left");
+
+    act(() => {
+      mocks.streamHandlers.onTrayPeekOpen?.();
+    });
+    await waitFor(() => expect(result.current.peekMode).toBe("expanded"));
   });
 
   it("runs the happy path from submit to talk, widget and completion", async () => {

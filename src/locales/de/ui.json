@@ -5,12 +5,14 @@
   "chat": {
     "placeholder": "Frag mich etwas...",
     "launcherHint": "↵ senden · esc schließen",
+    "openAgent": "Agent öffnen",
     "retry": "Erneut versuchen",
     "send": "Senden",
     "stopRecording": "Aufnahme stoppen",
     "voiceInput": "Spracheingabe",
     "muteTts": "Sprachausgabe stummschalten",
     "enableTts": "Sprachausgabe aktivieren",
+    "toPeek": "In Peek-Modus wechseln",
     "closeChat": "Chat schließen"
   },
   "devTools": {
@@ -64,6 +66,9 @@
     "copied": "Kopiert!",
     "collapseAll": "Alle einklappen",
     "widgetDemo": "Widget Demo",
+    "widgetDock": "Widget-Overlay",
+    "widgetDockMiddle": "rechts mittig",
+    "widgetDockBottom": "rechts unten",
     "closeDemo": "Demo schließen",
     "clearDemoSelection": "Auswahl leeren",
     "demoTable": "Tabelle",
@@ -89,6 +94,8 @@
     "no": "Nein",
     "businessMetrics": "Geschäftskennzahlen",
     "table": {
+      "searchPlaceholder": "In allen Spalten suchen…",
+      "noResults": "Keine Treffer",
       "previousPage": "Zurück",
       "nextPage": "Weiter",
       "pageXofY": "Seite {{current}} / {{total}}",
@@ -99,7 +106,8 @@
     "navigation": "Slider-Navigation",
     "previous": "Zurück",
     "next": "Weiter",
-    "slide": "Folie {{index}}"
+    "slide": "Folie {{index}}",
+    "closeAll": "Alle schließen"
   },
   "status": {
     "sendingRequest": "Anfrage wird gesendet…",
@@ -133,6 +141,14 @@
   },
   "tray": {
     "showHide": "Einblenden / Ausblenden",
+    "openAgent": "Agent öffnen",
+    "collapseToPeek": "Zu Peek wechseln",
+    "peekPosition": "Peek-Position",
+    "peekTopLeft": "oben links",
+    "peekTopRight": "oben rechts",
+    "peekBottomLeft": "unten links",
+    "peekBottomRight": "unten rechts",
+    "resetWindowPosition": "Fensterposition zurücksetzen",
     "size": "Größe",
     "sizeCollapsed": "Kompakt (520 x 780)",
     "sizeExpanded": "Erweitert (720 x 920)",

@@ -17,7 +17,7 @@ export function SpeechBubble({
 
   return (
     <div
-      className="speech-bubble"
+      className="speech-bubble backdrop-blur"
       data-tone={tone}
       data-tauri-drag-region
       onMouseDown={(event) => {

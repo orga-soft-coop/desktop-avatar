@@ -61,7 +61,7 @@ const PEEK_ANIMATION_ENABLED_STORAGE_KEY = "desktop-avatar.peekAnimationEnabled"
 const LAST_EXPANDED_SIZE_STORAGE_KEY = "desktop-avatar.lastExpandedSize";
 const LOCAL_CHAT_SYSTEM_PROMPT = t("localChat.systemPrompt");
 const LOCAL_CHAT_FALLBACK_RESPONSE = t("status.localFallback");
-const DEFAULT_PEEK_MODE: PeekMode = "expanded";
+const DEFAULT_PEEK_MODE: PeekMode = "peek";
 const DEFAULT_PEEK_POSITION: PeekPosition = "top-right";
 const MODE_TRANSITION_COLLAPSE_OUT_MS = 210;
 const MODE_TRANSITION_EXPAND_REVEAL_MS = 240;
@@ -347,8 +347,13 @@ function readStoredPeekMode(): PeekMode {
     return DEFAULT_PEEK_MODE;
   }
   try {
+    // Startup must always begin in peek mode; the stored value is only
+    // retained for compatibility and can still be updated at runtime.
     const raw = window.localStorage.getItem(PEEK_MODE_STORAGE_KEY);
-    return isPeekMode(raw) ? raw : DEFAULT_PEEK_MODE;
+    if (isPeekMode(raw) && raw === DEFAULT_PEEK_MODE) {
+      return raw;
+    }
+    return DEFAULT_PEEK_MODE;
   } catch {
     return DEFAULT_PEEK_MODE;
   }

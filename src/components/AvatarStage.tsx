@@ -35,6 +35,7 @@ interface AvatarStageProps {
     selectedClip: string | null;
     resolvedAnimationMapping: Record<string, string>;
   }) => void;
+  onForcedAnimationFinished?: (name: string) => void;
 }
 
 interface RuntimeState {
@@ -205,7 +206,8 @@ function AvatarRig({
   suggestedAnimation,
   onLoadError,
   onAnimationsLoaded,
-  onAnimationDebugChange
+  onAnimationDebugChange,
+  onForcedAnimationFinished
 }: {
   companionState: CompanionState;
   manifest: AvatarManifest | null;
@@ -218,6 +220,7 @@ function AvatarRig({
     selectedClip: string | null;
     resolvedAnimationMapping: Record<string, string>;
   }) => void;
+  onForcedAnimationFinished?: (name: string) => void;
 }) {
   const groupRef = useRef<Group>(null);
   const runtimeRef = useRef<RuntimeState | null>(null);
@@ -466,12 +469,15 @@ function AvatarRig({
       return;
     }
 
-    const { actions } = runtime;
+    const { actions, mixer } = runtime;
     const fadeOutAll = () => {
       Object.values(actions).forEach((action) => action.fadeOut(0.24));
     };
 
     fadeOutAll();
+    const normalizedForced = forcedAnimation?.trim().toLowerCase() ?? null;
+    const isForcedOneShot =
+      normalizedForced === "teleport-out" || normalizedForced === "teleported-out";
     const selectedAction = selectAnimationAction(
       actions,
       deriveAnimationCandidates({
@@ -480,10 +486,23 @@ function AvatarRig({
         suggestedAnimation
       })
     );
+    const selectedEntry = selectedAction
+      ? Object.entries(actions).find(([, action]) => action === selectedAction)
+      : null;
+    const selectedName = selectedEntry?.[0] ?? actionClipName(selectedAction) ?? null;
+    const normalizedSelected = selectedName?.trim().toLowerCase() ?? null;
+    const shouldPlayOneShot =
+      isForcedOneShot &&
+      (normalizedSelected === "teleport-out" || normalizedSelected === "teleported-out");
 
     if (selectedAction) {
       selectedAction.reset().fadeIn(0.24).play();
-      selectedAction.loop = THREE.LoopRepeat;
+      selectedAction.clampWhenFinished = shouldPlayOneShot;
+      if (shouldPlayOneShot) {
+        selectedAction.setLoop(THREE.LoopOnce, 1);
+      } else {
+        selectedAction.setLoop(THREE.LoopRepeat, Infinity);
+      }
     } else if (runtime.root) {
       runtime.root.rotation.y += companionState === "thinking" ? 0.08 : 0;
     }
@@ -492,7 +511,29 @@ function AvatarRig({
       selectedClip: actionClipName(selectedAction),
       resolvedAnimationMapping: runtime.resolvedAnimationMapping
     });
-  }, [companionState, forcedAnimation, onAnimationDebugChange, runtimeVersion, suggestedAnimation]);
+    if (!selectedAction || !shouldPlayOneShot || !selectedName) {
+      return;
+    }
+
+    const handleFinished = (event: { action?: AnimationAction }) => {
+      if (event.action !== selectedAction) {
+        return;
+      }
+      onForcedAnimationFinished?.(selectedName);
+    };
+
+    mixer.addEventListener("finished", handleFinished);
+    return () => {
+      mixer.removeEventListener("finished", handleFinished);
+    };
+  }, [
+    companionState,
+    forcedAnimation,
+    onAnimationDebugChange,
+    onForcedAnimationFinished,
+    runtimeVersion,
+    suggestedAnimation
+  ]);
 
   useFrame((_, delta) => {
     runtimeRef.current?.mixer.update(delta);
@@ -517,7 +558,8 @@ export function AvatarStage({
   suggestedAnimation,
   onDragStart,
   onAnimationsLoaded,
-  onAnimationDebugChange
+  onAnimationDebugChange,
+  onForcedAnimationFinished
 }: AvatarStageProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -563,6 +605,7 @@ export function AvatarStage({
                 onLoadError={setLoadError}
                 onAnimationsLoaded={onAnimationsLoaded}
                 onAnimationDebugChange={onAnimationDebugChange}
+                onForcedAnimationFinished={onForcedAnimationFinished}
               />
             </group>
             <OrbitControls enabled={false} />

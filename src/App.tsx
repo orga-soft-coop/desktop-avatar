@@ -19,6 +19,7 @@ import { getWindowGeometry } from "./lib/tauri";
 
 const TEXT_WIDGET_BUBBLE_ONLY_MAX_CHARS = 220;
 const PEEK_REST_ANIMATION_STORAGE_KEY = "desktop-avatar.peekRestAnimationClip";
+const STARTUP_TELEPORT_OUT_FALLBACK_MS = 2600;
 const WIDGET_DOCK_WIDTH = 620;
 const WIDGET_PANEL_FADE_MS = 140;
 const WIDGET_DOCK_EDGE_THRESHOLD = 18;
@@ -69,6 +70,7 @@ export default function App() {
     DEFAULT_AVATAR_CAMERA_CONFIG
   );
   const [forcedAnimation, setForcedAnimation] = useState<string | null>(null);
+  const [startupOneShotAnimation, setStartupOneShotAnimation] = useState<string | null>(null);
   const [avatarDebug, setAvatarDebug] = useState<{
     assetKind: "legacy-vrm" | "packed-glb" | null;
     selectedClip: string | null;
@@ -82,6 +84,7 @@ export default function App() {
   const appShellRef = useRef<HTMLElement>(null);
   const peekPressStateRef = useRef<{ x: number; y: number; dragging: boolean } | null>(null);
   const suppressNextPeekOpenRef = useRef(false);
+  const startupTeleportOutTriggeredRef = useRef(false);
 
   const handleAnimationsLoaded = useCallback((names: string[]) => {
     setAnimationNames(names);
@@ -195,6 +198,11 @@ export default function App() {
         referenceHeight: peekVisualDiameter * PEEK_CAMERA_REFERENCE_SCALE
       }
     : cameraConfig;
+  const effectiveForcedAnimation = startupOneShotAnimation
+    ? startupOneShotAnimation
+    : isPeek
+      ? (peekRestAnimationClip ?? forcedAnimation)
+      : forcedAnimation;
 
   const updateWidgetDockSide = useCallback(async () => {
     if (!isExpanded || !widgetDockVisible) {
@@ -316,6 +324,40 @@ export default function App() {
   }, [widgetDockVisible, syncWindowHeight]);
 
   useEffect(() => {
+    if (startupTeleportOutTriggeredRef.current) {
+      return;
+    }
+    if (companion.peekMode !== "peek") {
+      return;
+    }
+    if (companion.isModeTransitioning || companion.modeTransitionPhase !== "idle") {
+      return;
+    }
+
+    startupTeleportOutTriggeredRef.current = true;
+    setStartupOneShotAnimation("teleport-out");
+  }, [companion.isModeTransitioning, companion.modeTransitionPhase, companion.peekMode]);
+
+  useEffect(() => {
+    if (!startupOneShotAnimation) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setStartupOneShotAnimation((current) =>
+        current === startupOneShotAnimation ? null : current
+      );
+    }, STARTUP_TELEPORT_OUT_FALLBACK_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [startupOneShotAnimation]);
+
+  const handleForcedAnimationFinished = useCallback((finishedName: string) => {
+    const normalized = finishedName.trim().toLowerCase();
+    if (normalized === "teleport-out" || normalized === "teleported-out") {
+      setStartupOneShotAnimation(null);
+    }
+  }, []);
+
+  useEffect(() => {
     if (!isExpanded || !widgetDockVisible) {
       return;
     }
@@ -412,11 +454,12 @@ export default function App() {
           expanded={isExpanded}
           manifest={companion.avatarManifest}
           cameraConfig={avatarStageCameraConfig}
-          forcedAnimation={isPeek ? (peekRestAnimationClip ?? forcedAnimation) : forcedAnimation}
+          forcedAnimation={effectiveForcedAnimation}
           suggestedAnimation={isPeek ? "idle" : companion.activeAnimation}
           onDragStart={companion.startWindowDrag}
           onAnimationsLoaded={handleAnimationsLoaded}
           onAnimationDebugChange={setAvatarDebug}
+          onForcedAnimationFinished={handleForcedAnimationFinished}
         />
 
         {isPeek ? (

@@ -252,13 +252,16 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     expect(window.localStorage.getItem("desktop-avatar.ttsEnabled")).toBe("false");
   });
 
-  it("starts in expanded peek mode by default", async () => {
+  it("starts in peek mode by default", async () => {
+    window.localStorage.setItem("desktop-avatar.peekPosition", "bottom-left");
     const { result } = renderHook(() => useDesktopCompanion());
     await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
 
-    expect(result.current.peekMode).toBe("expanded");
+    expect(result.current.peekMode).toBe("peek");
+    expect(result.current.peekPosition).toBe("bottom-left");
+    expect(mocks.setPeekPositionMock).toHaveBeenCalledWith("bottom-left");
     expect(mocks.setPeekModeMock).toHaveBeenCalledWith(
-      "expanded",
+      "peek",
       expect.any(Number),
       expect.any(Number),
       expect.any(Number),

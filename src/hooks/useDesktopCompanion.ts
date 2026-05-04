@@ -43,7 +43,8 @@ import {
   startWindowDragForMode,
   speakText,
   stopSpeaking,
-  transcribeAudio
+  transcribeAudio,
+  type WindowResizeAnchor
 } from "../lib/tauri";
 import {
   DEFAULT_SIZE_PRESET,
@@ -1620,8 +1621,8 @@ export function useDesktopCompanion() {
         return next;
       });
     },
-    resizeWindow: async (width: number, height: number) => {
-      await resizeWindow(width, height);
+    resizeWindow: async (width: number, height: number, anchor?: WindowResizeAnchor) => {
+      await resizeWindow(width, height, anchor);
       setWindowSize({ width, height });
       storeLastExpandedSize(width, height);
     },

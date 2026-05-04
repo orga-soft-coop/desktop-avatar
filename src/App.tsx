@@ -19,9 +19,9 @@ import { getWindowGeometry } from "./lib/tauri";
 
 const TEXT_WIDGET_BUBBLE_ONLY_MAX_CHARS = 220;
 const PEEK_REST_ANIMATION_STORAGE_KEY = "desktop-avatar.peekRestAnimationClip";
+const UI_THEME_STORAGE_KEY = "desktop-avatar.uiTheme";
 const STARTUP_TELEPORT_OUT_FALLBACK_MS = 2600;
 const WIDGET_DOCK_WIDTH = 620;
-const WIDGET_PANEL_FADE_MS = 140;
 const WIDGET_DOCK_EDGE_THRESHOLD = 18;
 const WIDGET_DOCK_SWITCH_HYSTERESIS = 56;
 const PEEK_SHADOW_PADDING = 20;
@@ -29,6 +29,15 @@ const PEEK_CAMERA_REFERENCE_SCALE = 2.28;
 const PEEK_CAMERA_TARGET_Y_OFFSET = 0.12;
 
 type WidgetDockSide = "left" | "right";
+type UiTheme = "dark" | "light";
+
+function readStoredUiTheme(): UiTheme {
+  if (typeof window === "undefined") {
+    return "dark";
+  }
+  const value = window.localStorage.getItem(UI_THEME_STORAGE_KEY);
+  return value === "light" ? "light" : "dark";
+}
 
 function resolvePeekVisualDiameter(width: number, height: number): number {
   const diameter = Math.min(width, height);
@@ -64,6 +73,7 @@ export default function App() {
   const [widgetPanelState, setWidgetPanelState] = useState<
     "closed" | "opening" | "open" | "closing"
   >("closed");
+  const [widgetDockPrepared, setWidgetDockPrepared] = useState(true);
   const [widgetDockSide, setWidgetDockSide] = useState<WidgetDockSide>("right");
   const [animationNames, setAnimationNames] = useState<string[]>([]);
   const [cameraConfig, setCameraConfig] = useState<AvatarCameraConfig>(
@@ -71,6 +81,7 @@ export default function App() {
   );
   const [forcedAnimation, setForcedAnimation] = useState<string | null>(null);
   const [startupOneShotAnimation, setStartupOneShotAnimation] = useState<string | null>(null);
+  const [uiTheme, setUiTheme] = useState<UiTheme>(() => readStoredUiTheme());
   const [avatarDebug, setAvatarDebug] = useState<{
     assetKind: "legacy-vrm" | "packed-glb" | null;
     selectedClip: string | null;
@@ -85,6 +96,25 @@ export default function App() {
   const peekPressStateRef = useRef<{ x: number; y: number; dragging: boolean } | null>(null);
   const suppressNextPeekOpenRef = useRef(false);
   const startupTeleportOutTriggeredRef = useRef(false);
+  const previousExpandedRef = useRef(isExpanded);
+  const reopenLeftDockAnchorGuardRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(UI_THEME_STORAGE_KEY, uiTheme);
+  }, [uiTheme]);
+
+  useEffect(() => {
+    if (isExpanded && !previousExpandedRef.current) {
+      reopenLeftDockAnchorGuardRef.current = true;
+    }
+    if (!isExpanded || widgetDockSide === "right") {
+      reopenLeftDockAnchorGuardRef.current = false;
+    }
+    previousExpandedRef.current = isExpanded;
+  }, [isExpanded, widgetDockSide]);
 
   const handleAnimationsLoaded = useCallback((names: string[]) => {
     setAnimationNames(names);
@@ -158,10 +188,16 @@ export default function App() {
 
   const panelEntries: PanelEntry[] = [...requestPanelEntries, ...demoPanelEntries];
   const activePanelIndex = panelEntries.findIndex((entry) => entry.id === activePanelEntryId);
-  const activePanelEntry = activePanelIndex >= 0 ? panelEntries[activePanelIndex] : null;
+  const activePanelEntry =
+    activePanelIndex >= 0
+      ? panelEntries[activePanelIndex]
+      : panelEntries.length > 0
+        ? panelEntries[panelEntries.length - 1]
+        : null;
   const visiblePanelWidget = activePanelEntry?.widget ?? null;
   const widgetTooltipOpen = isExpanded && Boolean(visiblePanelWidget);
-  const widgetDockVisible = isExpanded && (widgetTooltipOpen || renderedPanelEntries.length > 0);
+  const widgetDockVisible =
+    isExpanded && widgetDockPrepared && (widgetTooltipOpen || renderedPanelEntries.length > 0);
   const displayedPanelEntries = widgetTooltipOpen ? panelEntries : renderedPanelEntries;
   const displayedActivePanelIndex = displayedPanelEntries.findIndex(
     (entry) => entry.id === activePanelEntryId
@@ -181,6 +217,11 @@ export default function App() {
   const cameraConfigSnippet = formatAvatarCameraConfig(cameraConfig);
   const presetSizes = getWindowSizesForPreset(companion.sizePreset);
   const expandedContentWidth = presetSizes.expanded.width;
+  const expectedWindowWidth = Math.round(
+    expandedContentWidth + (widgetDockVisible ? WIDGET_DOCK_WIDTH : 0)
+  );
+  const widgetDockReady =
+    !widgetDockVisible || Math.abs(companion.windowSize.width - expectedWindowWidth) < 2;
   const expandedContentStyle: CSSProperties | undefined = isExpanded
     ? { width: `${expandedContentWidth}px` }
     : undefined;
@@ -205,7 +246,7 @@ export default function App() {
       : forcedAnimation;
 
   const updateWidgetDockSide = useCallback(async () => {
-    if (!isExpanded || !widgetDockVisible) {
+    if (!isExpanded) {
       return;
     }
     const geometry = await getWindowGeometry().catch(() => null);
@@ -214,24 +255,39 @@ export default function App() {
     }
     const leftSpace = geometry.x;
     const rightSpace = geometry.screenWidth - (geometry.x + geometry.width);
+    const requiredSpace = WIDGET_DOCK_WIDTH + WIDGET_DOCK_EDGE_THRESHOLD;
+    const canFitLeft = leftSpace >= requiredSpace;
+    const canFitRight = rightSpace >= requiredSpace;
+
     setWidgetDockSide((current) => {
+      // Deterministic fit rule: choose the side that can fully fit the dock.
+      if (canFitLeft && !canFitRight) {
+        return "left";
+      }
+      if (canFitRight && !canFitLeft) {
+        return "right";
+      }
+      if (!canFitLeft && !canFitRight) {
+        // Neither side fits completely: keep the side with more remaining room.
+        return leftSpace >= rightSpace ? "left" : "right";
+      }
+
+      // Both sides fit: keep hysteresis to avoid jitter while dragging.
       if (
         current === "right" &&
-        rightSpace < WIDGET_DOCK_EDGE_THRESHOLD &&
         leftSpace > rightSpace + WIDGET_DOCK_SWITCH_HYSTERESIS
       ) {
         return "left";
       }
       if (
         current === "left" &&
-        leftSpace < WIDGET_DOCK_EDGE_THRESHOLD &&
         rightSpace > leftSpace + WIDGET_DOCK_SWITCH_HYSTERESIS
       ) {
         return "right";
       }
       return current;
     });
-  }, [isExpanded, widgetDockVisible]);
+  }, [isExpanded]);
 
   // Fit the native window to the measured layout.
   const syncWindowHeight = useCallback(() => {
@@ -254,8 +310,19 @@ export default function App() {
     if (sameHeight && sameWidth) return;
     lastResizedHeight.current = targetHeight;
     lastResizedWidth.current = targetWidth;
-    void resizeWindowRef.current(targetWidth, targetHeight);
-  }, [companion.sizePreset, isExpanded, widgetDockVisible]);
+    let resizeAnchor: "left" | "right" = "left";
+    if (widgetDockSide === "left") {
+      // After reopening from peek, keep the left origin once so we restore
+      // the previous expanded rect before returning to right-anchor behavior.
+      if (reopenLeftDockAnchorGuardRef.current) {
+        resizeAnchor = "left";
+        reopenLeftDockAnchorGuardRef.current = false;
+      } else {
+        resizeAnchor = "right";
+      }
+    }
+    void resizeWindowRef.current(targetWidth, targetHeight, resizeAnchor);
+  }, [companion.sizePreset, isExpanded, widgetDockSide, widgetDockVisible]);
 
   useEffect(() => {
     const shell = appShellRef.current;
@@ -280,19 +347,31 @@ export default function App() {
   }, [panelEntries]);
 
   useEffect(() => {
-    if (widgetTooltipOpen) {
-      setWidgetPanelState((current) => (current === "open" ? "open" : "opening"));
-      let rafOne = 0;
-      let rafTwo = 0;
-      rafOne = requestAnimationFrame(() => {
-        rafTwo = requestAnimationFrame(() => {
-          setWidgetPanelState("open");
-        });
+    if (!isExpanded || !widgetTooltipOpen) {
+      setWidgetDockPrepared(true);
+      return;
+    }
+    let cancelled = false;
+    setWidgetDockPrepared(false);
+    void updateWidgetDockSide().finally(() => {
+      if (cancelled) {
+        return;
+      }
+      requestAnimationFrame(() => {
+        if (!cancelled) {
+          setWidgetDockPrepared(true);
+        }
       });
-      return () => {
-        cancelAnimationFrame(rafOne);
-        cancelAnimationFrame(rafTwo);
-      };
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isExpanded, updateWidgetDockSide, widgetTooltipOpen]);
+
+  useEffect(() => {
+    if (widgetTooltipOpen) {
+      setWidgetPanelState("open");
+      return;
     }
 
     if (renderedPanelEntries.length === 0) {
@@ -300,12 +379,8 @@ export default function App() {
       return;
     }
 
-    setWidgetPanelState((current) => (current === "closed" ? "closed" : "closing"));
-    const timeoutId = window.setTimeout(() => {
-      setWidgetPanelState("closed");
-      setRenderedPanelEntries([]);
-    }, WIDGET_PANEL_FADE_MS);
-    return () => window.clearTimeout(timeoutId);
+    setWidgetPanelState("closed");
+    setRenderedPanelEntries([]);
   }, [renderedPanelEntries.length, widgetTooltipOpen]);
 
   useEffect(() => {
@@ -319,9 +394,16 @@ export default function App() {
   }, [activePanelEntryId, panelEntries]);
 
   useEffect(() => {
+    // The native shell can change size externally when switching peek/expanded mode.
+    // Reset cached dimensions so the next sync always re-applies the correct dock width.
+    lastResizedHeight.current = 0;
+    lastResizedWidth.current = 0;
+    if (!isExpanded) {
+      return;
+    }
     const id = requestAnimationFrame(() => syncWindowHeight());
     return () => cancelAnimationFrame(id);
-  }, [widgetDockVisible, syncWindowHeight]);
+  }, [isExpanded, widgetDockVisible, syncWindowHeight]);
 
   useEffect(() => {
     if (startupTeleportOutTriggeredRef.current) {
@@ -358,7 +440,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isExpanded || !widgetDockVisible) {
+    if (!isExpanded) {
       return;
     }
     void updateWidgetDockSide();
@@ -366,7 +448,7 @@ export default function App() {
       void updateWidgetDockSide();
     }, 120);
     return () => window.clearInterval(intervalId);
-  }, [isExpanded, updateWidgetDockSide, widgetDockVisible]);
+  }, [isExpanded, updateWidgetDockSide]);
 
   const adjustWindowHeight = useCallback(
     (delta: number) => {
@@ -377,9 +459,10 @@ export default function App() {
       );
       lastResizedWidth.current = targetWidth;
       lastResizedHeight.current = nextHeight;
-      void companion.resizeWindow(targetWidth, nextHeight);
+      const resizeAnchor = widgetDockSide === "left" ? "right" : "left";
+      void companion.resizeWindow(targetWidth, nextHeight, resizeAnchor);
     },
-    [companion, widgetDockVisible]
+    [companion, widgetDockSide, widgetDockVisible]
   );
 
   const dismissPanelEntry = useCallback((entry: PanelEntry) => {
@@ -434,9 +517,25 @@ export default function App() {
     [panelEntries]
   );
 
+  const handleToggleExpanded = useCallback(async () => {
+    if (isExpanded && widgetDockVisible) {
+      const baseExpandedWidth = getWindowSizesForPreset(companion.sizePreset).expanded.width;
+      const resizeAnchor = widgetDockSide === "left" ? "right" : "left";
+      if (Math.abs(companion.windowSize.width - baseExpandedWidth) >= 2) {
+        await companion.resizeWindow(baseExpandedWidth, companion.windowSize.height, resizeAnchor);
+      }
+    }
+    await companion.toggleExpanded();
+  }, [companion, isExpanded, widgetDockSide, widgetDockVisible]);
+
+  const toggleUiTheme = useCallback(() => {
+    setUiTheme((current) => (current === "dark" ? "light" : "dark"));
+  }, []);
+
   return (
     <main
       ref={appShellRef}
+      data-theme={uiTheme}
       className={`app-shell ${isExpanded ? "is-expanded" : "is-peek"} peek-size-${companion.sizePreset} ${companion.isModeTransitioning ? "is-mode-transitioning" : ""} ${companion.modeTransitionPhase !== "idle" ? `mode-transition-${companion.modeTransitionPhase}` : ""} ${widgetTooltipOpen ? "has-widget-tooltip" : ""} ${widgetDockVisible ? "widget-dock-visible" : ""} widget-dock-${widgetDockSide}`}
     >
       <div className={`app-content-column ${isExpanded ? "is-expanded" : ""}`} style={expandedContentStyle}>
@@ -535,7 +634,9 @@ export default function App() {
               onResetCameraConfig={() => setCameraConfig(DEFAULT_AVATAR_CAMERA_CONFIG)}
               onSelectSizePreset={companion.setSizePreset}
               onSubmit={companion.submitCurrentDraft}
-              onToggleExpanded={companion.toggleExpanded}
+              onToggleExpanded={handleToggleExpanded}
+              uiTheme={uiTheme}
+              onToggleTheme={toggleUiTheme}
               onToggleRecording={companion.toggleRecording}
               onToggleTts={companion.toggleTts}
               onSelectTtsVoice={companion.selectTtsVoice}
@@ -550,7 +651,7 @@ export default function App() {
         ) : null}
       </div>
 
-      {widgetPanelState !== "closed" ? (
+      {widgetPanelState !== "closed" && widgetDockVisible && widgetDockReady ? (
         <div
           className="widget-tooltip-panel"
           data-state={widgetPanelState}

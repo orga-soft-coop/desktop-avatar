@@ -105,11 +105,17 @@ export async function setPeekPosition(position: PeekPosition): Promise<void> {
   await invoke("window_set_peek_position", { position });
 }
 
-export async function resizeWindow(width: number, height: number): Promise<void> {
+export type WindowResizeAnchor = "left" | "right";
+
+export async function resizeWindow(
+  width: number,
+  height: number,
+  anchor: WindowResizeAnchor = "left"
+): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
-  await invoke("window_resize", { width, height });
+  await invoke("window_resize", { width, height, anchor });
 }
 
 export interface WindowGeometry {

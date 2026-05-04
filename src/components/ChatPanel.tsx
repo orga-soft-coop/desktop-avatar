@@ -25,6 +25,7 @@ interface ChatPanelProps {
   draft: string;
   isExpanded: boolean;
   isRecording: boolean;
+  uiTheme: "dark" | "light";
   sizePreset: SizePreset;
   ttsEnabled: boolean;
   ttsVoices?: string[];
@@ -46,6 +47,7 @@ interface ChatPanelProps {
   onCameraConfigChange?: (next: AvatarCameraConfig) => void;
   onResetCameraConfig?: () => void;
   onToggleExpanded: () => void;
+  onToggleTheme: () => void;
   onToggleTts: () => void;
   onSelectTtsVoice?: (voice: string | null) => void;
   onToggleRecording: () => void;
@@ -94,6 +96,7 @@ export function ChatPanel({
   draft,
   isExpanded,
   isRecording,
+  uiTheme,
   sizePreset,
   ttsEnabled,
   ttsVoices,
@@ -115,6 +118,7 @@ export function ChatPanel({
   onCameraConfigChange,
   onResetCameraConfig,
   onToggleExpanded,
+  onToggleTheme,
   onToggleTts,
   onSelectTtsVoice,
   onToggleRecording,
@@ -232,7 +236,18 @@ export function ChatPanel({
       return;
     }
     textarea.style.height = "auto";
-    textarea.style.height = `${textarea.scrollHeight}px`;
+    const computed = window.getComputedStyle(textarea);
+    const maxHeight = Number.parseFloat(computed.maxHeight);
+    const hasFiniteMaxHeight = Number.isFinite(maxHeight) && maxHeight > 0;
+    const nextHeight = hasFiniteMaxHeight
+      ? Math.min(textarea.scrollHeight, maxHeight)
+      : textarea.scrollHeight;
+    textarea.style.height = `${nextHeight}px`;
+    if (hasFiniteMaxHeight && textarea.scrollHeight > maxHeight + 1) {
+      textarea.style.overflowY = "auto";
+    } else {
+      textarea.style.overflowY = "hidden";
+    }
   }, [draft]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -391,6 +406,47 @@ export function ChatPanel({
                     <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
                     <line x1="23" y1="9" x2="17" y2="15" />
                     <line x1="17" y1="9" x2="23" y2="15" />
+                  </svg>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={onToggleTheme}
+                title={uiTheme === "dark" ? t("chat.switchToLightMode") : t("chat.switchToDarkMode")}
+              >
+                {uiTheme === "dark" ? (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="12" cy="12" r="4" />
+                    <path d="M12 2v2" />
+                    <path d="M12 20v2" />
+                    <path d="m4.93 4.93 1.41 1.41" />
+                    <path d="m17.66 17.66 1.41 1.41" />
+                    <path d="M2 12h2" />
+                    <path d="M20 12h2" />
+                    <path d="m6.34 17.66-1.41 1.41" />
+                    <path d="m19.07 4.93-1.41 1.41" />
+                  </svg>
+                ) : (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 3a6 6 0 0 0 9 8.2 9 9 0 1 1-9-8.2z" />
                   </svg>
                 )}
               </button>

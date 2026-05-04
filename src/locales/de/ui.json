@@ -12,6 +12,8 @@
     "voiceInput": "Spracheingabe",
     "muteTts": "Sprachausgabe stummschalten",
     "enableTts": "Sprachausgabe aktivieren",
+    "switchToLightMode": "Light Mode aktivieren",
+    "switchToDarkMode": "Dark Mode aktivieren",
     "toPeek": "In Peek-Modus wechseln",
     "closeChat": "Chat schließen"
   },

@@ -7,6 +7,53 @@
   font-family: "Avenir Next", "Segoe UI", sans-serif;
   background: transparent;
   color: #102033;
+  --da-surface: #1f2530;
+  --da-surface-muted: #2a313d;
+  --da-surface-strong: #141922;
+  --da-border: #2d3442;
+  --da-text: #ffffff;
+  --da-text-muted: rgba(255, 255, 255, 0.58);
+  --da-text-subtle: rgba(255, 255, 255, 0.35);
+  --da-control-bg: rgba(255, 255, 255, 0.08);
+  --da-control-hover: rgba(255, 255, 255, 0.16);
+  --da-control-active: rgb(127 182 218 / 0.22);
+  --da-control-active-text: #7fb6da;
+  --da-input-bg: rgba(0, 0, 0, 0.28);
+  --da-input-border: rgba(255, 255, 255, 0.08);
+  --da-input-placeholder: rgba(255, 255, 255, 0.38);
+  --da-accent: #7fb6da;
+  --da-accent-soft: rgb(127 182 218 / 0.28);
+  --da-success: #a6ce39;
+  --da-success-soft: rgba(166, 206, 57, 0.24);
+  --da-widget-error-bg: #3a2229;
+  --da-widget-error-border: #7a3d4c;
+  --da-widget-arrow-fill: #1f2530;
+  --da-widget-arrow-border: #2d3442;
+}
+
+.app-shell[data-theme="light"] {
+  --da-surface: #ffffff;
+  --da-surface-muted: #f3f7fc;
+  --da-surface-strong: #ebf1f8;
+  --da-border: #d6e0ed;
+  --da-text: #1d2a3b;
+  --da-text-muted: #5c6d82;
+  --da-text-subtle: #73859b;
+  --da-control-bg: #ecf2f9;
+  --da-control-hover: #dde8f4;
+  --da-control-active: rgba(0, 122, 189, 0.14);
+  --da-control-active-text: #015f96;
+  --da-input-bg: #ffffff;
+  --da-input-border: #c7d5e5;
+  --da-input-placeholder: #7b8fa8;
+  --da-accent: #007abd;
+  --da-accent-soft: rgba(0, 122, 189, 0.15);
+  --da-success: #7a9f22;
+  --da-success-soft: rgba(122, 159, 34, 0.16);
+  --da-widget-error-bg: #fff1f3;
+  --da-widget-error-border: #f1c8d1;
+  --da-widget-arrow-fill: #ffffff;
+  --da-widget-arrow-border: #d6e0ed;
 }
 
 * {
@@ -94,8 +141,8 @@ button {
   min-width: 0;
   margin-left: 0;
   opacity: 1;
-  transition: opacity 110ms ease, margin-left 180ms ease;
-  will-change: opacity, clip-path;
+  transition: none;
+  will-change: clip-path;
 }
 
 .app-shell.is-expanded.widget-dock-visible.widget-dock-left .app-content-column {
@@ -341,8 +388,8 @@ button {
 
 .widget-tooltip-panel {
   --widget-arrow-offset-y: 0px;
-  --widget-arrow-fill: #1f2530;
-  --widget-arrow-border: #2d3442;
+  --widget-arrow-fill: var(--da-widget-arrow-fill);
+  --widget-arrow-border: var(--da-widget-arrow-border);
   position: absolute;
   top: 50%;
   right: 24px;
@@ -353,7 +400,7 @@ button {
   z-index: 12;
   opacity: 1;
   transform: translateY(-50%);
-  transition: opacity 140ms ease, transform 110ms ease;
+  transition: none;
 }
 
 .app-shell.widget-dock-left .widget-tooltip-panel {
@@ -368,11 +415,6 @@ button {
 .widget-tooltip-panel[data-widget-tone="error"] {
   --widget-arrow-fill: #3a2229;
   --widget-arrow-border: #7a3d4c;
-}
-
-.widget-tooltip-panel[data-state="opening"],
-.widget-tooltip-panel[data-state="closing"] {
-  opacity: 0;
 }
 
 .app-shell.mode-transition-expand-prep .app-content-column,
@@ -403,10 +445,6 @@ button {
 .app-shell.mode-transition-peek-in .app-content-column,
 .app-shell.mode-transition-peek-in .widget-tooltip-panel {
   animation: mode-peek-in 200ms cubic-bezier(0.2, 0.9, 0.32, 1) forwards;
-  pointer-events: none;
-}
-
-.widget-tooltip-panel[data-state="closing"] {
   pointer-events: none;
 }
 
@@ -1247,7 +1285,7 @@ button {
 
 .speech-bubble p {
   margin: 0;
-  font-size: clamp(0.88rem, 1.3vw, 1.05rem);
+  font-size: 1rem;
   line-height: 1.36;
 }
 
@@ -1942,8 +1980,9 @@ button {
 .widget-card,
 .data-panel-slider__nav {
   background-image: none !important;
-  background-color: #1f2530 !important;
-  border-color: #2d3442 !important;
+  background-color: var(--da-surface) !important;
+  border-color: var(--da-border) !important;
+  color: var(--da-text) !important;
   box-shadow: none !important;
 }
 
@@ -1969,8 +2008,8 @@ button {
 }
 
 .widget-card--error {
-  background-color: #3a2229 !important;
-  border-color: #7a3d4c !important;
+  background-color: var(--da-widget-error-bg) !important;
+  border-color: var(--da-widget-error-border) !important;
 }
 
 .widget-card--error .widget-card__header h4 {
@@ -1991,6 +2030,161 @@ button {
   border-color: rgba(255, 198, 212, 0.5);
   background: rgba(145, 70, 89, 0.52);
   color: #fff;
+}
+
+.app-shell[data-theme="light"] .chat-panel__hint,
+.app-shell[data-theme="light"] .chat-panel__launcher small,
+.app-shell[data-theme="light"] .chat-panel__devtools-k,
+.app-shell[data-theme="light"] .chat-panel__devtools-row > label,
+.app-shell[data-theme="light"] .chat-panel__devtools-section-title,
+.app-shell[data-theme="light"] .chat-panel__devtools-toggle,
+.app-shell[data-theme="light"] .chat-panel__devtools-section-toggle,
+.app-shell[data-theme="light"] .data-table__title,
+.app-shell[data-theme="light"] .widget-card__list-row dt,
+.app-shell[data-theme="light"] .data-table thead th,
+.app-shell[data-theme="light"] .data-table__meta {
+  color: var(--da-text-subtle) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__composer textarea,
+.app-shell[data-theme="light"] .chat-panel__devtools-row select,
+.app-shell[data-theme="light"] .chat-panel__devtools-num,
+.app-shell[data-theme="light"] .data-table__search,
+.app-shell[data-theme="light"] .chat-panel__devtools-btn {
+  background: var(--da-input-bg) !important;
+  border-color: var(--da-input-border) !important;
+  color: var(--da-text) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__composer textarea::placeholder,
+.app-shell[data-theme="light"] .data-table__search::placeholder {
+  color: var(--da-input-placeholder) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__actions button,
+.app-shell[data-theme="light"] .chat-panel__size-presets,
+.app-shell[data-theme="light"] .data-panel-slider__arrow,
+.app-shell[data-theme="light"] .data-table__pager-btn,
+.app-shell[data-theme="light"] .data-panel-slider__close-all,
+.app-shell[data-theme="light"] .widget-card__chip,
+.app-shell[data-theme="light"] .widget-card__legend-item,
+.app-shell[data-theme="light"] .data-table__badge,
+.app-shell[data-theme="light"] .data-table__close,
+.app-shell[data-theme="light"] .widget-card__close {
+  background: var(--da-control-bg) !important;
+  border-color: var(--da-input-border) !important;
+  color: var(--da-text-muted) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__actions button:hover,
+.app-shell[data-theme="light"] .data-panel-slider__arrow:hover,
+.app-shell[data-theme="light"] .data-table__pager-btn:hover:not(:disabled),
+.app-shell[data-theme="light"] .data-panel-slider__close-all:hover,
+.app-shell[data-theme="light"] .widget-card__chip:hover,
+.app-shell[data-theme="light"] .data-table__close:hover,
+.app-shell[data-theme="light"] .widget-card__close:hover {
+  background: var(--da-control-hover) !important;
+  color: var(--da-text) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__actions button.is-active {
+  background: var(--da-control-active) !important;
+  color: var(--da-control-active-text) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__size-presets button {
+  color: var(--da-text-muted) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__size-presets button:hover {
+  color: var(--da-text) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__size-presets button.is-active {
+  background: var(--da-accent-soft) !important;
+  color: var(--da-accent) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__send {
+  background: var(--da-success-soft) !important;
+  color: var(--da-success) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__send:hover {
+  background: rgba(122, 159, 34, 0.24) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__devtools,
+.app-shell[data-theme="light"] .chat-panel__devtools-section,
+.app-shell[data-theme="light"] .data-table thead th,
+.app-shell[data-theme="light"] .data-table tbody td,
+.app-shell[data-theme="light"] .data-table__footer,
+.app-shell[data-theme="light"] .widget-card__list-row,
+.app-shell[data-theme="light"] .widget-card__legend-item,
+.app-shell[data-theme="light"] .widget-card__chip,
+.app-shell[data-theme="light"] .data-panel-slider__nav {
+  border-color: var(--da-border) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__devtools-v,
+.app-shell[data-theme="light"] .chat-panel__devtools-metric,
+.app-shell[data-theme="light"] .widget-card__body-text,
+.app-shell[data-theme="light"] .widget-card__list-row dd,
+.app-shell[data-theme="light"] .data-table tbody td,
+.app-shell[data-theme="light"] .data-table__badge,
+.app-shell[data-theme="light"] .data-table__meta,
+.app-shell[data-theme="light"] .data-panel-slider__dot,
+.app-shell[data-theme="light"] .data-panel-slider__close-all,
+.app-shell[data-theme="light"] .data-panel-slider__arrow,
+.app-shell[data-theme="light"] .chat-panel__devtools-btn,
+.app-shell[data-theme="light"] .chat-panel__devtools-mapping {
+  color: var(--da-text-muted) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__devtools-btn.is-active,
+.app-shell[data-theme="light"] .data-panel-slider__dot.is-active {
+  background: var(--da-accent-soft) !important;
+  border-color: rgba(0, 122, 189, 0.36) !important;
+  color: var(--da-accent) !important;
+}
+
+.app-shell[data-theme="light"] .data-panel-slider__dot {
+  background: rgba(61, 97, 137, 0.26) !important;
+}
+
+.app-shell[data-theme="light"] .data-table__inner,
+.app-shell[data-theme="light"] .widget-card__list-row,
+.app-shell[data-theme="light"] .data-panel-slider__nav {
+  background-color: var(--da-surface-muted) !important;
+}
+
+.app-shell[data-theme="light"] .widget-card--clarification {
+  background-color: #f4f8fe !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__devtools-mapping {
+  background: var(--da-surface-strong) !important;
+  border-color: var(--da-input-border) !important;
+}
+
+.app-shell[data-theme="light"] .widget-card--error .widget-card__header h4 {
+  color: #9f223f !important;
+}
+
+.app-shell[data-theme="light"] .widget-card--error .widget-card__body-text {
+  color: #7a3d4c !important;
+}
+
+.app-shell[data-theme="light"] .widget-card--error .widget-card__close {
+  border-color: #efbecb !important;
+  background: #ffe7ee !important;
+  color: #9f223f !important;
+}
+
+.app-shell[data-theme="light"] .widget-card--error .widget-card__close:hover {
+  border-color: #e89db0 !important;
+  background: #ffd5e1 !important;
+  color: #821b33 !important;
 }
 
 .speech-bubble__tail {

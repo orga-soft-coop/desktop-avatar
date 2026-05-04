@@ -22,7 +22,7 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, State,
+    Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State,
     WebviewWindow, WindowEvent,
 };
 use tokio::{process::Command, sync::Mutex};
@@ -868,8 +868,18 @@ async fn frontend_log(
 }
 
 #[tauri::command]
-async fn window_resize(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
-    resize_window_internal(&window, width, height)
+async fn window_resize(
+    window: WebviewWindow,
+    width: f64,
+    height: f64,
+    anchor: Option<WindowResizeAnchor>,
+) -> Result<(), String> {
+    resize_window_internal(
+        &window,
+        width,
+        height,
+        anchor.unwrap_or(WindowResizeAnchor::Left),
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -2390,35 +2400,33 @@ async fn tts_stop(window: WebviewWindow) -> Result<(), String> {
     emit_tts_state(&window, "global", false, None, None)
 }
 
-fn resize_window_internal(window: &WebviewWindow, width: f64, height: f64) -> Result<(), String> {
-    let position = window.outer_position().map_err(|error| error.to_string())?;
-    let target_height = height;
-    let target_width = width;
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum WindowResizeAnchor {
+    Left,
+    Right,
+}
 
-    // Keep the top-left X position fixed; only grow/shrink downward.
-    let mut new_x = position.x;
-    let mut new_y = position.y;
-
-    if let Some(monitor) = window
-        .current_monitor()
-        .map_err(|error| error.to_string())?
-    {
-        let monitor_position = monitor.position();
-        let monitor_size = monitor.size();
-        let max_x = monitor_position.x + monitor_size.width as i32 - target_width as i32;
-        let max_y = monitor_position.y + monitor_size.height as i32 - target_height as i32;
-
-        new_x = new_x.clamp(monitor_position.x, max_x.max(monitor_position.x));
-        new_y = new_y.clamp(monitor_position.y, max_y.max(monitor_position.y));
-    }
-
-    window
-        .set_size(LogicalSize::new(target_width, target_height))
-        .map_err(|error| error.to_string())?;
-    window
-        .set_position(Position::Physical(PhysicalPosition::new(new_x, new_y)))
-        .map_err(|error| error.to_string())?;
-    Ok(())
+fn resize_window_internal(
+    window: &WebviewWindow,
+    width: f64,
+    height: f64,
+    anchor: WindowResizeAnchor,
+) -> Result<(), String> {
+    let current = current_window_rect(window)?;
+    let target_x = match anchor {
+        WindowResizeAnchor::Left => current.x,
+        // Keep right edge fixed when opening/closing left-side widget docks.
+        WindowResizeAnchor::Right => current.x + current.width - width,
+    };
+    let target_rect = WindowRect {
+        x: target_x,
+        y: current.y,
+        width,
+        height,
+    };
+    let clamped = clamp_window_rect_to_monitor(window, target_rect)?;
+    apply_window_rect(window, clamped)
 }
 
 async fn process_business_stream(
@@ -2948,6 +2956,32 @@ pub fn run() {
             let app_state = app.state::<AppState>().inner().clone();
             let tracked_window = window.clone();
             window.on_window_event(move |event| {
+                if matches!(event, WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed) {
+                    let app_state = app_state.clone();
+                    let tracked_window = tracked_window.clone();
+                    async_runtime::spawn(async move {
+                        let Ok(rect) = current_window_rect(&tracked_window) else {
+                            return;
+                        };
+                        let mode = *app_state.current_window_mode.lock().await;
+                        match mode {
+                            WindowMode::Peek => {
+                                let peek_size = *app_state.peek_size.lock().await;
+                                let mut guard = app_state.last_peek_rect.lock().await;
+                                *guard =
+                                    peek_rect_for_origin(&tracked_window, rect.x, rect.y, peek_size)
+                                        .ok();
+                            }
+                            WindowMode::Expanded => {
+                                let mut guard = app_state.last_expanded_rect.lock().await;
+                                *guard = clamp_window_rect_to_monitor(&tracked_window, rect).ok();
+                            }
+                        }
+                        persist_window_state(&app_state).await;
+                    });
+                    return;
+                }
+
                 if !matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
                     return;
                 }

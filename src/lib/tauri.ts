@@ -161,7 +161,7 @@ export async function frontendLog(level: string, message: string): Promise<void>
 export async function createDesktopAvatarRequest(
   request: CreateDesktopAvatarRequestInput
 ): Promise<CreateDesktopAvatarRequestResult> {
-  requireTauriRuntime("Desktop Avatar Anfrage");
+  requireTauriRuntime("SYNTRA Assistant Anfrage");
   return invoke<CreateDesktopAvatarRequestResult>("desktop_avatar_request_create", { request });
 }
 
@@ -169,7 +169,7 @@ export async function getDesktopAvatarRequest(args: {
   avatarRequestId?: string;
   pollUrl?: string;
 }): Promise<DesktopAvatarRequestDocument> {
-  requireTauriRuntime("Desktop Avatar Polling");
+  requireTauriRuntime("SYNTRA Assistant Polling");
   return invoke<DesktopAvatarRequestDocument>("desktop_avatar_request_get", args);
 }
 
@@ -177,7 +177,7 @@ export async function startDesktopAvatarStream(args: {
   avatarRequestId?: string;
   streamUrl?: string;
 }): Promise<void> {
-  requireTauriRuntime("Desktop Avatar Stream");
+  requireTauriRuntime("SYNTRA Assistant Stream");
   await invoke("desktop_avatar_request_stream", args);
 }
 

@@ -517,8 +517,16 @@ impl TtsHttpRequestFormat {
 
 impl AppConfig {
     fn load() -> Self {
-        let _ = dotenvy::dotenv();
         let workspace_root = workspace_root();
+        let workspace_env_path = workspace_root.join(".env");
+
+        // Prefer project-local desktop-avatar/.env over inherited shell variables.
+        if workspace_env_path.exists() {
+            let _ = dotenvy::from_path_override(&workspace_env_path);
+        } else {
+            let _ = dotenvy::dotenv();
+        }
+
         let default_manifest = workspace_root
             .join("public")
             .join("sample-avatar-manifest.json");
@@ -547,7 +555,7 @@ impl AppConfig {
             .unwrap_or(TtsProviderMode::Auto);
 
         let openai_tts_default_voice =
-            env::var("OPENAI_TTS_VOICE").unwrap_or_else(|_| "onyx".to_string());
+            env::var("OPENAI_TTS_VOICE").unwrap_or_else(|_| "shimmer".to_string());
         let mut openai_tts_voices = env::var("OPENAI_TTS_VOICES")
             .ok()
             .map(|raw| {
@@ -559,6 +567,8 @@ impl AppConfig {
             })
             .unwrap_or_default();
         if openai_tts_voices.is_empty() {
+            openai_tts_voices.push(openai_tts_default_voice.clone());
+        } else if !openai_tts_voices.contains(&openai_tts_default_voice) {
             openai_tts_voices.push(openai_tts_default_voice.clone());
         }
 
@@ -1392,7 +1402,7 @@ async fn desktop_avatar_request_create(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("Desktop Avatar create returned {status}: {text}"));
+        return Err(format!("SYNTRA Assistant create returned {status}: {text}"));
     }
 
     let mut result = response
@@ -1434,7 +1444,7 @@ async fn desktop_avatar_request_get(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("Desktop Avatar poll returned {status}: {text}"));
+        return Err(format!("SYNTRA Assistant poll returned {status}: {text}"));
     }
 
     response
@@ -1706,11 +1716,23 @@ async fn speech_transcribe(
     let audio = BASE64
         .decode(request.audio_base64.as_bytes())
         .map_err(|error| error.to_string())?;
+    let audio_len = audio.len();
 
-    let extension = mime_extension(&request.mime_type);
+    let normalized_mime = normalize_audio_mime_for_transcription(&request.mime_type);
+    let extension = mime_extension(normalized_mime.as_str());
+    append_log(
+        &state.config.log_file_path,
+        format!(
+            "stt: start mimeRaw={} mimeNormalized={} extension={} bytes={}",
+            truncate_for_log(&request.mime_type, 120),
+            normalized_mime,
+            extension,
+            audio_len
+        ),
+    );
     let part = Part::bytes(audio)
         .file_name(format!("speech.{extension}"))
-        .mime_str(&request.mime_type)
+        .mime_str(normalized_mime.as_str())
         .map_err(|error| error.to_string())?;
 
     let form = Form::new()
@@ -1734,12 +1756,23 @@ async fn speech_transcribe(
         .map_err(|error| error.to_string())?;
 
     if !status.is_success() {
-        return Err(value
+        let message = value
             .get("error")
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str)
             .unwrap_or("The transcription request failed.")
-            .to_string());
+            .to_string();
+        append_log(
+            &state.config.log_file_path,
+            format!(
+                "stt: failed status={} mime={} bytes={} message={}",
+                status.as_u16(),
+                normalized_mime,
+                audio_len,
+                truncate_for_log(&message, 220)
+            ),
+        );
+        return Err(message);
     }
 
     Ok(value
@@ -2514,7 +2547,7 @@ async fn process_desktop_avatar_stream(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("Desktop Avatar stream returned {status}: {text}"));
+        return Err(format!("SYNTRA Assistant stream returned {status}: {text}"));
     }
 
     let mut parser = SseParser {
@@ -2833,10 +2866,39 @@ fn mime_type_for_path(path: &str) -> String {
 }
 
 fn mime_extension(mime: &str) -> &'static str {
-    match mime {
-        "audio/mp4" | "audio/x-m4a" => "m4a",
-        "audio/webm" | "audio/webm;codecs=opus" => "webm",
-        _ => "wav",
+    match mime.trim().to_ascii_lowercase().as_str() {
+        "audio/mp4" | "audio/x-m4a" | "audio/m4a" => "m4a",
+        "audio/webm" => "webm",
+        "audio/mpeg" | "audio/mp3" | "audio/mpga" => "mp3",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/flac" => "flac",
+        _ => "webm",
+    }
+}
+
+fn normalize_audio_mime_for_transcription(mime: &str) -> String {
+    let normalized = mime
+        .split(';')
+        .next()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+
+    match normalized.as_str() {
+        "audio/mp4" | "audio/x-m4a" | "audio/m4a" => "audio/mp4".to_string(),
+        "audio/webm" => "audio/webm".to_string(),
+        "audio/mpeg" | "audio/mp3" | "audio/mpga" => "audio/mpeg".to_string(),
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "audio/wav".to_string(),
+        "audio/ogg" => "audio/ogg".to_string(),
+        "audio/flac" => "audio/flac".to_string(),
+        _ => {
+            if normalized.starts_with("audio/") {
+                normalized
+            } else {
+                "audio/webm".to_string()
+            }
+        }
     }
 }
 
@@ -3116,7 +3178,7 @@ pub fn run() {
                 .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(true)
-                .tooltip("DesktopAvatar")
+                .tooltip("SYNTRA Assistant")
                 .on_menu_event(move |app, event| {
                     let id = event.id().as_ref();
                     match id {

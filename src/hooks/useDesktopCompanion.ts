@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import type {
   AvatarManifest,
   ChatMessage,
@@ -17,18 +24,22 @@ import type {
   StreamEnvelope,
   StreamErrorPayload,
   StreamFinalPayload,
-  StreamTextPayload
+  StreamTextPayload,
 } from "../lib/contracts";
-import { desktopAvatarApiClient, type DesktopAvatarStreamConnection } from "../lib/desktop-avatar-api";
+import {
+  desktopAvatarApiClient,
+  type DesktopAvatarStreamConnection,
+} from "../lib/desktop-avatar-api";
 import {
   desktopAvatarInitialState,
   reduceDesktopAvatarState,
   type DesktopAvatarOrchestratorState,
-  isDesktopAvatarTerminalStatus
+  isDesktopAvatarTerminalStatus,
 } from "../lib/desktop-avatar-orchestrator";
 import { routePrompt } from "../lib/router";
 import { t } from "../lib/i18n";
 import {
+  frontendLog,
   getBootstrapState,
   listTtsVoices,
   onTrayPeekCollapse,
@@ -44,21 +55,22 @@ import {
   speakText,
   stopSpeaking,
   transcribeAudio,
-  type WindowResizeAnchor
+  type WindowResizeAnchor,
 } from "../lib/tauri";
 import {
   DEFAULT_SIZE_PRESET,
   type SizePreset,
   getWindowSizesForPreset,
   readStoredSizePreset,
-  storeSizePreset
+  storeSizePreset,
 } from "../lib/window-presets";
 
 const TTS_VOICE_STORAGE_KEY = "desktop-avatar.ttsVoice";
 const TTS_ENABLED_STORAGE_KEY = "desktop-avatar.ttsEnabled";
 const PEEK_MODE_STORAGE_KEY = "desktop-avatar.peekMode";
 const PEEK_POSITION_STORAGE_KEY = "desktop-avatar.peekPosition";
-const PEEK_ANIMATION_ENABLED_STORAGE_KEY = "desktop-avatar.peekAnimationEnabled";
+const PEEK_ANIMATION_ENABLED_STORAGE_KEY =
+  "desktop-avatar.peekAnimationEnabled";
 const LAST_EXPANDED_SIZE_STORAGE_KEY = "desktop-avatar.lastExpandedSize";
 const LOCAL_CHAT_SYSTEM_PROMPT = t("localChat.systemPrompt");
 const LOCAL_CHAT_FALLBACK_RESPONSE = t("status.localFallback");
@@ -68,6 +80,18 @@ const MODE_TRANSITION_COLLAPSE_OUT_MS = 210;
 const MODE_TRANSITION_EXPAND_REVEAL_MS = 240;
 const MODE_TRANSITION_PEEK_REVEAL_MS = 220;
 const MODE_TRANSITION_PEEK_OUT_MS = 190;
+const VOICE_MAX_RECORDING_MS = 20_000;
+const VOICE_SILENCE_HOLD_MS = 2_200;
+const VOICE_ACTIVITY_POLL_MS = 120;
+const VOICE_SILENCE_RMS_THRESHOLD = 0.01;
+const VOICE_SPEECH_RMS_THRESHOLD = 0.012;
+const VOICE_MIN_AUTOSTOP_ELAPSED_MS = 2_400;
+const VOICE_MAX_INITIAL_SILENCE_MS = 7_000;
+const VOICE_MIN_TRANSCRIPTION_MS = 700;
+const VOICE_MIN_TRANSCRIPTION_BYTES = 1_500;
+const VOICE_TRANSCRIPT_PREVIEW_MS = 2200;
+const LEGACY_OPENAI_TTS_DEFAULT_VOICE = "shimmer";
+const PREFERRED_OPENAI_TTS_DEFAULT_VOICE = "shimmer";
 
 type ModeTransitionPhase =
   | "idle"
@@ -119,7 +143,10 @@ interface LatencyTimeline {
   ttsRequestId: string | null;
 }
 
-function buildAssistantPlaceholder(source: MessageSource, clientRequestId?: string): ChatMessage {
+function buildAssistantPlaceholder(
+  source: MessageSource,
+  clientRequestId?: string,
+): ChatMessage {
   return {
     id: crypto.randomUUID(),
     role: "assistant",
@@ -131,7 +158,7 @@ function buildAssistantPlaceholder(source: MessageSource, clientRequestId?: stri
     requestStatus: null,
     avatarRequestId: null,
     widget: null,
-    followUpQuestions: []
+    followUpQuestions: [],
   };
 }
 
@@ -141,7 +168,7 @@ function buildUserMessage(text: string, source: MessageSource): ChatMessage {
     role: "user",
     text,
     createdAt: new Date().toISOString(),
-    source
+    source,
   };
 }
 
@@ -150,15 +177,15 @@ function buildLocalHistory(messages: ChatMessage[]): LocalChatMessageInput[] {
     .filter((message) => message.role !== "system" && message.text.trim())
     .map<LocalChatMessageInput>((message) => ({
       role: message.role,
-      content: message.text
+      content: message.text,
     }));
 
   return [
     {
       role: "system",
-      content: LOCAL_CHAT_SYSTEM_PROMPT
+      content: LOCAL_CHAT_SYSTEM_PROMPT,
     },
-    ...history
+    ...history,
   ];
 }
 
@@ -176,7 +203,10 @@ function sanitizeLocalAssistantText(value: string | null | undefined): string {
     return "";
   }
 
-  const fullPromptPattern = new RegExp(escapeRegExp(LOCAL_CHAT_SYSTEM_PROMPT), "gi");
+  const fullPromptPattern = new RegExp(
+    escapeRegExp(LOCAL_CHAT_SYSTEM_PROMPT),
+    "gi",
+  );
   sanitized = sanitized.replace(fullPromptPattern, "").trim();
 
   const prefixPattern =
@@ -197,14 +227,16 @@ async function blobToBase64(blob: Blob): Promise<string> {
 }
 
 function preferredMimeType(): string {
-  const options = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"];
-  return options.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? "";
+  const options = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
+  return (
+    options.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? ""
+  );
 }
 
 function buildDesktopAvatarRequestInput(
   prompt: string,
   source: MessageSource,
-  clientRequestId: string
+  clientRequestId: string,
 ): CreateDesktopAvatarRequestInput {
   return {
     clientRequestId,
@@ -215,7 +247,7 @@ function buildDesktopAvatarRequestInput(
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     utterance: prompt,
     responseModes: ["talk", "widget"],
-    autoStart: true
+    autoStart: true,
   };
 }
 
@@ -228,7 +260,10 @@ function errorMessage(error: unknown, fallback: string): string {
   }
   if (error && typeof error === "object") {
     const candidate = error as { message?: unknown };
-    if (typeof candidate.message === "string" && candidate.message.trim().length > 0) {
+    if (
+      typeof candidate.message === "string" &&
+      candidate.message.trim().length > 0
+    ) {
       return candidate.message;
     }
   }
@@ -243,8 +278,15 @@ function isUnsupportedNoMatchErrorMessage(message: string): boolean {
     normalized.includes("no match") ||
     normalized.includes("no active studio agents support") ||
     normalized.includes("does not support required actions") ||
-    normalized.includes("ops routing found no active domain target supporting") ||
-    normalized.includes("no active studio agents available for desktop avatar routing") ||
+    normalized.includes(
+      "ops routing found no active domain target supporting",
+    ) ||
+    normalized.includes(
+      "no active studio agents available for desktop avatar routing",
+    ) ||
+    normalized.includes(
+      "no active studio agents available for syntra assistant routing",
+    ) ||
     normalized.includes("studio agent is not active and cannot be routed") ||
     normalized.includes("studio agent not found")
   );
@@ -330,6 +372,33 @@ function storeTtsEnabled(enabled: boolean): void {
   }
 }
 
+function resolvePreferredTtsVoice(
+  currentVoice: string | null,
+  availableVoices: string[],
+): string | null {
+  const normalizedCurrent = currentVoice?.trim() ?? "";
+  const hasPreferredVoice = availableVoices.includes(
+    PREFERRED_OPENAI_TTS_DEFAULT_VOICE,
+  );
+
+  if (normalizedCurrent.length === 0) {
+    return hasPreferredVoice ? PREFERRED_OPENAI_TTS_DEFAULT_VOICE : null;
+  }
+
+  if (!availableVoices.includes(normalizedCurrent)) {
+    return hasPreferredVoice ? PREFERRED_OPENAI_TTS_DEFAULT_VOICE : null;
+  }
+
+  if (
+    normalizedCurrent === LEGACY_OPENAI_TTS_DEFAULT_VOICE &&
+    hasPreferredVoice
+  ) {
+    return PREFERRED_OPENAI_TTS_DEFAULT_VOICE;
+  }
+
+  return normalizedCurrent;
+}
+
 function isPeekMode(value: string | null): value is PeekMode {
   return value === "peek" || value === "expanded";
 }
@@ -411,7 +480,10 @@ function storeAnimationEnabled(enabled: boolean): void {
     return;
   }
   try {
-    window.localStorage.setItem(PEEK_ANIMATION_ENABLED_STORAGE_KEY, String(enabled));
+    window.localStorage.setItem(
+      PEEK_ANIMATION_ENABLED_STORAGE_KEY,
+      String(enabled),
+    );
   } catch {
     // no-op
   }
@@ -443,7 +515,7 @@ function storeLastExpandedSize(width: number, height: number): void {
   try {
     window.localStorage.setItem(
       LAST_EXPANDED_SIZE_STORAGE_KEY,
-      JSON.stringify({ width: Math.round(width), height: Math.round(height) })
+      JSON.stringify({ width: Math.round(width), height: Math.round(height) }),
     );
   } catch {
     // no-op
@@ -473,8 +545,14 @@ function toLatencySnapshot(timeline: LatencyTimeline): DevToolsLatencySnapshot {
     status: timeline.status,
     startedAt: timeline.startedAt,
     usedPolling: timeline.usedPolling,
-    createAcceptedMs: elapsed(timeline.startedAtMs, timeline.createAcceptedAtMs),
-    streamConnectedMs: elapsed(timeline.startedAtMs, timeline.streamConnectedAtMs),
+    createAcceptedMs: elapsed(
+      timeline.startedAtMs,
+      timeline.createAcceptedAtMs,
+    ),
+    streamConnectedMs: elapsed(
+      timeline.startedAtMs,
+      timeline.streamConnectedAtMs,
+    ),
     firstEventMs: elapsed(timeline.startedAtMs, timeline.firstEventAtMs),
     firstResponseMs: elapsed(timeline.startedAtMs, timeline.firstResponseAtMs),
     talkMs: elapsed(timeline.startedAtMs, timeline.talkAtMs),
@@ -484,66 +562,101 @@ function toLatencySnapshot(timeline: LatencyTimeline): DevToolsLatencySnapshot {
     failedMs: elapsed(timeline.startedAtMs, timeline.failedAtMs),
     ttsRequestedMs: elapsed(timeline.startedAtMs, timeline.ttsRequestedAtMs),
     ttsStartedMs: elapsed(timeline.startedAtMs, timeline.ttsStartedAtMs),
-    ttsSpeakDurationMs: duration(timeline.ttsStartedAtMs, timeline.ttsEndedAtMs),
+    ttsSpeakDurationMs: duration(
+      timeline.ttsStartedAtMs,
+      timeline.ttsEndedAtMs,
+    ),
     talkToTtsStartMs: duration(timeline.talkAtMs, timeline.ttsStartedAtMs),
     ttsProvider: timeline.ttsProvider,
     ttsFallbackUsed: timeline.ttsFallbackUsed,
     lastError: timeline.lastError,
     clientRequestId: timeline.clientRequestId,
     avatarRequestId: timeline.avatarRequestId,
-    ttsRequestId: timeline.ttsRequestId
+    ttsRequestId: timeline.ttsRequestId,
   };
 }
 
 export function useDesktopCompanion() {
-  const [avatarManifest, setAvatarManifest] = useState<AvatarManifest | null>(null);
+  const [avatarManifest, setAvatarManifest] = useState<AvatarManifest | null>(
+    null,
+  );
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [companionState, setCompanionState] = useState<CompanionState>("idle");
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [peekMode, setPeekModeState] = useState<PeekMode>(() => readStoredPeekMode());
-  const [peekPosition, setPeekPositionState] = useState<PeekPosition>(() => readStoredPeekPosition());
-  const [isModeTransitioning, setIsModeTransitioning] = useState(false);
-  const [modeTransitionPhase, setModeTransitionPhase] = useState<ModeTransitionPhase>("idle");
-  const [animationEnabled] = useState<boolean>(() => readStoredAnimationEnabled());
-  const [ttsEnabled, setTtsEnabled] = useState(() => readStoredTtsEnabled() ?? true);
-  const [ttsVoices, setTtsVoices] = useState<string[]>([]);
-  const [selectedTtsVoice, setSelectedTtsVoiceState] = useState<string | null>(() =>
-    readStoredTtsVoice()
+  const [peekMode, setPeekModeState] = useState<PeekMode>(() =>
+    readStoredPeekMode(),
   );
-  const [sizePreset, setSizePresetState] = useState<SizePreset>(() => readStoredSizePreset());
+  const [peekPosition, setPeekPositionState] = useState<PeekPosition>(() =>
+    readStoredPeekPosition(),
+  );
+  const [isModeTransitioning, setIsModeTransitioning] = useState(false);
+  const [modeTransitionPhase, setModeTransitionPhase] =
+    useState<ModeTransitionPhase>("idle");
+  const [animationEnabled] = useState<boolean>(() =>
+    readStoredAnimationEnabled(),
+  );
+  const [ttsEnabled, setTtsEnabled] = useState(
+    () => readStoredTtsEnabled() ?? true,
+  );
+  const [ttsVoices, setTtsVoices] = useState<string[]>([]);
+  const [selectedTtsVoice, setSelectedTtsVoiceState] = useState<string | null>(
+    () => readStoredTtsVoice(),
+  );
+  const [sizePreset, setSizePresetState] = useState<SizePreset>(() =>
+    readStoredSizePreset(),
+  );
   const [windowSize, setWindowSize] = useState(() => {
     const preset = getWindowSizesForPreset(DEFAULT_SIZE_PRESET);
     return {
       width: preset.expanded.width,
-      height: readStoredLastExpandedHeight(preset.expanded.height)
+      height: readStoredLastExpandedHeight(preset.expanded.height),
     };
   });
   const [isRecording, setIsRecording] = useState(false);
   const [desktopAvatarState, desktopAvatarDispatch] = useReducer(
     reduceDesktopAvatarState,
-    desktopAvatarInitialState
+    desktopAvatarInitialState,
   );
-  const [latencyTimeline, setLatencyTimeline] = useState<LatencyTimeline | null>(null);
+  const [latencyTimeline, setLatencyTimeline] =
+    useState<LatencyTimeline | null>(null);
 
   const requestContextsRef = useRef(new Map<string, SubmissionContext>());
   const messagesRef = useRef<ChatMessage[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const recordingAudioContextRef = useRef<AudioContext | null>(null);
+  const recordingSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(
+    null,
+  );
+  const recordingAnalyserNodeRef = useRef<AnalyserNode | null>(null);
+  const recordingMonitorIntervalRef = useRef<number | null>(null);
+  const recordingSilenceSinceMsRef = useRef<number | null>(null);
+  const recordingStartedAtMsRef = useRef<number | null>(null);
+  const recordingSpeechDetectedRef = useRef(false);
+  const recordingAutoStopReasonRef = useRef<
+    "manual" | "silence" | "limit" | null
+  >(null);
   const lastSubmissionRef = useRef<SubmissionContext | null>(null);
   const activeLocalRequestIdRef = useRef<string | null>(null);
-  const activeDesktopAvatarRequestRef = useRef<ActiveDesktopAvatarRequest | null>(null);
-  const desktopAvatarStateRef = useRef<DesktopAvatarOrchestratorState>(desktopAvatarInitialState);
-  const desktopAvatarConnectionRef = useRef<DesktopAvatarStreamConnection | null>(null);
+  const activeDesktopAvatarRequestRef =
+    useRef<ActiveDesktopAvatarRequest | null>(null);
+  const desktopAvatarStateRef = useRef<DesktopAvatarOrchestratorState>(
+    desktopAvatarInitialState,
+  );
+  const desktopAvatarConnectionRef =
+    useRef<DesktopAvatarStreamConnection | null>(null);
   const desktopAvatarPollTimeoutRef = useRef<number | null>(null);
   const desktopAvatarPollAttemptRef = useRef(0);
   const desktopAvatarPollErrorCountRef = useRef(0);
   const lastSpokenDesktopAvatarKeyRef = useRef<string | null>(null);
   const isTtsSpeakingRef = useRef(false);
   const peekModeRef = useRef<PeekMode>(peekMode);
-  const applyPeekModeRef = useRef<(mode: PeekMode) => Promise<void>>(async () => {});
+  const applyPeekModeRef = useRef<(mode: PeekMode) => Promise<void>>(
+    async () => {},
+  );
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -558,7 +671,10 @@ export function useDesktopCompanion() {
   }, [peekMode]);
 
   const patchLatencyByRequestKey = useCallback(
-    (requestKey: string, updater: (current: LatencyTimeline) => LatencyTimeline) => {
+    (
+      requestKey: string,
+      updater: (current: LatencyTimeline) => LatencyTimeline,
+    ) => {
       setLatencyTimeline((current) => {
         if (!current || current.requestKey !== requestKey) {
           return current;
@@ -566,7 +682,7 @@ export function useDesktopCompanion() {
         return updater(current);
       });
     },
-    []
+    [],
   );
 
   const applyPeekPosition = useCallback(async (position: PeekPosition) => {
@@ -584,7 +700,10 @@ export function useDesktopCompanion() {
       const expandedHeight =
         mode === "expanded"
           ? Math.max(presetSizes.expanded.height, windowSize.height)
-          : Math.max(presetSizes.expanded.height, readStoredLastExpandedHeight(windowSize.height));
+          : Math.max(
+              presetSizes.expanded.height,
+              readStoredLastExpandedHeight(windowSize.height),
+            );
       const shouldAnimate = options?.animate ?? animationEnabled;
 
       const clearTransition = () => {
@@ -612,7 +731,7 @@ export function useDesktopCompanion() {
           expandedHeight,
           collapsedWidth,
           collapsedHeight,
-          shouldAnimate
+          shouldAnimate,
         );
         setPeekModeState(mode);
         storePeekMode(mode);
@@ -639,12 +758,51 @@ export function useDesktopCompanion() {
         }
       }
     },
-    [animationEnabled, sizePreset, windowSize.height]
+    [animationEnabled, sizePreset, windowSize.height],
   );
 
   useEffect(() => {
     applyPeekModeRef.current = (mode: PeekMode) => applyPeekMode(mode);
   }, [applyPeekMode]);
+
+  const clearRecordingMonitor = useCallback(() => {
+    if (recordingMonitorIntervalRef.current !== null) {
+      window.clearInterval(recordingMonitorIntervalRef.current);
+      recordingMonitorIntervalRef.current = null;
+    }
+    recordingSilenceSinceMsRef.current = null;
+    recordingStartedAtMsRef.current = null;
+    recordingSpeechDetectedRef.current = false;
+  }, []);
+
+  const clearRecordingStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+
+    recordingSourceNodeRef.current?.disconnect();
+    recordingSourceNodeRef.current = null;
+    recordingAnalyserNodeRef.current = null;
+
+    const audioContext = recordingAudioContextRef.current;
+    recordingAudioContextRef.current = null;
+    if (audioContext && audioContext.state !== "closed") {
+      void audioContext.close().catch(() => {
+        // Best-effort close.
+      });
+    }
+  }, []);
+
+  const stopActiveRecorder = useCallback(
+    (reason: "manual" | "silence" | "limit" = "manual") => {
+      const recorder = mediaRecorderRef.current;
+      if (!recorder || recorder.state === "inactive") {
+        return;
+      }
+      recordingAutoStopReasonRef.current = reason;
+      recorder.stop();
+    },
+    [],
+  );
 
   const markDesktopStreamEvent = useCallback(
     (event: DesktopAvatarStreamEvent) => {
@@ -660,7 +818,8 @@ export function useDesktopCompanion() {
           ...current,
           firstEventAtMs: current.firstEventAtMs ?? now,
           status: event.type === "status" ? event.status : current.status,
-          avatarRequestId: current.avatarRequestId ?? activeRequest.avatarRequestId ?? null
+          avatarRequestId:
+            current.avatarRequestId ?? activeRequest.avatarRequestId ?? null,
         };
 
         if (event.type === "status" && event.status === "FAILED") {
@@ -688,7 +847,7 @@ export function useDesktopCompanion() {
         return next;
       });
     },
-    [patchLatencyByRequestKey]
+    [patchLatencyByRequestKey],
   );
 
   const markDesktopPollingStarted = useCallback(
@@ -697,10 +856,10 @@ export function useDesktopCompanion() {
       patchLatencyByRequestKey(requestKey, (current) => ({
         ...current,
         usedPolling: true,
-        pollingStartedAtMs: current.pollingStartedAtMs ?? now
+        pollingStartedAtMs: current.pollingStartedAtMs ?? now,
       }));
     },
-    [patchLatencyByRequestKey]
+    [patchLatencyByRequestKey],
   );
 
   const markDesktopPollingSnapshot = useCallback(
@@ -711,7 +870,8 @@ export function useDesktopCompanion() {
           ...current,
           firstEventAtMs: current.firstEventAtMs ?? now,
           status: document.status,
-          avatarRequestId: current.avatarRequestId ?? document.avatarRequestId ?? null
+          avatarRequestId:
+            current.avatarRequestId ?? document.avatarRequestId ?? null,
         };
 
         if (document.response?.talk?.text) {
@@ -734,7 +894,7 @@ export function useDesktopCompanion() {
         return next;
       });
     },
-    [patchLatencyByRequestKey]
+    [patchLatencyByRequestKey],
   );
 
   const markLocalStreamEvent = useCallback(
@@ -744,7 +904,7 @@ export function useDesktopCompanion() {
         const next: LatencyTimeline = {
           ...current,
           firstEventAtMs: current.firstEventAtMs ?? now,
-          status: event.kind
+          status: event.kind,
         };
 
         if (event.kind === "final") {
@@ -760,34 +920,37 @@ export function useDesktopCompanion() {
         return next;
       });
     },
-    [patchLatencyByRequestKey]
+    [patchLatencyByRequestKey],
   );
 
-  const syncDesktopAvatarMessage = useCallback((state: DesktopAvatarOrchestratorState) => {
-    const activeRequest = activeDesktopAvatarRequestRef.current;
-    if (!activeRequest) {
-      return;
-    }
+  const syncDesktopAvatarMessage = useCallback(
+    (state: DesktopAvatarOrchestratorState) => {
+      const activeRequest = activeDesktopAvatarRequestRef.current;
+      if (!activeRequest) {
+        return;
+      }
 
-    setMessages((current) =>
-      current.map((message) => {
-        if (message.id !== activeRequest.assistantMessageId) {
-          return message;
-        }
+      setMessages((current) =>
+        current.map((message) => {
+          if (message.id !== activeRequest.assistantMessageId) {
+            return message;
+          }
 
-        return {
-          ...message,
-          text: state.talkText || state.error || message.text,
-          widget: state.widget,
-          followUpQuestions: state.followUpQuestions,
-          isStreaming: !state.isDone,
-          requestStatus: state.status,
-          avatarRequestId: activeRequest.avatarRequestId,
-          clientRequestId: activeRequest.clientRequestId
-        };
-      })
-    );
-  }, []);
+          return {
+            ...message,
+            text: state.talkText || state.error || message.text,
+            widget: state.widget,
+            followUpQuestions: state.followUpQuestions,
+            isStreaming: !state.isDone,
+            requestStatus: state.status,
+            avatarRequestId: activeRequest.avatarRequestId,
+            clientRequestId: activeRequest.clientRequestId,
+          };
+        }),
+      );
+    },
+    [],
+  );
 
   const clearDesktopAvatarPolling = useCallback(() => {
     if (desktopAvatarPollTimeoutRef.current !== null) {
@@ -817,12 +980,18 @@ export function useDesktopCompanion() {
 
       const poll = async () => {
         const activeRequest = activeDesktopAvatarRequestRef.current;
-        if (!activeRequest || activeRequest.avatarRequestId !== avatarRequestId) {
+        if (
+          !activeRequest ||
+          activeRequest.avatarRequestId !== avatarRequestId
+        ) {
           return;
         }
 
         try {
-          const document = await desktopAvatarApiClient.getRequest({ avatarRequestId, pollUrl });
+          const document = await desktopAvatarApiClient.getRequest({
+            avatarRequestId,
+            pollUrl,
+          });
           desktopAvatarPollErrorCountRef.current = 0;
           markDesktopPollingSnapshot(activeRequest.clientRequestId, document);
           desktopAvatarDispatch({ type: "pollingSnapshot", document });
@@ -837,17 +1006,23 @@ export function useDesktopCompanion() {
               ? caughtError.message
               : t("status.pollingFallbackFailed");
           if (desktopAvatarPollErrorCountRef.current >= 3) {
-            patchLatencyByRequestKey(activeRequest.clientRequestId, (current) => ({
-              ...current,
-              status: "FAILED",
-              failedAtMs: current.failedAtMs ?? Date.now(),
-              lastError: message
-            }));
+            patchLatencyByRequestKey(
+              activeRequest.clientRequestId,
+              (current) => ({
+                ...current,
+                status: "FAILED",
+                failedAtMs: current.failedAtMs ?? Date.now(),
+                lastError: message,
+              }),
+            );
             desktopAvatarDispatch({ type: "requestFailed", message });
             clearDesktopAvatarPolling();
             return;
           }
-          desktopAvatarDispatch({ type: "streamDisconnected", reason: message });
+          desktopAvatarDispatch({
+            type: "streamDisconnected",
+            reason: message,
+          });
         }
 
         const delay = nextPollDelay(desktopAvatarPollAttemptRef.current);
@@ -863,8 +1038,8 @@ export function useDesktopCompanion() {
       clearDesktopAvatarPolling,
       markDesktopPollingSnapshot,
       markDesktopPollingStarted,
-      patchLatencyByRequestKey
-    ]
+      patchLatencyByRequestKey,
+    ],
   );
 
   const cleanupDesktopAvatarRuntime = useCallback(async () => {
@@ -876,27 +1051,31 @@ export function useDesktopCompanion() {
     async (avatarRequestId: string, streamUrl: string, pollUrl: string) => {
       await closeDesktopAvatarConnection();
       clearDesktopAvatarPolling();
-      desktopAvatarConnectionRef.current = await desktopAvatarApiClient.connectStream({
-        avatarRequestId,
-        streamUrl,
-        onEvent: (event) => {
-          markDesktopStreamEvent(event);
-          desktopAvatarDispatch({ type: "streamEvent", event });
-        },
-        onDisconnect: (event) => {
-          if (event.phase === "aborted") {
-            return;
-          }
-          desktopAvatarDispatch({ type: "streamDisconnected", reason: event.reason });
-          startDesktopAvatarPolling(avatarRequestId, pollUrl);
-        }
-      });
+      desktopAvatarConnectionRef.current =
+        await desktopAvatarApiClient.connectStream({
+          avatarRequestId,
+          streamUrl,
+          onEvent: (event) => {
+            markDesktopStreamEvent(event);
+            desktopAvatarDispatch({ type: "streamEvent", event });
+          },
+          onDisconnect: (event) => {
+            if (event.phase === "aborted") {
+              return;
+            }
+            desktopAvatarDispatch({
+              type: "streamDisconnected",
+              reason: event.reason,
+            });
+            startDesktopAvatarPolling(avatarRequestId, pollUrl);
+          },
+        });
       const activeRequest = activeDesktopAvatarRequestRef.current;
       if (activeRequest && activeRequest.avatarRequestId === avatarRequestId) {
         patchLatencyByRequestKey(activeRequest.clientRequestId, (current) => ({
           ...current,
           avatarRequestId,
-          streamConnectedAtMs: current.streamConnectedAtMs ?? Date.now()
+          streamConnectedAtMs: current.streamConnectedAtMs ?? Date.now(),
         }));
       }
     },
@@ -905,8 +1084,8 @@ export function useDesktopCompanion() {
       closeDesktopAvatarConnection,
       markDesktopStreamEvent,
       patchLatencyByRequestKey,
-      startDesktopAvatarPolling
-    ]
+      startDesktopAvatarPolling,
+    ],
   );
 
   useEffect(() => {
@@ -921,16 +1100,19 @@ export function useDesktopCompanion() {
       setAvatarManifest(bootstrap.avatarManifest);
       setTtsEnabled(() => {
         const stored = readStoredTtsEnabled();
-        const next = bootstrap.ttsEnabled ? stored ?? true : false;
+        const next = bootstrap.ttsEnabled ? (stored ?? true) : false;
         storeTtsEnabled(next);
         return next;
       });
       const presetSizes = getWindowSizesForPreset(sizePreset);
       const expandedHeight = Math.max(
         presetSizes.expanded.height,
-        readStoredLastExpandedHeight(presetSizes.expanded.height)
+        readStoredLastExpandedHeight(presetSizes.expanded.height),
       );
-      setWindowSize({ width: presetSizes.expanded.width, height: expandedHeight });
+      setWindowSize({
+        width: presetSizes.expanded.width,
+        height: expandedHeight,
+      });
       await setPeekPosition(peekPosition);
       await setPeekMode(
         peekMode,
@@ -938,15 +1120,17 @@ export function useDesktopCompanion() {
         expandedHeight,
         presetSizes.collapsed.width,
         presetSizes.collapsed.height,
-        false
+        false,
       );
 
       try {
         const voices = await listTtsVoices();
-        const normalized = [...new Set(voices.map((voice) => voice.trim()).filter(Boolean))];
+        const normalized = [
+          ...new Set(voices.map((voice) => voice.trim()).filter(Boolean)),
+        ];
         setTtsVoices(normalized);
         setSelectedTtsVoiceState((current) => {
-          const nextVoice = current && normalized.includes(current) ? current : null;
+          const nextVoice = resolvePreferredTtsVoice(current, normalized);
           storeTtsVoice(nextVoice);
           return nextVoice;
         });
@@ -975,7 +1159,7 @@ export function useDesktopCompanion() {
             ...current,
             ttsStartedAtMs: current.ttsStartedAtMs ?? now,
             ttsProvider: nextProvider ?? current.ttsProvider,
-            ttsFallbackUsed: nextFallback ?? current.ttsFallbackUsed
+            ttsFallbackUsed: nextFallback ?? current.ttsFallbackUsed,
           };
         }
         return {
@@ -985,7 +1169,7 @@ export function useDesktopCompanion() {
               ? now
               : current.ttsEndedAtMs,
           ttsProvider: nextProvider ?? current.ttsProvider,
-          ttsFallbackUsed: nextFallback ?? current.ttsFallbackUsed
+          ttsFallbackUsed: nextFallback ?? current.ttsFallbackUsed,
         };
       });
       isTtsSpeakingRef.current = event.speaking;
@@ -1032,9 +1216,18 @@ export function useDesktopCompanion() {
       unlistenTrayPeekOpen?.();
       unlistenTrayPeekCollapse?.();
       unlistenTrayPeekPositionChanged?.();
+      clearRecordingMonitor();
+      clearRecordingStream();
+      mediaRecorderRef.current = null;
+      chunksRef.current = [];
+      recordingAutoStopReasonRef.current = null;
       void cleanupDesktopAvatarRuntime();
     };
-  }, [cleanupDesktopAvatarRuntime]);
+  }, [
+    clearRecordingMonitor,
+    clearRecordingStream,
+    cleanupDesktopAvatarRuntime,
+  ]);
 
   useEffect(() => {
     if (!activeDesktopAvatarRequestRef.current) {
@@ -1070,11 +1263,20 @@ export function useDesktopCompanion() {
       patchLatencyByRequestKey(activeRequest.clientRequestId, (current) => ({
         ...current,
         ttsRequestId: activeRequest.avatarRequestId,
-        ttsRequestedAtMs: current.ttsRequestedAtMs ?? requestedAtMs
+        ttsRequestedAtMs: current.ttsRequestedAtMs ?? requestedAtMs,
       }));
-      void speakText(activeRequest.avatarRequestId, desktopAvatarState.talkText, selectedTtsVoice);
+      void speakText(
+        activeRequest.avatarRequestId,
+        desktopAvatarState.talkText,
+        selectedTtsVoice,
+      );
     }
-  }, [desktopAvatarState.talkText, patchLatencyByRequestKey, selectedTtsVoice, ttsEnabled]);
+  }, [
+    desktopAvatarState.talkText,
+    patchLatencyByRequestKey,
+    selectedTtsVoice,
+    ttsEnabled,
+  ]);
 
   useEffect(() => {
     if (!activeDesktopAvatarRequestRef.current || !desktopAvatarState.isDone) {
@@ -1093,7 +1295,7 @@ export function useDesktopCompanion() {
     desktopAvatarState.companionState,
     desktopAvatarState.isDone,
     desktopAvatarState.talkText,
-    ttsEnabled
+    ttsEnabled,
   ]);
 
   async function handleLocalStreamEvent(event: StreamEnvelope) {
@@ -1110,7 +1312,7 @@ export function useDesktopCompanion() {
       void sendLocalChat({
         requestId: event.requestId,
         prompt: context.prompt,
-        messages: buildLocalHistory(messagesRef.current)
+        messages: buildLocalHistory(messagesRef.current),
       });
       return;
     }
@@ -1121,8 +1323,8 @@ export function useDesktopCompanion() {
         current.map((message) =>
           message.id === event.requestId
             ? { ...message, text: payload.accumulated, isStreaming: true }
-            : message
-        )
+            : message,
+        ),
       );
       setCompanionState("thinking");
       return;
@@ -1130,14 +1332,18 @@ export function useDesktopCompanion() {
 
     if (event.kind === "final") {
       const payload = event.payload as StreamFinalPayload;
+      const cleanedDisplay = sanitizeLocalAssistantText(payload.displayText);
+      const cleanedSpeech = sanitizeLocalAssistantText(payload.speechText);
+      const fallbackUsed = !cleanedDisplay && !cleanedSpeech;
       const displayText =
-        sanitizeLocalAssistantText(payload.displayText) ||
-        sanitizeLocalAssistantText(payload.speechText) ||
-        LOCAL_CHAT_FALLBACK_RESPONSE;
-      const speechText =
-        sanitizeLocalAssistantText(payload.speechText) ||
-        sanitizeLocalAssistantText(payload.displayText) ||
-        displayText;
+        cleanedDisplay || cleanedSpeech || LOCAL_CHAT_FALLBACK_RESPONSE;
+      const speechText = cleanedSpeech || cleanedDisplay || displayText;
+      if (fallbackUsed) {
+        void frontendLog(
+          "info",
+          `local chat produced empty final payload; using fallback text for requestId=${event.requestId}`,
+        );
+      }
       requestContextsRef.current.delete(event.requestId);
       activeLocalRequestIdRef.current = null;
       setMessages((current) =>
@@ -1148,17 +1354,17 @@ export function useDesktopCompanion() {
                 text: displayText,
                 isStreaming: false,
                 widget: null,
-                followUpQuestions: []
+                followUpQuestions: [],
               }
-            : message
-        )
+            : message,
+        ),
       );
       setStatus(null);
-      if (ttsEnabled) {
+      if (ttsEnabled && !fallbackUsed) {
         patchLatencyByRequestKey(event.requestId, (current) => ({
           ...current,
           ttsRequestId: event.requestId,
-          ttsRequestedAtMs: current.ttsRequestedAtMs ?? Date.now()
+          ttsRequestedAtMs: current.ttsRequestedAtMs ?? Date.now(),
         }));
         await speakText(event.requestId, speechText, selectedTtsVoice);
       } else {
@@ -1177,10 +1383,10 @@ export function useDesktopCompanion() {
             ? {
                 ...message,
                 text: payload.message,
-                isStreaming: false
+                isStreaming: false,
               }
-            : message
-        )
+            : message,
+        ),
       );
       setError(payload.message);
       setCompanionState("error");
@@ -1195,8 +1401,8 @@ export function useDesktopCompanion() {
         current.map((message) =>
           message.id === event.requestId
             ? { ...message, text: nextStatus ?? "", isStreaming: true }
-            : message
-        )
+            : message,
+        ),
       );
     }
 
@@ -1229,9 +1435,9 @@ export function useDesktopCompanion() {
               followUpQuestions: [],
               requestStatus: null,
               avatarRequestId: null,
-              clientRequestId: null
+              clientRequestId: null,
             }
-          : message
+          : message,
       );
     } else {
       const userMessage = buildUserMessage(input.prompt, input.source);
@@ -1246,7 +1452,7 @@ export function useDesktopCompanion() {
     requestContextsRef.current.set(requestId, {
       prompt: input.prompt,
       source: input.source,
-      route: "localChat"
+      route: "localChat",
     });
     activeLocalRequestIdRef.current = requestId;
     activeDesktopAvatarRequestRef.current = null;
@@ -1265,7 +1471,7 @@ export function useDesktopCompanion() {
       lastError: null,
       clientRequestId: null,
       avatarRequestId: null,
-      ttsRequestId: null
+      ttsRequestId: null,
     });
 
     if (peekMode === "peek") {
@@ -1279,22 +1485,25 @@ export function useDesktopCompanion() {
       const request: LocalChatRequest = {
         requestId,
         prompt: input.prompt,
-        messages: buildLocalHistory(nextMessages)
+        messages: buildLocalHistory(nextMessages),
       };
       await sendLocalChat(request);
     } catch (caughtError) {
-      const message = errorMessage(caughtError, t("status.requestCouldNotStart"));
+      const message = errorMessage(
+        caughtError,
+        t("status.requestCouldNotStart"),
+      );
       patchLatencyByRequestKey(requestId, (current) => ({
         ...current,
         status: "error",
         failedAtMs: current.failedAtMs ?? Date.now(),
-        lastError: message
+        lastError: message,
       }));
       await handleLocalStreamEvent({
         requestId,
         source: "local",
         kind: "error",
-        payload: { message }
+        payload: { message },
       });
     }
   }
@@ -1303,20 +1512,33 @@ export function useDesktopCompanion() {
     prompt: string,
     source: MessageSource,
     route: PromptRoute,
-    clientRequestId?: string
+    clientRequestId?: string,
   ) {
-    const requestId = clientRequestId ?? `desktop-avatar-client:${crypto.randomUUID()}`;
+    const requestId =
+      clientRequestId ?? `desktop-avatar-client:${crypto.randomUUID()}`;
     const startedAtMs = Date.now();
     const userMessage = buildUserMessage(prompt, source);
     const assistantMessage = buildAssistantPlaceholder(source, requestId);
-    const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
+    const nextMessages = [
+      ...messagesRef.current,
+      userMessage,
+      assistantMessage,
+    ];
     messagesRef.current = nextMessages;
     setMessages(nextMessages);
     setDraft("");
     setError(null);
     setStatus(t("status.sendingRequest"));
-    desktopAvatarDispatch({ type: "createRequested", clientRequestId: requestId });
-    lastSubmissionRef.current = { prompt, source, route, clientRequestId: requestId };
+    desktopAvatarDispatch({
+      type: "createRequested",
+      clientRequestId: requestId,
+    });
+    lastSubmissionRef.current = {
+      prompt,
+      source,
+      route,
+      clientRequestId: requestId,
+    };
     activeLocalRequestIdRef.current = null;
     activeDesktopAvatarRequestRef.current = {
       assistantMessageId: assistantMessage.id,
@@ -1324,7 +1546,7 @@ export function useDesktopCompanion() {
       clientRequestId: requestId,
       prompt,
       source,
-      route
+      route,
     };
     setLatencyTimeline({
       requestKey: requestId,
@@ -1340,7 +1562,7 @@ export function useDesktopCompanion() {
       lastError: null,
       clientRequestId: requestId,
       avatarRequestId: null,
-      ttsRequestId: null
+      ttsRequestId: null,
     });
 
     if (peekMode === "peek") {
@@ -1352,7 +1574,7 @@ export function useDesktopCompanion() {
 
     try {
       const result = await desktopAvatarApiClient.createRequest(
-        buildDesktopAvatarRequestInput(prompt, source, requestId)
+        buildDesktopAvatarRequestInput(prompt, source, requestId),
       );
       activeDesktopAvatarRequestRef.current = {
         ...(activeDesktopAvatarRequestRef.current ?? {
@@ -1360,21 +1582,32 @@ export function useDesktopCompanion() {
           clientRequestId: requestId,
           prompt,
           source,
-          route
+          route,
         }),
-        avatarRequestId: result.avatarRequestId
+        avatarRequestId: result.avatarRequestId,
       };
       patchLatencyByRequestKey(requestId, (current) => ({
         ...current,
         status: result.status,
         avatarRequestId: result.avatarRequestId,
-        createAcceptedAtMs: current.createAcceptedAtMs ?? Date.now()
+        createAcceptedAtMs: current.createAcceptedAtMs ?? Date.now(),
       }));
       desktopAvatarDispatch({ type: "createAccepted", result });
-      await connectDesktopAvatarStream(result.avatarRequestId, result.streamUrl, result.pollUrl);
+      await connectDesktopAvatarStream(
+        result.avatarRequestId,
+        result.streamUrl,
+        result.pollUrl,
+      );
     } catch (caughtError) {
-      const message = errorMessage(caughtError, t("status.requestCouldNotStart"));
+      const message = errorMessage(
+        caughtError,
+        t("status.requestCouldNotStart"),
+      );
       if (isUnsupportedNoMatchErrorMessage(message)) {
+        void frontendLog(
+          "info",
+          `desktop-avatar fallback to local chat (unsupported/no-match): ${message}`,
+        );
         await startLocalChatRequest({
           prompt,
           source,
@@ -1382,7 +1615,7 @@ export function useDesktopCompanion() {
           existingAssistantMessageId:
             activeDesktopAvatarRequestRef.current?.assistantMessageId ??
             assistantMessage.id,
-          statusText: t("status.continuingLocally")
+          statusText: t("status.continuingLocally"),
         });
         return;
       }
@@ -1390,7 +1623,7 @@ export function useDesktopCompanion() {
         ...current,
         status: "FAILED",
         failedAtMs: current.failedAtMs ?? Date.now(),
-        lastError: message
+        lastError: message,
       }));
       desktopAvatarDispatch({ type: "requestFailed", message });
     }
@@ -1399,7 +1632,7 @@ export function useDesktopCompanion() {
   async function submitPrompt(
     rawPrompt: string,
     source: MessageSource,
-    retryClientRequestId?: string
+    retryClientRequestId?: string,
   ) {
     const prompt = rawPrompt.trim();
     if (!prompt) {
@@ -1407,7 +1640,18 @@ export function useDesktopCompanion() {
     }
 
     const route = routePrompt(prompt);
-    lastSubmissionRef.current = { prompt, source, route, clientRequestId: retryClientRequestId };
+    if (source === "voice") {
+      void frontendLog(
+        "info",
+        `voice transcript route=${route} prompt=${prompt}`,
+      );
+    }
+    lastSubmissionRef.current = {
+      prompt,
+      source,
+      route,
+      clientRequestId: retryClientRequestId,
+    };
     setError(null);
 
     if (route === "localChat") {
@@ -1415,7 +1659,12 @@ export function useDesktopCompanion() {
       return;
     }
 
-    await submitDesktopAvatarPrompt(prompt, source, route, retryClientRequestId);
+    await submitDesktopAvatarPrompt(
+      prompt,
+      source,
+      route,
+      retryClientRequestId,
+    );
   }
 
   async function setUiMode(mode: PeekMode, options?: { animate?: boolean }) {
@@ -1441,7 +1690,7 @@ export function useDesktopCompanion() {
 
     const targetSize = {
       width: presetSizes.expanded.width,
-      height: Math.max(windowSize.height, presetSizes.expanded.height)
+      height: Math.max(windowSize.height, presetSizes.expanded.height),
     };
     if (peekMode === "expanded") {
       await resizeWindow(targetSize.width, targetSize.height);
@@ -1453,7 +1702,7 @@ export function useDesktopCompanion() {
         targetSize.height,
         presetSizes.collapsed.width,
         presetSizes.collapsed.height,
-        false
+        false,
       );
       return;
     }
@@ -1464,7 +1713,7 @@ export function useDesktopCompanion() {
       targetSize.height,
       presetSizes.collapsed.width,
       presetSizes.collapsed.height,
-      false
+      false,
     );
   }
 
@@ -1473,7 +1722,8 @@ export function useDesktopCompanion() {
       return;
     }
 
-    const { prompt, source, route, clientRequestId } = lastSubmissionRef.current;
+    const { prompt, source, route, clientRequestId } =
+      lastSubmissionRef.current;
     const retryId = route === "localChat" ? undefined : clientRequestId;
     await submitPrompt(prompt, source, retryId);
   }
@@ -1484,12 +1734,92 @@ export function useDesktopCompanion() {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      await stopSpeaking().catch(() => {
+        // Recording should still start even if stopping TTS fails.
+      });
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
       const mimeType = preferredMimeType();
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType } : undefined,
+      );
       streamRef.current = stream;
       mediaRecorderRef.current = recorder;
       chunksRef.current = [];
+      recordingAutoStopReasonRef.current = null;
+      recordingStartedAtMsRef.current = performance.now();
+      recordingSilenceSinceMsRef.current = null;
+      recordingSpeechDetectedRef.current = false;
+
+      const audioContext = new AudioContext();
+      const sourceNode = audioContext.createMediaStreamSource(stream);
+      const analyserNode = audioContext.createAnalyser();
+      analyserNode.fftSize = 2048;
+      sourceNode.connect(analyserNode);
+      recordingAudioContextRef.current = audioContext;
+      recordingSourceNodeRef.current = sourceNode;
+      recordingAnalyserNodeRef.current = analyserNode;
+
+      const sampleBuffer = new Float32Array(analyserNode.fftSize);
+      recordingMonitorIntervalRef.current = window.setInterval(() => {
+        const activeRecorder = mediaRecorderRef.current;
+        if (!activeRecorder || activeRecorder.state !== "recording") {
+          return;
+        }
+
+        analyserNode.getFloatTimeDomainData(sampleBuffer);
+        let sumSquares = 0;
+        for (const sample of sampleBuffer) {
+          sumSquares += sample * sample;
+        }
+        const rms = Math.sqrt(sumSquares / sampleBuffer.length);
+        const now = performance.now();
+        const startedAt = recordingStartedAtMsRef.current ?? now;
+        const elapsedMs = now - startedAt;
+
+        if (elapsedMs >= VOICE_MAX_RECORDING_MS) {
+          setStatus(t("status.voiceAutoStoppedLimit"));
+          stopActiveRecorder("limit");
+          return;
+        }
+
+        if (rms >= VOICE_SPEECH_RMS_THRESHOLD) {
+          recordingSpeechDetectedRef.current = true;
+          recordingSilenceSinceMsRef.current = null;
+          return;
+        }
+
+        if (!recordingSpeechDetectedRef.current) {
+          if (elapsedMs >= VOICE_MAX_INITIAL_SILENCE_MS) {
+            setStatus(t("status.voiceAutoStoppedSilence"));
+            stopActiveRecorder("silence");
+          }
+          return;
+        }
+
+        if (rms < VOICE_SILENCE_RMS_THRESHOLD) {
+          if (recordingSilenceSinceMsRef.current === null) {
+            recordingSilenceSinceMsRef.current = now;
+          } else if (
+            elapsedMs >= VOICE_MIN_AUTOSTOP_ELAPSED_MS &&
+            now - recordingSilenceSinceMsRef.current >= VOICE_SILENCE_HOLD_MS
+          ) {
+            setStatus(t("status.voiceAutoStoppedSilence"));
+            stopActiveRecorder("silence");
+          }
+          return;
+        }
+
+        recordingSilenceSinceMsRef.current = null;
+      }, VOICE_ACTIVITY_POLL_MS);
 
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -1498,37 +1828,94 @@ export function useDesktopCompanion() {
       };
 
       recorder.onstop = async () => {
+        const autoStopReason = recordingAutoStopReasonRef.current;
+        const startedAt = recordingStartedAtMsRef.current;
+        const elapsedMs =
+          startedAt === null ? 0 : Math.max(0, performance.now() - startedAt);
+        clearRecordingMonitor();
+
         try {
+          if (!chunksRef.current.some((chunk) => chunk.size > 0)) {
+            if (autoStopReason === "silence") {
+              setStatus(t("status.voiceAutoStoppedSilence"));
+            } else if (autoStopReason === "limit") {
+              setStatus(t("status.voiceAutoStoppedLimit"));
+            } else {
+              setStatus(null);
+            }
+            setCompanionState("idle");
+            return;
+          }
+
+          const totalBytes = chunksRef.current.reduce(
+            (sum, chunk) => sum + chunk.size,
+            0,
+          );
           const blob = new Blob(chunksRef.current, {
-            type: recorder.mimeType || "audio/webm"
+            type: recorder.mimeType || "audio/webm",
           });
+          const speechDetected = recordingSpeechDetectedRef.current;
+          void frontendLog(
+            "info",
+            `voice recording finished: mime=${blob.type || "audio/webm"} bytes=${totalBytes} elapsedMs=${Math.round(elapsedMs)} speechDetected=${speechDetected}`,
+          );
+
+          if (
+            elapsedMs < VOICE_MIN_TRANSCRIPTION_MS ||
+            totalBytes < VOICE_MIN_TRANSCRIPTION_BYTES
+          ) {
+            setStatus(t("status.voiceAutoStoppedSilence"));
+            setCompanionState("idle");
+            return;
+          }
+
           const audioBase64 = await blobToBase64(blob);
           setCompanionState("transcribing");
           setStatus(t("status.transcribing"));
           const transcript = await transcribeAudio({
             audioBase64,
-            mimeType: blob.type || "audio/webm"
+            mimeType: blob.type || "audio/webm",
           });
-          setStatus(null);
-          if (transcript.trim()) {
-            await submitPrompt(transcript, "voice");
+          const cleanedTranscript = transcript.trim();
+          if (cleanedTranscript) {
+            setStatus(
+              t("status.voiceRecognized", {
+                text: cleanedTranscript,
+              }),
+            );
+            await waitMs(VOICE_TRANSCRIPT_PREVIEW_MS);
+            await submitPrompt(cleanedTranscript, "voice");
           } else {
+            setStatus(null);
+            if (autoStopReason === "silence") {
+              setStatus(t("status.voiceAutoStoppedSilence"));
+            } else if (autoStopReason === "limit") {
+              setStatus(t("status.voiceAutoStoppedLimit"));
+            } else {
+              setStatus(null);
+            }
             setCompanionState("idle");
           }
         } catch (caughtError) {
-          const message =
-            caughtError instanceof Error
-              ? caughtError.message
-              : t("status.voiceTranscriptionFailed");
+          const fallbackMessage = t("status.voiceTranscriptionFailed");
+          const detailedMessage = errorMessage(caughtError, fallbackMessage);
+          const message = import.meta.env.DEV
+            ? detailedMessage
+            : fallbackMessage;
+          void frontendLog(
+            "error",
+            `voice transcription failed: ${detailedMessage}`,
+          );
           setError(message);
           setStatus(message);
           setCompanionState("error");
         } finally {
           setIsRecording(false);
-          streamRef.current?.getTracks().forEach((track) => track.stop());
-          streamRef.current = null;
+          clearRecordingMonitor();
+          clearRecordingStream();
           mediaRecorderRef.current = null;
           chunksRef.current = [];
+          recordingAutoStopReasonRef.current = null;
         }
       };
 
@@ -1546,15 +1933,18 @@ export function useDesktopCompanion() {
       setStatus(message);
       setCompanionState("error");
       setIsRecording(false);
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+      clearRecordingMonitor();
+      clearRecordingStream();
       mediaRecorderRef.current = null;
       chunksRef.current = [];
+      recordingAutoStopReasonRef.current = null;
     }
   }
 
-  async function stopRecording() {
-    mediaRecorderRef.current?.stop();
+  async function stopRecording(
+    reason: "manual" | "silence" | "limit" = "manual",
+  ) {
+    stopActiveRecorder(reason);
   }
 
   async function toggleRecording() {
@@ -1568,7 +1958,7 @@ export function useDesktopCompanion() {
   const canSend = useMemo(() => draft.trim().length > 0, [draft]);
   const latencyDebug = useMemo(
     () => (latencyTimeline ? toLatencySnapshot(latencyTimeline) : null),
-    [latencyTimeline]
+    [latencyTimeline],
   );
 
   return {
@@ -1621,11 +2011,15 @@ export function useDesktopCompanion() {
         return next;
       });
     },
-    resizeWindow: async (width: number, height: number, anchor?: WindowResizeAnchor) => {
+    resizeWindow: async (
+      width: number,
+      height: number,
+      anchor?: WindowResizeAnchor,
+    ) => {
       await resizeWindow(width, height, anchor);
       setWindowSize({ width, height });
       storeLastExpandedSize(width, height);
     },
-    startWindowDrag: () => startWindowDragForMode(peekModeRef.current)
+    startWindowDrag: () => startWindowDragForMode(peekModeRef.current),
   };
 }

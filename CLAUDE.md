@@ -1,4 +1,4 @@
-# DesktopAvatar — CLAUDE.md
+# SYNTRA Assistant — CLAUDE.md
 
 ## Project Overview
 

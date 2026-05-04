@@ -658,22 +658,24 @@ export default function App() {
           data-has-nav={hasWidgetSliderNav ? "true" : "false"}
           data-widget-tone={widgetArrowTone}
         >
-          <div className="widget-tooltip-panel__arrow" aria-hidden="true" />
-          <DataPanelSlider
-            activeIndex={Math.max(0, clampedDisplayedActivePanelIndex)}
-            onSelectIndex={selectPanelEntryAt}
-            onCloseAll={closeAllWidgets}
-          >
-            {displayedPanelEntries.map((entry) => (
-              <DesktopAvatarWidgetPanel
-                key={entry.id}
-                widget={entry.widget}
-                followUpQuestions={entry.followUpQuestions}
-                onSuggestionSelect={companion.submitSuggestion}
-                onDismiss={() => dismissPanelEntry(entry)}
-              />
-            ))}
-          </DataPanelSlider>
+          <div className="widget-tooltip-panel__surface">
+            <div className="widget-tooltip-panel__arrow" aria-hidden="true" />
+            <DataPanelSlider
+              activeIndex={Math.max(0, clampedDisplayedActivePanelIndex)}
+              onSelectIndex={selectPanelEntryAt}
+              onCloseAll={closeAllWidgets}
+            >
+              {displayedPanelEntries.map((entry) => (
+                <DesktopAvatarWidgetPanel
+                  key={entry.id}
+                  widget={entry.widget}
+                  followUpQuestions={entry.followUpQuestions}
+                  onSuggestionSelect={companion.submitSuggestion}
+                  onDismiss={() => dismissPanelEntry(entry)}
+                />
+              ))}
+            </DataPanelSlider>
+          </div>
         </div>
       ) : null}
     </main>

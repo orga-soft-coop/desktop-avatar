@@ -33,27 +33,27 @@
 
 .app-shell[data-theme="light"] {
   --da-surface: #ffffff;
-  --da-surface-muted: #f3f7fc;
-  --da-surface-strong: #ebf1f8;
-  --da-border: #d6e0ed;
+  --da-surface-muted: #ffffff;
+  --da-surface-strong: #f5f7fa;
+  --da-border: #d9e0e8;
   --da-text: #1d2a3b;
-  --da-text-muted: #5c6d82;
-  --da-text-subtle: #73859b;
-  --da-control-bg: #ecf2f9;
-  --da-control-hover: #dde8f4;
-  --da-control-active: rgba(0, 122, 189, 0.14);
-  --da-control-active-text: #015f96;
+  --da-text-muted: #56667b;
+  --da-text-subtle: #6f8094;
+  --da-control-bg: #f1f4f8;
+  --da-control-hover: #e8edf4;
+  --da-control-active: #e3e9f1;
+  --da-control-active-text: #2e3e52;
   --da-input-bg: #ffffff;
-  --da-input-border: #c7d5e5;
-  --da-input-placeholder: #7b8fa8;
-  --da-accent: #007abd;
-  --da-accent-soft: rgba(0, 122, 189, 0.15);
+  --da-input-border: #c8d2de;
+  --da-input-placeholder: #76879d;
+  --da-accent: #2f4056;
+  --da-accent-soft: #e4eaf2;
   --da-success: #7a9f22;
   --da-success-soft: rgba(122, 159, 34, 0.16);
   --da-widget-error-bg: #fff1f3;
   --da-widget-error-border: #f1c8d1;
   --da-widget-arrow-fill: #ffffff;
-  --da-widget-arrow-border: #d6e0ed;
+  --da-widget-arrow-border: #d9e0e8;
 }
 
 * {
@@ -403,6 +403,24 @@ button {
   transition: none;
 }
 
+.app-shell[data-theme="light"] .widget-tooltip-panel {
+  border-radius: 30px;
+}
+
+.app-shell[data-theme="light"] .widget-tooltip-panel::before {
+  content: none;
+}
+
+.widget-tooltip-panel__surface {
+  position: relative;
+}
+
+.app-shell[data-theme="light"] .widget-tooltip-panel__surface {
+  filter:
+    drop-shadow(0 6px 18px rgba(13, 23, 37, 0.1))
+    drop-shadow(0 2px 6px rgba(13, 23, 37, 0.05));
+}
+
 .app-shell.widget-dock-left .widget-tooltip-panel {
   left: 24px;
   right: auto;
@@ -517,6 +535,11 @@ button {
   height: 100%;
 }
 
+.widget-tooltip-panel .data-panel-slider__viewport {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .widget-tooltip-panel .widget-card,
 .widget-tooltip-panel .data-table {
   border-radius: 18px;
@@ -541,6 +564,22 @@ button {
   overflow: hidden;
   pointer-events: auto;
   z-index: 5;
+}
+
+.app-shell[data-theme="light"] .data-panel {
+  position: relative;
+  padding: 10px 8px 8px;
+  border-radius: 26px;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+.app-shell[data-theme="light"] .data-panel::after {
+  content: none;
 }
 
 /* Widgets / non-slider content: scroll inside the panel */
@@ -1840,7 +1879,7 @@ button {
 
 .widget-tooltip-panel__arrow {
   position: absolute;
-  left: -7px;
+  left: -8px;
   top: calc(50% + var(--widget-arrow-offset-y));
   width: 18px;
   height: 18px;
@@ -1850,12 +1889,12 @@ button {
   background: var(--widget-arrow-fill);
   transform: translateY(-50%) rotate(-45deg);
   pointer-events: none;
-  z-index: 0;
+  z-index: 2;
 }
 
 .app-shell.widget-dock-left .widget-tooltip-panel__arrow {
   left: auto;
-  right: -7px;
+  right: -8px;
   transform: translateY(-50%) rotate(135deg);
 }
 
@@ -2144,12 +2183,12 @@ button {
 .app-shell[data-theme="light"] .chat-panel__devtools-btn.is-active,
 .app-shell[data-theme="light"] .data-panel-slider__dot.is-active {
   background: var(--da-accent-soft) !important;
-  border-color: rgba(0, 122, 189, 0.36) !important;
+  border-color: rgba(47, 64, 86, 0.28) !important;
   color: var(--da-accent) !important;
 }
 
 .app-shell[data-theme="light"] .data-panel-slider__dot {
-  background: rgba(61, 97, 137, 0.26) !important;
+  background: rgba(47, 64, 86, 0.24) !important;
 }
 
 .app-shell[data-theme="light"] .data-table__inner,
@@ -2159,7 +2198,40 @@ button {
 }
 
 .app-shell[data-theme="light"] .widget-card--clarification {
-  background-color: #f4f8fe !important;
+  background-color: #f7f9fc !important;
+}
+
+.app-shell[data-theme="light"] .data-panel-slider__nav {
+  background-color: rgba(255, 255, 255, 0.92) !important;
+}
+
+.app-shell[data-theme="light"] .widget-tooltip-panel .widget-card,
+.app-shell[data-theme="light"] .widget-tooltip-panel .data-table {
+  border: 1px solid rgba(217, 224, 232, 0.96) !important;
+  border-radius: 24px !important;
+  background: #ffffff !important;
+  overflow: hidden !important;
+}
+
+.app-shell[data-theme="light"] .widget-tooltip-panel .data-table__inner,
+.app-shell[data-theme="light"] .widget-tooltip-panel .widget-card,
+.app-shell[data-theme="light"] .widget-tooltip-panel .data-panel-slider__nav {
+  border: 1px solid rgba(217, 224, 232, 0.96) !important;
+  border-radius: 24px !important;
+}
+
+.app-shell[data-theme="light"] .widget-tooltip-panel .data-table__inner {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.app-shell[data-theme="light"] .widget-tooltip-panel .widget-card,
+.app-shell[data-theme="light"] .widget-tooltip-panel .data-table,
+.app-shell[data-theme="light"] .widget-tooltip-panel .data-panel-slider__nav,
+.app-shell[data-theme="light"] .widget-tooltip-panel__arrow {
+  box-shadow: none !important;
 }
 
 .app-shell[data-theme="light"] .chat-panel__devtools-mapping {

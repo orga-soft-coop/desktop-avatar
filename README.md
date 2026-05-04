@@ -1,4 +1,4 @@
-# Desktop Avatar
+# SYNTRA Assistant
 
 Cross-platform desktop companion that renders a 3D VRM avatar with voice and text chat. Integrates with a local LLM (LM Studio) for casual conversation and a Communication Officer backend for business data queries.
 
@@ -85,7 +85,7 @@ User input (text or voice)
 routePrompt(text)  ──→  API-first classifier
     │
     ├─ clear smalltalk      → LM Studio (local LLM, SSE streaming)
-    └─ non-casual prompts   → Desktop Avatar backend API (create + SSE stream)
+    └─ non-casual prompts   → SYNTRA Assistant backend API (create + SSE stream)
     │
     ▼
 SSE stream events → Tauri emits to frontend
@@ -100,7 +100,7 @@ TTS (macOS `say` command) → speaking animation
 
 ### Routing Policy (API-first)
 
-- Default behavior is API-first: non-casual prompts are sent to the Desktop Avatar backend API.
+- Default behavior is API-first: non-casual prompts are sent to the SYNTRA Assistant backend API.
 - Local LM Studio chat is reserved for clear smalltalk/greeting prompts.
 - If backend request creation returns an explicit unsupported/no-match routing error (for example no capable active agent), the client falls back once to local chat and reuses the existing placeholder message.
 - Technical backend failures (timeout/network/5xx) do not auto-fallback; the error is shown to the user.

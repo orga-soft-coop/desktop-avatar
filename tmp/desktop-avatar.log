@@ -1,13 +1,14 @@
-[1777885717] tts: config provider=openai localUrl=<none> localModel=fish-audio-s2-pro openaiEnabled=true localTemplateKeys=input,model,voice localResponsePath=<auto>
-[1777885718] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1777885718] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1777885718] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1777885718] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1777885718] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
-[1777885718] frontend:info: loaded packed GLB avatar with 9 action entries
-[1777885718] frontend:info: avatar runtime ready: 9 animation actions loaded
-[1777885860] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
-[1777885860] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
-[1777885860] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
-[1777885860] frontend:info: loaded packed GLB avatar with 9 action entries
-[1777885860] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777905311] tts: config provider=openai localUrl=<none> localModel=fish-audio-s2-pro openaiEnabled=true localTemplateKeys=input,model,voice localResponsePath=<auto>
+[1777905314] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777905314] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777905314] bootstrap: avatar manifest path = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/sample-avatar-manifest.json
+[1777905314] bootstrap: resolved model = /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb vrm = <none> idle clips = 
+[1777905314] asset: loading /Users/carsten/Work/Polygonrausch/OrgaSoft/Projects/Agent Studio/desktop-avatar/./public/./sample-assets/female_avatar_1_packed.glb
+[1777905314] frontend:info: loaded packed GLB avatar with 9 action entries
+[1777905314] frontend:info: avatar runtime ready: 9 animation actions loaded
+[1777905324] frontend:info: voice recording finished: mime=audio/mp4; codecs=mp4a.40.2 bytes=93403 elapsedMs=4777 speechDetected=false
+[1777905324] stt: start mimeRaw=audio/mp4; codecs=mp4a.40.2 mimeNormalized=audio/mp4 extension=m4a bytes=93403
+[1777905327] frontend:info: voice transcript route=backendBusiness prompt=Bitte antworten mir kurz.
+[1777905328] tts:http start provider=openai requestId=desktop-avatar-request:01KQSPMQ65A0QW42T6TXXCRZZJ fallback=false endpoint=https://api.openai.com/v1/audio/speech model=gpt-4o-mini-tts voice=shimmer chars=50 payloadKeys=input,model,voice
+[1777905330] tts:http response provider=openai requestId=desktop-avatar-request:01KQSPMQ65A0QW42T6TXXCRZZJ endpoint=https://api.openai.com/v1/audio/speech status=200 contentType=audio/mpeg bytes=76800
+[1777905330] tts: provider=openai selected (requestId=desktop-avatar-request:01KQSPMQ65A0QW42T6TXXCRZZJ, fallback=false)

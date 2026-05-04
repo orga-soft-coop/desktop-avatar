@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => {
     streamHandlers,
     getBootstrapStateMock: vi.fn(),
     listTtsVoicesMock: vi.fn(),
+    frontendLogMock: vi.fn(),
     onStreamEventMock: vi.fn(),
     onTrayPeekCollapseMock: vi.fn(async (handler: () => void) => {
       streamHandlers.onTrayPeekCollapse = handler;
@@ -96,6 +97,7 @@ vi.mock("../lib/desktop-avatar-api", () => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  frontendLog: mocks.frontendLogMock,
   getBootstrapState: mocks.getBootstrapStateMock,
   listTtsVoices: mocks.listTtsVoicesMock,
   onStreamEvent: mocks.onStreamEventMock,
@@ -140,6 +142,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       ttsEnabled: false
     });
     mocks.listTtsVoicesMock.mockReset().mockResolvedValue([]);
+    mocks.frontendLogMock.mockReset().mockResolvedValue(undefined);
     mocks.onStreamEventMock.mockReset().mockResolvedValue(() => {});
     mocks.onTrayPeekCollapseMock.mockReset().mockImplementation(async (handler: () => void) => {
       mocks.streamHandlers.onTrayPeekCollapse = handler;
@@ -240,6 +243,23 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     first.unmount();
     const second = renderHook(() => useDesktopCompanion());
     await waitFor(() => expect(second.result.current.ttsEnabled).toBe(false));
+  });
+
+  it("migrates the legacy onyx default to shimmer when available", async () => {
+    window.localStorage.setItem("desktop-avatar.ttsVoice", "onyx");
+    mocks.getBootstrapStateMock.mockResolvedValue({
+      avatarManifest: null,
+      collapsedSize: { width: 520, height: 780 },
+      expandedSize: { width: 520, height: 920 },
+      ttsEnabled: true
+    });
+    mocks.listTtsVoicesMock.mockResolvedValue(["onyx", "shimmer", "echo"]);
+
+    const { result } = renderHook(() => useDesktopCompanion());
+
+    await waitFor(() => expect(result.current.ttsVoices).toEqual(["onyx", "shimmer", "echo"]));
+    expect(result.current.selectedTtsVoice).toBe("shimmer");
+    expect(window.localStorage.getItem("desktop-avatar.ttsVoice")).toBe("shimmer");
   });
 
   it("keeps TTS disabled when bootstrap config disables it even with a stored opt-in", async () => {
@@ -519,7 +539,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
 
   it("falls back to local chat on unsupported/no-match backend errors", async () => {
     mocks.createRequestMock.mockRejectedValueOnce(
-      "Desktop Avatar create returned 409 Conflict: No active studio agents support READ_SQL_SERVER_QUERY."
+      "SYNTRA Assistant create returned 409 Conflict: No active studio agents support READ_SQL_SERVER_QUERY."
     );
 
     const { result } = renderHook(() => useDesktopCompanion());
@@ -587,5 +607,108 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     const firstCall = mocks.createRequestMock.mock.calls[0][0] as CreateDesktopAvatarRequestInput;
     const secondCall = mocks.createRequestMock.mock.calls[1][0] as CreateDesktopAvatarRequestInput;
     expect(firstCall.clientRequestId).toBe(secondCall.clientRequestId);
+  });
+
+  it("stops TTS before recording and requests processed mono microphone input", async () => {
+    const originalMediaDevices = navigator.mediaDevices;
+    const originalMediaRecorder = globalThis.MediaRecorder;
+    const originalAudioContext = globalThis.AudioContext;
+
+    const trackStopMock = vi.fn();
+    const stream = {
+      getTracks: () => [{ stop: trackStopMock }]
+    } as unknown as MediaStream;
+
+    const getUserMediaMock = vi.fn(async () => stream);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: getUserMediaMock }
+    });
+
+    class FakeAudioContext {
+      public state: AudioContextState = "running";
+      createMediaStreamSource() {
+        return {
+          connect: vi.fn(),
+          disconnect: vi.fn()
+        } as unknown as MediaStreamAudioSourceNode;
+      }
+      createAnalyser() {
+        return {
+          fftSize: 2048,
+          getFloatTimeDomainData: (buffer: Float32Array) => {
+            buffer.fill(0.05);
+          }
+        } as unknown as AnalyserNode;
+      }
+      async close() {
+        this.state = "closed";
+      }
+    }
+
+    class FakeMediaRecorder {
+      static isTypeSupported() {
+        return true;
+      }
+
+      public state: RecordingState = "inactive";
+      public mimeType = "audio/webm;codecs=opus";
+      public ondataavailable: ((event: BlobEvent) => void) | null = null;
+      public onstop: (() => void | Promise<void>) | null = null;
+
+      constructor(
+        readonly _stream: MediaStream,
+        readonly _options?: MediaRecorderOptions
+      ) {}
+
+      start() {
+        this.state = "recording";
+      }
+
+      stop() {
+        this.state = "inactive";
+        void this.onstop?.();
+      }
+    }
+
+    globalThis.AudioContext = FakeAudioContext as unknown as typeof AudioContext;
+    globalThis.MediaRecorder = FakeMediaRecorder as unknown as typeof MediaRecorder;
+
+    try {
+      const { result } = renderHook(() => useDesktopCompanion());
+      await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+      await act(async () => {
+        await result.current.toggleRecording();
+      });
+
+      expect(mocks.stopSpeakingMock).toHaveBeenCalledTimes(1);
+      expect(getUserMediaMock).toHaveBeenCalledWith({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1
+        }
+      });
+      expect(mocks.stopSpeakingMock.mock.invocationCallOrder[0]).toBeLessThan(
+        getUserMediaMock.mock.invocationCallOrder[0]
+      );
+      expect(result.current.isRecording).toBe(true);
+
+      await act(async () => {
+        await result.current.toggleRecording();
+      });
+
+      await waitFor(() => expect(result.current.isRecording).toBe(false));
+      expect(trackStopMock).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: originalMediaDevices
+      });
+      globalThis.MediaRecorder = originalMediaRecorder;
+      globalThis.AudioContext = originalAudioContext;
+    }
   });
 });

@@ -122,8 +122,11 @@
     "continuingLocally": "Ich mache lokal weiter…",
     "thinkingLocally": "Ich denke lokal nach…",
     "transcribing": "Transkription läuft…",
+    "voiceRecognized": "Verstanden: „{{text}}“",
     "voiceTranscriptionFailed": "Sprachtranskription fehlgeschlagen.",
     "listening": "Ich höre zu…",
+    "voiceAutoStoppedSilence": "Aufnahme wegen Stille beendet.",
+    "voiceAutoStoppedLimit": "Aufnahme automatisch beendet (Zeitlimit erreicht).",
     "microphoneAccessFailed": "Mikrofonzugriff fehlgeschlagen.",
     "requestCouldNotStart": "Die Anfrage konnte nicht gestartet werden.",
     "localFallback": "Ich konnte lokal keine Antwort erzeugen. Versuche es erneut oder frage nach Geschäftsdaten."

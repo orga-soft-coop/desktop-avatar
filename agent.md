@@ -1,4 +1,4 @@
-# Agent Guide — DesktopAvatar
+# Agent Guide — SYNTRA Assistant
 
 This file describes the intended behavior and responsibilities of AI agents (Claude Code or similar) working on this codebase.
 

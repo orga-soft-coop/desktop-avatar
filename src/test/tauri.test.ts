@@ -73,7 +73,7 @@ describe("tauri runtime guards", () => {
         utterance: "Hello",
         responseModes: ["talk", "widget"]
       })
-    ).rejects.toThrow("Desktop Avatar Anfrage benötigt die Tauri-Desktop-Shell.");
+    ).rejects.toThrow("SYNTRA Assistant Anfrage benötigt die Tauri-Desktop-Shell.");
 
     expect(invokeMock).not.toHaveBeenCalled();
   });

@@ -236,6 +236,7 @@ export interface LocalChatRequest {
 export interface SpeechTranscriptionRequest {
   audioBase64: string;
   mimeType: string;
+  locale?: string;
 }
 
 export interface StreamEnvelope<T = unknown> {

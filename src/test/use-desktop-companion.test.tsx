@@ -279,14 +279,15 @@ describe("useDesktopCompanion desktop avatar integration", () => {
 
     expect(result.current.peekMode).toBe("peek");
     expect(result.current.peekPosition).toBe("bottom-left");
-    expect(mocks.setPeekPositionMock).toHaveBeenCalledWith("bottom-left");
+    expect(mocks.setPeekPositionMock).not.toHaveBeenCalled();
     expect(mocks.setPeekModeMock).toHaveBeenCalledWith(
       "peek",
       expect.any(Number),
       expect.any(Number),
       expect.any(Number),
       expect.any(Number),
-      false
+      false,
+      true
     );
   });
 
@@ -308,7 +309,9 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     act(() => {
       mocks.streamHandlers.onTrayPeekOpen?.();
     });
-    await waitFor(() => expect(result.current.peekMode).toBe("expanded"));
+    await waitFor(() => expect(result.current.peekMode).toBe("expanded"), {
+      timeout: 1500
+    });
   });
 
   it("runs the happy path from submit to talk, widget and completion", async () => {

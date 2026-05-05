@@ -81,6 +81,8 @@ export default function App() {
   );
   const [forcedAnimation, setForcedAnimation] = useState<string | null>(null);
   const [startupOneShotAnimation, setStartupOneShotAnimation] = useState<string | null>(null);
+  const [startupMaskRevealActive, setStartupMaskRevealActive] = useState(false);
+  const [startupMaskRevealComplete, setStartupMaskRevealComplete] = useState(false);
   const [uiTheme, setUiTheme] = useState<UiTheme>(() => readStoredUiTheme());
   const [avatarDebug, setAvatarDebug] = useState<{
     assetKind: "legacy-vrm" | "packed-glb" | null;
@@ -96,6 +98,7 @@ export default function App() {
   const peekPressStateRef = useRef<{ x: number; y: number; dragging: boolean } | null>(null);
   const suppressNextPeekOpenRef = useRef(false);
   const startupTeleportOutTriggeredRef = useRef(false);
+  const startupMaskRevealPlayedRef = useRef(false);
   const previousExpandedRef = useRef(isExpanded);
   const reopenLeftDockAnchorGuardRef = useRef(false);
 
@@ -432,6 +435,37 @@ export default function App() {
     return () => window.clearTimeout(timeoutId);
   }, [startupOneShotAnimation]);
 
+  useEffect(() => {
+    if (
+      startupMaskRevealPlayedRef.current ||
+      !companion.bootstrapReady ||
+      !isPeek ||
+      companion.isModeTransitioning ||
+      companion.modeTransitionPhase !== "idle"
+    ) {
+      return;
+    }
+
+    startupMaskRevealPlayedRef.current = true;
+    setStartupMaskRevealActive(true);
+  }, [
+    companion.bootstrapReady,
+    companion.isModeTransitioning,
+    companion.modeTransitionPhase,
+    isPeek
+  ]);
+
+  useEffect(() => {
+    if (!startupMaskRevealActive) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setStartupMaskRevealActive(false);
+      setStartupMaskRevealComplete(true);
+    }, 220);
+    return () => window.clearTimeout(timeoutId);
+  }, [startupMaskRevealActive]);
+
   const handleForcedAnimationFinished = useCallback((finishedName: string) => {
     const normalized = finishedName.trim().toLowerCase();
     if (normalized === "teleport-out" || normalized === "teleported-out") {
@@ -536,7 +570,7 @@ export default function App() {
     <main
       ref={appShellRef}
       data-theme={uiTheme}
-      className={`app-shell ${isExpanded ? "is-expanded" : "is-peek"} peek-size-${companion.sizePreset} ${companion.isModeTransitioning ? "is-mode-transitioning" : ""} ${companion.modeTransitionPhase !== "idle" ? `mode-transition-${companion.modeTransitionPhase}` : ""} ${widgetTooltipOpen ? "has-widget-tooltip" : ""} ${widgetDockVisible ? "widget-dock-visible" : ""} widget-dock-${widgetDockSide}`}
+      className={`app-shell ${isExpanded ? "is-expanded" : "is-peek"} peek-size-${companion.sizePreset} ${!startupMaskRevealComplete && isPeek ? "startup-peek-prep" : ""} ${startupMaskRevealActive && isPeek ? "startup-peek-in" : ""} ${companion.isModeTransitioning ? "is-mode-transitioning" : ""} ${companion.modeTransitionPhase !== "idle" ? `mode-transition-${companion.modeTransitionPhase}` : ""} ${widgetTooltipOpen ? "has-widget-tooltip" : ""} ${widgetDockVisible ? "widget-dock-visible" : ""} widget-dock-${widgetDockSide}`}
     >
       <div className={`app-content-column ${isExpanded ? "is-expanded" : ""}`} style={expandedContentStyle}>
         {isExpanded ? (

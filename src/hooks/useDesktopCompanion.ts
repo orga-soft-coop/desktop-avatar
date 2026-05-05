@@ -90,7 +90,7 @@ const VOICE_MAX_INITIAL_SILENCE_MS = 7_000;
 const VOICE_MIN_TRANSCRIPTION_MS = 700;
 const VOICE_MIN_TRANSCRIPTION_BYTES = 1_500;
 const VOICE_TRANSCRIPT_PREVIEW_MS = 2200;
-const LEGACY_OPENAI_TTS_DEFAULT_VOICE = "shimmer";
+const LEGACY_OPENAI_TTS_DEFAULT_VOICE = "onyx";
 const PREFERRED_OPENAI_TTS_DEFAULT_VOICE = "shimmer";
 
 type ModeTransitionPhase =
@@ -591,6 +591,7 @@ export function useDesktopCompanion() {
   const [peekPosition, setPeekPositionState] = useState<PeekPosition>(() =>
     readStoredPeekPosition(),
   );
+  const [bootstrapReady, setBootstrapReady] = useState(false);
   const [isModeTransitioning, setIsModeTransitioning] = useState(false);
   const [modeTransitionPhase, setModeTransitionPhase] =
     useState<ModeTransitionPhase>("idle");
@@ -1113,7 +1114,6 @@ export function useDesktopCompanion() {
         width: presetSizes.expanded.width,
         height: expandedHeight,
       });
-      await setPeekPosition(peekPosition);
       await setPeekMode(
         peekMode,
         presetSizes.expanded.width,
@@ -1121,7 +1121,9 @@ export function useDesktopCompanion() {
         presetSizes.collapsed.width,
         presetSizes.collapsed.height,
         false,
+        true,
       );
+      setBootstrapReady(true);
 
       try {
         const voices = await listTtsVoices();
@@ -1875,6 +1877,7 @@ export function useDesktopCompanion() {
           const transcript = await transcribeAudio({
             audioBase64,
             mimeType: blob.type || "audio/webm",
+            locale: navigator.language,
           });
           const cleanedTranscript = transcript.trim();
           if (cleanedTranscript) {
@@ -1967,6 +1970,7 @@ export function useDesktopCompanion() {
     companionState,
     draft,
     error,
+    bootstrapReady,
     isExpanded: peekMode === "expanded",
     isModeTransitioning,
     modeTransitionPhase,

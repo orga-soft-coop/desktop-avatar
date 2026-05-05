@@ -83,7 +83,7 @@ enum WindowMode {
 
 impl Default for WindowMode {
     fn default() -> Self {
-        Self::Expanded
+        Self::Peek
     }
 }
 
@@ -287,6 +287,7 @@ struct DesktopAvatarStreamLifecycleEvent {
 struct SpeechTranscriptionRequest {
     audio_base64: String,
     mime_type: String,
+    locale: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1037,6 +1038,10 @@ fn write_persisted_window_state(path: &Path, value: &PersistedWindowState) {
     let _ = fs::write(path, serialized);
 }
 
+fn startup_peek_origin(state: &PersistedWindowState) -> Option<(f64, f64)> {
+    state.last_peek_rect.map(|rect| (rect.x, rect.y))
+}
+
 async fn persist_window_state(state: &AppState) {
     let snapshot = PersistedWindowState {
         peek_position: *state.peek_position.lock().await,
@@ -1232,8 +1237,10 @@ async fn window_set_peek_mode(
     collapsed_width: Option<f64>,
     collapsed_height: Option<f64>,
     animated: Option<bool>,
+    show_if_hidden: Option<bool>,
 ) -> Result<(), String> {
     let animate = animated.unwrap_or(true);
+    let show_if_hidden = show_if_hidden.unwrap_or(false);
     let next_mode = if mode.trim().eq_ignore_ascii_case("peek") {
         WindowMode::Peek
     } else {
@@ -1334,6 +1341,9 @@ async fn window_set_peek_mode(
     {
         let mut guard = state.suppress_window_tracking.lock().await;
         *guard = false;
+    }
+    if show_if_hidden && !window.is_visible().map_err(|error| error.to_string())? {
+        let _ = window.show();
     }
     persist_window_state(state.inner()).await;
     Ok(())
@@ -1735,10 +1745,12 @@ async fn speech_transcribe(
         .mime_str(normalized_mime.as_str())
         .map_err(|error| error.to_string())?;
 
-    let form = Form::new()
+    let mut form = Form::new()
         .part("file", part)
-        .text("model", state.config.openai_stt_model.clone())
-        .text("language", current_language());
+        .text("model", state.config.openai_stt_model.clone());
+    if let Some(language) = resolve_transcription_language(request.locale.as_deref()) {
+        form = form.text("language", language);
+    }
 
     let response = state
         .client
@@ -2919,13 +2931,40 @@ fn audio_file_extension_from_content_type(content_type: Option<&str>) -> &'stati
     }
 }
 
-fn current_language() -> String {
-    env::var("LANG")
-        .ok()
-        .and_then(|value| value.split('.').next().map(str::to_string))
-        .and_then(|value| value.split('_').next().map(str::to_string))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "de".to_string())
+fn normalize_language_code(value: &str) -> Option<String> {
+    let normalized = value
+        .split('.')
+        .next()
+        .unwrap_or(value)
+        .split('@')
+        .next()
+        .unwrap_or(value)
+        .split(['-', '_'])
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .to_ascii_lowercase();
+
+    if normalized.is_empty() || normalized == "c" || normalized == "posix" {
+        return None;
+    }
+
+    if normalized.len() < 2 || normalized.len() > 3 {
+        return None;
+    }
+
+    if !normalized.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+
+    Some(normalized)
+}
+
+fn resolve_transcription_language(request_locale: Option<&str>) -> Option<String> {
+    request_locale
+        .and_then(normalize_language_code)
+        .or_else(|| env::var("LANG").ok().and_then(|value| normalize_language_code(&value)))
+        .or_else(|| Some("de".to_string()))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3002,14 +3041,18 @@ pub fn run() {
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
             let _ = window.set_always_on_top(true);
-            let initial_position = persisted_window_state
-                .last_expanded_rect
-                .map(|rect| (rect.x, rect.y))
-                .unwrap_or((64.0, 280.0));
-            let _ = window.set_position(Position::Logical(LogicalPosition::new(
-                initial_position.0,
-                initial_position.1,
-            )));
+            let initial_peek_rect = startup_peek_origin(&persisted_window_state)
+                .map(|(x, y)| peek_rect_for_origin(&window, x, y, normalized_peek_size))
+                .unwrap_or_else(|| {
+                    peek_rect_for_position(
+                        &window,
+                        persisted_window_state.peek_position,
+                        normalized_peek_size,
+                    )
+                });
+            if let Ok(rect) = initial_peek_rect {
+                let _ = apply_window_rect(&window, rect);
+            }
             let drag_tracking_mode_state = app.state::<AppState>().drag_tracking_mode.clone();
             let drag_tracking_revision_state =
                 app.state::<AppState>().drag_tracking_revision.clone();
@@ -3547,5 +3590,56 @@ mod tests {
             local_tts_endpoint_candidates("http://127.0.0.1:1234/v1/audio/speech"),
             vec!["http://127.0.0.1:1234/v1/audio/speech".to_string()]
         );
+    }
+
+    #[test]
+    fn startup_origin_prefers_last_peek_rect_over_last_expanded_rect() {
+        let state = PersistedWindowState {
+            peek_position: PeekPosition::TopRight,
+            peek_size: default_peek_size(),
+            last_peek_rect: Some(WindowRect {
+                x: 111.0,
+                y: 222.0,
+                width: DEFAULT_PEEK_WIDTH,
+                height: DEFAULT_PEEK_HEIGHT,
+            }),
+            last_expanded_rect: Some(WindowRect {
+                x: 999.0,
+                y: 888.0,
+                width: EXPANDED_WIDTH,
+                height: EXPANDED_HEIGHT,
+            }),
+        };
+
+        assert_eq!(startup_peek_origin(&state), Some((111.0, 222.0)));
+    }
+
+    #[test]
+    fn startup_origin_ignores_last_expanded_rect_when_no_peek_rect_exists() {
+        let state = PersistedWindowState {
+            peek_position: PeekPosition::TopRight,
+            peek_size: default_peek_size(),
+            last_peek_rect: None,
+            last_expanded_rect: Some(WindowRect {
+                x: 333.0,
+                y: 444.0,
+                width: EXPANDED_WIDTH,
+                height: EXPANDED_HEIGHT,
+            }),
+        };
+
+        assert_eq!(startup_peek_origin(&state), None);
+    }
+
+    #[test]
+    fn normalize_language_code_accepts_locale_variants() {
+        assert_eq!(normalize_language_code("de-DE"), Some("de".to_string()));
+        assert_eq!(normalize_language_code("en_US.UTF-8"), Some("en".to_string()));
+    }
+
+    #[test]
+    fn normalize_language_code_rejects_shell_placeholders() {
+        assert_eq!(normalize_language_code("C"), None);
+        assert_eq!(normalize_language_code("POSIX"), None);
     }
 }

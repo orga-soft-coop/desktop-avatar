@@ -83,7 +83,8 @@ export async function setPeekMode(
   height?: number,
   collapsedWidth?: number,
   collapsedHeight?: number,
-  animated = true
+  animated = true,
+  showIfHidden = false
 ): Promise<void> {
   if (!isTauriRuntime()) {
     return;
@@ -94,7 +95,8 @@ export async function setPeekMode(
     height,
     collapsedWidth,
     collapsedHeight,
-    animated
+    animated,
+    showIfHidden
   });
 }
 

@@ -1,4 +1,7 @@
 export type PromptRoute = "localChat" | "backendBusiness" | "backendReview";
+export type TranscriptionProviderId =
+  | "openai-realtime"
+  | "openai-file-fallback";
 export type CompanionState =
   | "idle"
   | "listening"
@@ -11,6 +14,11 @@ export type MessageSource = "text" | "voice" | "system";
 export type DesktopAvatarMode = "SIMULATION" | "EXECUTION";
 export type DesktopAvatarModality = "chat" | "voice";
 export type DesktopAvatarResponseMode = "talk" | "widget";
+export type BackendConnectionState =
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "unavailable";
 export type DesktopAvatarRequestStatus =
   | "RECEIVED"
   | "ROUTING"
@@ -88,12 +96,62 @@ export interface DesktopAvatarErrorWidget {
   message: string;
 }
 
+export interface DesktopAvatarHitlContextEntry {
+  label: string;
+  value: string;
+  type: "text" | "badge" | "metric";
+  severity?: "info" | "warning" | "critical" | "success";
+}
+
+export interface DesktopAvatarHitlContextSection {
+  id: string;
+  title: string;
+  icon: string;
+  entries: DesktopAvatarHitlContextEntry[];
+}
+
+export interface DesktopAvatarHitlApprovalWidget {
+  type: "hitlApproval";
+  decisionId: string;
+  runId: string;
+  proposalId?: string;
+  actionId?: string;
+  title: string;
+  description: string;
+  agentName: string;
+  mode: DesktopAvatarMode;
+  status: "pending" | "approved" | "declined" | "executing" | "completed" | "failed";
+  priority: "low" | "medium" | "high" | "critical";
+  contextSections: DesktopAvatarHitlContextSection[];
+}
+
+export interface HitlDecisionQueueItem {
+  decisionId: string;
+  runId: string;
+  proposalId?: string;
+  actionId?: string;
+  title: string;
+  description: string;
+  agent: {
+    agentId: string;
+    agentName: string;
+    agentAvatarId: number;
+  };
+  timestamp: string;
+  mode: DesktopAvatarMode;
+  status: DesktopAvatarHitlApprovalWidget["status"];
+  priority: DesktopAvatarHitlApprovalWidget["priority"];
+  contextSections: DesktopAvatarHitlContextSection[];
+  payload: Record<string, unknown>;
+}
+
 export type DesktopAvatarWidgetPayload =
   | DesktopAvatarTableWidget
   | DesktopAvatarKeyValueWidget
   | DesktopAvatarTextWidget
   | DesktopAvatarAreaChartWidget
   | DesktopAvatarClarificationWidget
+  | DesktopAvatarHitlApprovalWidget
   | DesktopAvatarErrorWidget;
 
 export interface DesktopAvatarTalkPayload {
@@ -196,6 +254,54 @@ export type DesktopAvatarStreamEvent =
   | DesktopAvatarStreamDoneEvent
   | DesktopAvatarStreamErrorEvent;
 
+export interface HitlDecisionStreamReadyEvent {
+  type: "ready";
+  emittedAt: string;
+}
+
+export interface HitlDecisionStreamSnapshotEvent {
+  type: "snapshot";
+  items: HitlDecisionQueueItem[];
+  emittedAt: string;
+}
+
+export interface HitlDecisionStreamDecisionEvent {
+  type: "decision";
+  kind:
+    | "required"
+    | "updated"
+    | "resolved"
+    | "execution_started"
+    | "execution_finished";
+  decisionId: string;
+  runId: string;
+  proposalId?: string;
+  status: DesktopAvatarHitlApprovalWidget["status"];
+  item?: HitlDecisionQueueItem;
+  emittedAt: string;
+}
+
+export type HitlDecisionStreamEvent =
+  | HitlDecisionStreamReadyEvent
+  | HitlDecisionStreamSnapshotEvent
+  | HitlDecisionStreamDecisionEvent;
+
+export interface HitlDecisionStreamLifecycleEvent {
+  phase: "closed" | "aborted" | "error";
+  reason?: string | null;
+}
+
+export interface HitlDecisionInput {
+  runId: string;
+  proposalId: string;
+  decisionReason?: string;
+}
+
+export interface HitlRequestMoreInfoInput {
+  runId: string;
+  message: string;
+}
+
 export interface DesktopAvatarStreamLifecycleEvent {
   avatarRequestId: string;
   phase: "closed" | "aborted" | "error";
@@ -220,6 +326,8 @@ export interface BootstrapState {
   collapsedSize: { width: number; height: number };
   expandedSize: { width: number; height: number };
   ttsEnabled: boolean;
+  transcriptionProvider: TranscriptionProviderId;
+  transcriptionProviders: TranscriptionProviderId[];
 }
 
 export interface LocalChatMessageInput {
@@ -238,6 +346,82 @@ export interface SpeechTranscriptionRequest {
   mimeType: string;
   locale?: string;
 }
+
+export interface TranscriptionSessionStartRequest {
+  sessionId: string;
+  locale?: string;
+}
+
+export interface TranscriptionSessionStartResult {
+  sessionId: string;
+  provider: TranscriptionProviderId;
+}
+
+export interface TranscriptionSessionAppendAudioRequest {
+  sessionId: string;
+  audioBase64: string;
+  mimeType: string;
+}
+
+export interface TranscriptionSessionCommitTurnRequest {
+  sessionId: string;
+}
+
+export interface TranscriptionSessionStopRequest {
+  sessionId: string;
+}
+
+export interface TranscriptionProviderChangedEvent {
+  provider: TranscriptionProviderId;
+}
+
+export interface TranscriptionSessionReadyEvent {
+  type: "session_ready";
+  sessionId: string;
+  provider: TranscriptionProviderId;
+}
+
+export interface TranscriptionSessionPartialEvent {
+  type: "partial";
+  sessionId: string;
+  text: string;
+  provider: TranscriptionProviderId;
+}
+
+export interface TranscriptionSessionFinalEvent {
+  type: "final";
+  sessionId: string;
+  text: string;
+  provider: TranscriptionProviderId;
+  fallbackUsed: boolean;
+}
+
+export interface TranscriptionSessionSpeechStartedEvent {
+  type: "speech_started";
+  sessionId: string;
+  provider: TranscriptionProviderId;
+}
+
+export interface TranscriptionSessionSpeechStoppedEvent {
+  type: "speech_stopped";
+  sessionId: string;
+  provider: TranscriptionProviderId;
+}
+
+export interface TranscriptionSessionErrorEvent {
+  type: "error";
+  sessionId: string;
+  provider: TranscriptionProviderId;
+  message: string;
+}
+
+export type TranscriptionSessionEvent =
+  | TranscriptionSessionReadyEvent
+  | TranscriptionSessionPartialEvent
+  | TranscriptionSessionFinalEvent
+  | TranscriptionSessionSpeechStartedEvent
+  | TranscriptionSessionSpeechStoppedEvent
+  | TranscriptionSessionErrorEvent;
 
 export interface StreamEnvelope<T = unknown> {
   requestId: string;

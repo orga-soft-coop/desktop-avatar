@@ -16,8 +16,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import {
   createDesktopAvatarRequest,
+  onHitlDecisionStreamEvent,
   onDesktopAvatarStreamEvent,
   onStreamEvent,
+  requestMoreInfoForHitl,
   sendLocalChat,
   transcribeAudio
 } from "../lib/tauri";
@@ -38,6 +40,13 @@ describe("tauri runtime guards", () => {
 
   it("returns a noop unlisten callback for desktop avatar events when tauri is unavailable", async () => {
     const unlisten = await onDesktopAvatarStreamEvent(() => {});
+
+    expect(typeof unlisten).toBe("function");
+    expect(listenMock).not.toHaveBeenCalled();
+  });
+
+  it("returns a noop unlisten callback for HITL events when tauri is unavailable", async () => {
+    const unlisten = await onHitlDecisionStreamEvent(() => {});
 
     expect(typeof unlisten).toBe("function");
     expect(listenMock).not.toHaveBeenCalled();
@@ -76,5 +85,22 @@ describe("tauri runtime guards", () => {
     ).rejects.toThrow("SYNTRA Assistant Anfrage benötigt die Tauri-Desktop-Shell.");
 
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("sends HITL request-more-info through the Tauri command bridge", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValue(undefined);
+
+    await requestMoreInfoForHitl({
+      runId: "run:1",
+      message: "Bitte Lieferantwerk pruefen"
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("hitl_request_more_info", {
+      input: {
+        runId: "run:1",
+        message: "Bitte Lieferantwerk pruefen"
+      }
+    });
   });
 });

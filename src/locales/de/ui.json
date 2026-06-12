@@ -19,8 +19,15 @@
   },
   "devTools": {
     "title": "Entwicklerwerkzeuge",
+    "interface": "Oberfläche",
+    "language": "Sprache",
+    "languageGerman": "Deutsch",
+    "languageEnglish": "Englisch",
     "voice": "Stimme",
     "systemDefault": "Systemstandard",
+    "transcriptionProvider": "STT Provider",
+    "transcriptionProviderRealtime": "OpenAI Realtime",
+    "transcriptionProviderFile": "OpenAI File Fallback",
     "latency": "Latenz",
     "started": "Gestartet",
     "mode": "Modus",
@@ -95,6 +102,39 @@
     "yes": "Ja",
     "no": "Nein",
     "businessMetrics": "Geschäftskennzahlen",
+    "hitl": {
+      "kicker": "HITL-Freigabe",
+      "run": "Run",
+      "action": "Aktion",
+      "priorityLabel": "Priorität",
+      "priority": {
+        "low": "Niedrig",
+        "medium": "Mittel",
+        "high": "Hoch",
+        "critical": "Kritisch"
+      },
+      "status": {
+        "pending": "Wartet",
+        "approved": "Freigegeben",
+        "declined": "Abgelehnt",
+        "executing": "In Ausführung",
+        "completed": "Abgeschlossen",
+        "failed": "Fehlgeschlagen"
+      },
+      "reasonPlaceholder": "Kommentar oder Grund eingeben...",
+      "executionConfirm": "EXECUTION benötigt eine bewusste Bestätigung oder den HITL-Dialog.",
+      "confirm": "Bestätigen",
+      "approve": "Freigeben",
+      "reject": "Ablehnen",
+      "moreInfo": "Rückfrage",
+      "open": "HITL öffnen",
+      "announcement": "Eine HITL-Freigabe wartet: {{title}}.",
+      "updated": "HITL-Freigabe aktualisiert.",
+      "sending": "HITL-Antwort wird gesendet...",
+      "moreInfoSent": "Rückfrage gesendet. HITL bleibt offen.",
+      "sent": "HITL-Antwort gesendet.",
+      "actionFailed": "HITL-Aktion fehlgeschlagen."
+    },
     "table": {
       "searchPlaceholder": "In allen Spalten suchen…",
       "noResults": "Keine Treffer",
@@ -102,6 +142,15 @@
       "nextPage": "Weiter",
       "pageXofY": "Seite {{current}} / {{total}}",
       "rowsRange": "{{from}}-{{to}} von {{total}}"
+    }
+  },
+  "connection": {
+    "backend": {
+      "connecting": "Backend verbindet",
+      "connected": "Backend verbunden",
+      "disconnected": "Backend getrennt",
+      "unavailable": "Backend nicht erreichbar",
+      "pendingHitl": "{{count}} HITL-Meldung(en) warten. {{backend}}."
     }
   },
   "slider": {
@@ -122,6 +171,7 @@
     "continuingLocally": "Ich mache lokal weiter…",
     "thinkingLocally": "Ich denke lokal nach…",
     "transcribing": "Transkription läuft…",
+    "transcribingPartial": "Transkription: {{text}}",
     "voiceRecognized": "Verstanden: „{{text}}“",
     "voiceTranscriptionFailed": "Sprachtranskription fehlgeschlagen.",
     "listening": "Ich höre zu…",
@@ -158,6 +208,9 @@
     "sizeCollapsed": "Kompakt (520 x 780)",
     "sizeExpanded": "Erweitert (720 x 920)",
     "toggleTts": "Sprachausgabe umschalten",
+    "transcriptionProvider": "Transkriptions-Provider",
+    "transcriptionProviderRealtime": "OpenAI Realtime",
+    "transcriptionProviderFile": "OpenAI File Fallback",
     "toggleAlwaysOnTop": "Immer im Vordergrund umschalten",
     "quit": "Beenden"
   }

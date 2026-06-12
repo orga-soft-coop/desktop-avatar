@@ -7,6 +7,18 @@ import type {
   DesktopAvatarRequestDocument,
   DesktopAvatarStreamEvent,
   DesktopAvatarStreamLifecycleEvent,
+  HitlDecisionInput,
+  HitlDecisionStreamEvent,
+  HitlDecisionStreamLifecycleEvent,
+  HitlRequestMoreInfoInput,
+  TranscriptionProviderChangedEvent,
+  TranscriptionProviderId,
+  TranscriptionSessionAppendAudioRequest,
+  TranscriptionSessionCommitTurnRequest,
+  TranscriptionSessionEvent,
+  TranscriptionSessionStartRequest,
+  TranscriptionSessionStartResult,
+  TranscriptionSessionStopRequest,
   PeekMode,
   PeekPosition,
   LocalChatRequest,
@@ -36,7 +48,9 @@ export async function getBootstrapState(): Promise<BootstrapState> {
       avatarManifest: null,
       collapsedSize: COLLAPSED_SIZE,
       expandedSize: EXPANDED_SIZE,
-      ttsEnabled: true
+      ttsEnabled: true,
+      transcriptionProvider: "openai-realtime",
+      transcriptionProviders: ["openai-realtime", "openai-file-fallback"]
     };
   }
 
@@ -190,6 +204,35 @@ export async function stopDesktopAvatarStream(avatarRequestId: string): Promise<
   await invoke("desktop_avatar_request_stream_stop", { avatarRequestId });
 }
 
+export async function startHitlDecisionStream(): Promise<void> {
+  requireTauriRuntime("HITL Stream");
+  await invoke("hitl_decision_stream_start");
+}
+
+export async function stopHitlDecisionStream(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  await invoke("hitl_decision_stream_stop");
+}
+
+export async function approveHitlDecision(input: HitlDecisionInput): Promise<void> {
+  requireTauriRuntime("HITL Approval");
+  await invoke("hitl_decision_approve", { input });
+}
+
+export async function rejectHitlDecision(input: HitlDecisionInput): Promise<void> {
+  requireTauriRuntime("HITL Ablehnung");
+  await invoke("hitl_decision_reject", { input });
+}
+
+export async function requestMoreInfoForHitl(
+  input: HitlRequestMoreInfoInput
+): Promise<void> {
+  requireTauriRuntime("HITL Rueckfrage");
+  await invoke("hitl_request_more_info", { input });
+}
+
 export async function sendLocalChat(request: LocalChatRequest): Promise<void> {
   requireTauriRuntime("Lokaler Chat");
   await invoke("chat_send_local", { request });
@@ -200,6 +243,48 @@ export async function transcribeAudio(
 ): Promise<string> {
   requireTauriRuntime(t("features.voiceTranscription"));
   return invoke<string>("speech_transcribe", { request });
+}
+
+export async function getTranscriptionProvider(): Promise<TranscriptionProviderId> {
+  requireTauriRuntime(t("features.voiceTranscription"));
+  return invoke<TranscriptionProviderId>("transcription_provider_get");
+}
+
+export async function setTranscriptionProvider(
+  provider: TranscriptionProviderId
+): Promise<TranscriptionProviderId> {
+  requireTauriRuntime(t("features.voiceTranscription"));
+  return invoke<TranscriptionProviderId>("transcription_provider_set", { provider });
+}
+
+export async function startTranscriptionSession(
+  request: TranscriptionSessionStartRequest
+): Promise<TranscriptionSessionStartResult> {
+  requireTauriRuntime(t("features.voiceTranscription"));
+  return invoke<TranscriptionSessionStartResult>("transcription_session_start", { request });
+}
+
+export async function appendTranscriptionAudio(
+  request: TranscriptionSessionAppendAudioRequest
+): Promise<void> {
+  requireTauriRuntime(t("features.voiceTranscription"));
+  await invoke("transcription_session_append_audio", { request });
+}
+
+export async function commitTranscriptionTurn(
+  request: TranscriptionSessionCommitTurnRequest
+): Promise<string> {
+  requireTauriRuntime(t("features.voiceTranscription"));
+  return invoke<string>("transcription_session_commit_turn", { request });
+}
+
+export async function stopTranscriptionSession(
+  request: TranscriptionSessionStopRequest
+): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  await invoke("transcription_session_stop", { request });
 }
 
 export async function listTtsVoices(): Promise<string[]> {
@@ -263,6 +348,29 @@ export function onDesktopAvatarStreamLifecycle(
   );
 }
 
+export function onHitlDecisionStreamEvent(
+  listener: (event: HitlDecisionStreamEvent) => void
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return Promise.resolve(() => {});
+  }
+  return listen<HitlDecisionStreamEvent>("hitl-decision-stream-event", ({ payload }) =>
+    listener(payload)
+  );
+}
+
+export function onHitlDecisionStreamLifecycle(
+  listener: (event: HitlDecisionStreamLifecycleEvent) => void
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return Promise.resolve(() => {});
+  }
+  return listen<HitlDecisionStreamLifecycleEvent>(
+    "hitl-decision-stream-lifecycle",
+    ({ payload }) => listener(payload)
+  );
+}
+
 export function onTtsState(
   listener: (event: TtsStateEvent) => void
 ): Promise<() => void> {
@@ -270,6 +378,29 @@ export function onTtsState(
     return Promise.resolve(() => {});
   }
   return listen<TtsStateEvent>("tts-state", ({ payload }) => listener(payload));
+}
+
+export function onTranscriptionSessionEvent(
+  listener: (event: TranscriptionSessionEvent) => void
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return Promise.resolve(() => {});
+  }
+  return listen<TranscriptionSessionEvent>("transcription-stream-event", ({ payload }) =>
+    listener(payload)
+  );
+}
+
+export function onTranscriptionProviderChanged(
+  listener: (event: TranscriptionProviderChangedEvent) => void
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return Promise.resolve(() => {});
+  }
+  return listen<TranscriptionProviderChangedEvent>(
+    "transcription-provider-changed",
+    ({ payload }) => listener(payload)
+  );
 }
 
 export function onTrayPeekOpen(listener: () => void): Promise<() => void> {

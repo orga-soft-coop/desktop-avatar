@@ -44,10 +44,25 @@ function resolvePeekVisualDiameter(width: number, height: number): number {
   return Math.max(1, diameter - PEEK_SHADOW_PADDING * 2);
 }
 
+function backendConnectionLabel(state: ReturnType<typeof useDesktopCompanion>["backendConnectionState"]) {
+  switch (state) {
+    case "connected":
+      return t("connection.backend.connected");
+    case "disconnected":
+      return t("connection.backend.disconnected");
+    case "unavailable":
+      return t("connection.backend.unavailable");
+    case "connecting":
+    default:
+      return t("connection.backend.connecting");
+  }
+}
+
 interface PanelEntry {
   id: string;
-  source: "request" | "demo";
+  source: "request" | "hitl" | "demo";
   messageId?: string;
+  decisionId?: string;
   demoKind?: DevToolsDemoWidgetKind;
   widget: DesktopAvatarWidgetPayload;
   followUpQuestions: string[];
@@ -189,7 +204,19 @@ export default function App() {
     followUpQuestions: demoFollowUpQuestions(entry.widget)
   }));
 
-  const panelEntries: PanelEntry[] = [...requestPanelEntries, ...demoPanelEntries];
+  const hitlPanelEntries: PanelEntry[] = companion.hitlWidgets.map((widget) => ({
+    id: `hitl:${widget.decisionId}`,
+    source: "hitl",
+    decisionId: widget.decisionId,
+    widget,
+    followUpQuestions: []
+  }));
+
+  const panelEntries: PanelEntry[] = [
+    ...requestPanelEntries,
+    ...hitlPanelEntries,
+    ...demoPanelEntries
+  ];
   const activePanelIndex = panelEntries.findIndex((entry) => entry.id === activePanelEntryId);
   const activePanelEntry =
     activePanelIndex >= 0
@@ -217,6 +244,16 @@ export default function App() {
       : null;
   const hasWidgetSliderNav = displayedPanelEntries.length > 1;
   const widgetArrowTone = displayedActiveWidget?.type === "error" ? "error" : "default";
+  const backendLabel = backendConnectionLabel(companion.backendConnectionState);
+  const pendingHitlCount = companion.hitlWidgets.length;
+  const pendingHitlBadge = pendingHitlCount > 99 ? "99+" : String(pendingHitlCount);
+  const peekBackendLabel =
+    pendingHitlCount > 0
+      ? t("connection.backend.pendingHitl", {
+          count: pendingHitlCount,
+          backend: backendLabel
+        })
+      : backendLabel;
   const cameraConfigSnippet = formatAvatarCameraConfig(cameraConfig);
   const presetSizes = getWindowSizesForPreset(companion.sizePreset);
   const expandedContentWidth = presetSizes.expanded.width;
@@ -395,6 +432,13 @@ export default function App() {
       setActivePanelEntryId(panelEntries[panelEntries.length - 1]!.id);
     }
   }, [activePanelEntryId, panelEntries]);
+
+  useEffect(() => {
+    const latestHitl = companion.hitlWidgets[companion.hitlWidgets.length - 1];
+    if (latestHitl) {
+      setActivePanelEntryId(`hitl:${latestHitl.decisionId}`);
+    }
+  }, [companion.hitlWidgets]);
 
   useEffect(() => {
     // The native shell can change size externally when switching peek/expanded mode.
@@ -596,6 +640,24 @@ export default function App() {
         />
 
         {isPeek ? (
+          <div
+            className="peek-backend-connection-dot"
+            data-state={companion.backendConnectionState}
+            data-has-hitl={pendingHitlCount > 0 ? "true" : "false"}
+            role="status"
+            aria-label={peekBackendLabel}
+            title={peekBackendLabel}
+          >
+            <span className="peek-backend-connection-dot__status" aria-hidden="true" />
+            {pendingHitlCount > 0 ? (
+              <span className="peek-backend-connection-dot__count" aria-hidden="true">
+                {pendingHitlBadge}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {isPeek ? (
           <button
             className="peek-hit-target"
             type="button"
@@ -651,8 +713,14 @@ export default function App() {
               isRecording={companion.isRecording}
               sizePreset={companion.sizePreset}
               ttsEnabled={companion.ttsEnabled}
+              backendConnectionState={companion.backendConnectionState}
+              backendConnectionLabel={backendLabel}
+              locale={companion.locale}
+              supportedLocales={companion.supportedLocales}
               ttsVoices={companion.ttsVoices}
               selectedTtsVoice={companion.selectedTtsVoice}
+              transcriptionProvider={companion.transcriptionProvider}
+              transcriptionProviders={companion.transcriptionProviders}
               latencyDebug={companion.latencyDebug}
               animationNames={animationNames}
               cameraConfig={cameraConfig}
@@ -673,7 +741,9 @@ export default function App() {
               onToggleTheme={toggleUiTheme}
               onToggleRecording={companion.toggleRecording}
               onToggleTts={companion.toggleTts}
+              onSelectLocale={companion.selectLocale}
               onSelectTtsVoice={companion.selectTtsVoice}
+              onSelectTranscriptionProvider={companion.selectTranscriptionProvider}
               onRetry={companion.retryLastPrompt}
               onDragStart={companion.startWindowDrag}
               onSelectAnimation={setForcedAnimation}
@@ -705,6 +775,10 @@ export default function App() {
                   widget={entry.widget}
                   followUpQuestions={entry.followUpQuestions}
                   onSuggestionSelect={companion.submitSuggestion}
+                  onHitlApprove={companion.approveHitl}
+                  onHitlReject={companion.rejectHitl}
+                  onHitlRequestMoreInfo={companion.requestMoreInfoForHitl}
+                  onOpenHitl={companion.openHitl}
                   onDismiss={() => dismissPanelEntry(entry)}
                 />
               ))}

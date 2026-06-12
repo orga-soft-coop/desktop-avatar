@@ -6,6 +6,10 @@ import type {
   DesktopAvatarRequestDocument,
   DesktopAvatarStreamEvent,
   DesktopAvatarStreamLifecycleEvent,
+  HitlDecisionStreamEvent,
+  HitlDecisionStreamLifecycleEvent,
+  TranscriptionProviderChangedEvent,
+  TranscriptionSessionEvent,
   TtsStateEvent
 } from "../lib/contracts";
 
@@ -13,14 +17,22 @@ const mocks = vi.hoisted(() => {
   let streamHandlers: {
     onEvent: ((event: DesktopAvatarStreamEvent) => void) | null;
     onDisconnect: ((event: DesktopAvatarStreamLifecycleEvent) => void) | null;
+    onHitlEvent: ((event: HitlDecisionStreamEvent) => void) | null;
+    onHitlDisconnect: ((event: HitlDecisionStreamLifecycleEvent) => void) | null;
     onTtsState: ((event: TtsStateEvent) => void) | null;
+    onTranscriptionSessionEvent: ((event: TranscriptionSessionEvent) => void) | null;
+    onTranscriptionProviderChanged: ((event: TranscriptionProviderChangedEvent) => void) | null;
     onTrayPeekOpen: (() => void) | null;
     onTrayPeekCollapse: (() => void) | null;
     onTrayPeekPositionChanged: ((position: "top-left" | "top-right" | "bottom-left" | "bottom-right") => void) | null;
   } = {
     onEvent: null,
     onDisconnect: null,
+    onHitlEvent: null,
+    onHitlDisconnect: null,
     onTtsState: null,
+    onTranscriptionSessionEvent: null,
+    onTranscriptionProviderChanged: null,
     onTrayPeekOpen: null,
     onTrayPeekCollapse: null,
     onTrayPeekPositionChanged: null
@@ -29,9 +41,26 @@ const mocks = vi.hoisted(() => {
   return {
     streamHandlers,
     getBootstrapStateMock: vi.fn(),
+    getTranscriptionProviderMock: vi.fn(),
     listTtsVoicesMock: vi.fn(),
     frontendLogMock: vi.fn(),
     onStreamEventMock: vi.fn(),
+    onTranscriptionSessionEventMock: vi.fn(
+      async (handler: (event: TranscriptionSessionEvent) => void) => {
+        streamHandlers.onTranscriptionSessionEvent = handler;
+        return () => {
+          streamHandlers.onTranscriptionSessionEvent = null;
+        };
+      }
+    ),
+    onTranscriptionProviderChangedMock: vi.fn(
+      async (handler: (event: TranscriptionProviderChangedEvent) => void) => {
+        streamHandlers.onTranscriptionProviderChanged = handler;
+        return () => {
+          streamHandlers.onTranscriptionProviderChanged = null;
+        };
+      }
+    ),
     onTrayPeekCollapseMock: vi.fn(async (handler: () => void) => {
       streamHandlers.onTrayPeekCollapse = handler;
       return () => {
@@ -60,6 +89,11 @@ const mocks = vi.hoisted(() => {
         streamHandlers.onTtsState = null;
       };
     }),
+    setTranscriptionProviderMock: vi.fn(),
+    startTranscriptionSessionMock: vi.fn(),
+    appendTranscriptionAudioMock: vi.fn(),
+    commitTranscriptionTurnMock: vi.fn(),
+    stopTranscriptionSessionMock: vi.fn(),
     resizeWindowMock: vi.fn(),
     sendLocalChatMock: vi.fn(),
     setPeekModeMock: vi.fn(),
@@ -84,7 +118,23 @@ const mocks = vi.hoisted(() => {
           streamHandlers.onDisconnect = null;
         })
       };
-    })
+    }),
+    connectHitlDecisionStreamMock: vi.fn(async (args: {
+      onEvent: (event: HitlDecisionStreamEvent) => void;
+      onDisconnect: (event: HitlDecisionStreamLifecycleEvent) => void;
+    }) => {
+      streamHandlers.onHitlEvent = args.onEvent;
+      streamHandlers.onHitlDisconnect = args.onDisconnect;
+      return {
+        close: vi.fn(async () => {
+          streamHandlers.onHitlEvent = null;
+          streamHandlers.onHitlDisconnect = null;
+        })
+      };
+    }),
+    approveHitlDecisionMock: vi.fn(),
+    rejectHitlDecisionMock: vi.fn(),
+    requestMoreInfoForHitlMock: vi.fn()
   };
 });
 
@@ -92,14 +142,23 @@ vi.mock("../lib/desktop-avatar-api", () => ({
   desktopAvatarApiClient: {
     createRequest: mocks.createRequestMock,
     getRequest: mocks.getRequestMock,
-    connectStream: mocks.connectStreamMock
+    connectStream: mocks.connectStreamMock,
+    connectHitlDecisionStream: mocks.connectHitlDecisionStreamMock,
+    approveHitlDecision: mocks.approveHitlDecisionMock,
+    rejectHitlDecision: mocks.rejectHitlDecisionMock,
+    requestMoreInfoForHitl: mocks.requestMoreInfoForHitlMock
   }
 }));
 
 vi.mock("../lib/tauri", () => ({
+  appendTranscriptionAudio: mocks.appendTranscriptionAudioMock,
+  commitTranscriptionTurn: mocks.commitTranscriptionTurnMock,
   frontendLog: mocks.frontendLogMock,
   getBootstrapState: mocks.getBootstrapStateMock,
+  getTranscriptionProvider: mocks.getTranscriptionProviderMock,
   listTtsVoices: mocks.listTtsVoicesMock,
+  onTranscriptionProviderChanged: mocks.onTranscriptionProviderChangedMock,
+  onTranscriptionSessionEvent: mocks.onTranscriptionSessionEventMock,
   onStreamEvent: mocks.onStreamEventMock,
   onTrayPeekCollapse: mocks.onTrayPeekCollapseMock,
   onTrayPeekOpen: mocks.onTrayPeekOpenMock,
@@ -109,10 +168,13 @@ vi.mock("../lib/tauri", () => ({
   sendLocalChat: mocks.sendLocalChatMock,
   setPeekMode: mocks.setPeekModeMock,
   setPeekPosition: mocks.setPeekPositionMock,
+  setTranscriptionProvider: mocks.setTranscriptionProviderMock,
   speakText: mocks.speakTextMock,
+  startTranscriptionSession: mocks.startTranscriptionSessionMock,
   startWindowDrag: mocks.startWindowDragMock,
   startWindowDragForMode: mocks.startWindowDragMock,
   stopSpeaking: mocks.stopSpeakingMock,
+  stopTranscriptionSession: mocks.stopTranscriptionSessionMock,
   transcribeAudio: mocks.transcribeAudioMock
 }));
 
@@ -120,6 +182,56 @@ import { useDesktopCompanion } from "../hooks/useDesktopCompanion";
 
 function latestAssistantText(messages: ReturnType<typeof useDesktopCompanion>["messages"]) {
   return [...messages].reverse().find((message) => message.role === "assistant")?.text ?? "";
+}
+
+function requiredHitlEvent(overrides: {
+  decisionId?: string;
+  runId?: string;
+  proposalId?: string;
+  title?: string;
+} = {}): HitlDecisionStreamEvent {
+  const decisionId = overrides.decisionId ?? "proposal::run%3A1::proposal%3A1";
+  const runId = overrides.runId ?? "run:1";
+  const proposalId = overrides.proposalId ?? "proposal:1";
+  const title = overrides.title ?? "PURCHASE ORDER";
+  return {
+    type: "decision",
+    kind: "required",
+    decisionId,
+    runId,
+    proposalId,
+    status: "pending",
+    item: {
+      decisionId,
+      runId,
+      proposalId,
+      actionId: "PURCHASE_ORDER",
+      title,
+      description: "Supplier order needs approval.",
+      agent: {
+        agentId: "studio-agent:purchase",
+        agentName: "Purchase Agent",
+        agentAvatarId: 1
+      },
+      timestamp: "2026-06-12T12:00:00.000Z",
+      mode: "SIMULATION",
+      status: "pending",
+      priority: "high",
+      contextSections: [],
+      payload: {}
+    },
+    emittedAt: "2026-06-12T12:00:00.000Z"
+  };
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("useDesktopCompanion desktop avatar integration", () => {
@@ -131,7 +243,11 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     window.localStorage.clear();
     mocks.streamHandlers.onEvent = null;
     mocks.streamHandlers.onDisconnect = null;
+    mocks.streamHandlers.onHitlEvent = null;
+    mocks.streamHandlers.onHitlDisconnect = null;
     mocks.streamHandlers.onTtsState = null;
+    mocks.streamHandlers.onTranscriptionSessionEvent = null;
+    mocks.streamHandlers.onTranscriptionProviderChanged = null;
     mocks.streamHandlers.onTrayPeekOpen = null;
     mocks.streamHandlers.onTrayPeekCollapse = null;
     mocks.streamHandlers.onTrayPeekPositionChanged = null;
@@ -139,8 +255,13 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       avatarManifest: null,
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
-      ttsEnabled: false
+      ttsEnabled: false,
+      transcriptionProvider: "openai-realtime",
+      transcriptionProviders: ["openai-realtime", "openai-file-fallback"]
     });
+    mocks.getTranscriptionProviderMock
+      .mockReset()
+      .mockResolvedValue("openai-realtime");
     mocks.listTtsVoicesMock.mockReset().mockResolvedValue([]);
     mocks.frontendLogMock.mockReset().mockResolvedValue(undefined);
     mocks.onStreamEventMock.mockReset().mockResolvedValue(() => {});
@@ -171,6 +292,34 @@ describe("useDesktopCompanion desktop avatar integration", () => {
         }
       );
     mocks.onTtsStateMock.mockClear();
+    mocks.onTranscriptionSessionEventMock
+      .mockReset()
+      .mockImplementation(async (handler: (event: TranscriptionSessionEvent) => void) => {
+        mocks.streamHandlers.onTranscriptionSessionEvent = handler;
+        return () => {
+          mocks.streamHandlers.onTranscriptionSessionEvent = null;
+        };
+      });
+    mocks.onTranscriptionProviderChangedMock
+      .mockReset()
+      .mockImplementation(
+        async (handler: (event: TranscriptionProviderChangedEvent) => void) => {
+          mocks.streamHandlers.onTranscriptionProviderChanged = handler;
+          return () => {
+            mocks.streamHandlers.onTranscriptionProviderChanged = null;
+          };
+        }
+      );
+    mocks.setTranscriptionProviderMock.mockReset().mockResolvedValue("openai-realtime");
+    mocks.startTranscriptionSessionMock.mockReset().mockResolvedValue({
+      sessionId: "session-1",
+      provider: "openai-realtime"
+    });
+    mocks.appendTranscriptionAudioMock.mockReset().mockResolvedValue(undefined);
+    mocks.commitTranscriptionTurnMock
+      .mockReset()
+      .mockResolvedValue("Test-Transkription");
+    mocks.stopTranscriptionSessionMock.mockReset().mockResolvedValue(undefined);
     mocks.resizeWindowMock.mockReset().mockResolvedValue(undefined);
     mocks.sendLocalChatMock.mockReset().mockResolvedValue(undefined);
     mocks.setPeekModeMock.mockReset().mockResolvedValue(undefined);
@@ -182,6 +331,332 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     mocks.createRequestMock.mockReset();
     mocks.getRequestMock.mockReset();
     mocks.connectStreamMock.mockClear();
+    mocks.connectHitlDecisionStreamMock.mockClear();
+    mocks.approveHitlDecisionMock.mockReset().mockResolvedValue(undefined);
+    mocks.rejectHitlDecisionMock.mockReset().mockResolvedValue(undefined);
+    mocks.requestMoreInfoForHitlMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("adds a HITL card and announces a required decision once", async () => {
+    mocks.getBootstrapStateMock.mockResolvedValue({
+      avatarManifest: null,
+      collapsedSize: { width: 520, height: 780 },
+      expandedSize: { width: 520, height: 920 },
+      ttsEnabled: true,
+      transcriptionProvider: "openai-realtime",
+      transcriptionProviders: ["openai-realtime", "openai-file-fallback"]
+    });
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalled());
+
+    const event: HitlDecisionStreamEvent = {
+      type: "decision",
+      kind: "required",
+      decisionId: "proposal::run%3A1::proposal%3A1",
+      runId: "run:1",
+      proposalId: "proposal:1",
+      status: "pending",
+      item: {
+        decisionId: "proposal::run%3A1::proposal%3A1",
+        runId: "run:1",
+        proposalId: "proposal:1",
+        actionId: "PURCHASE_ORDER",
+        title: "PURCHASE ORDER",
+        description: "Supplier order needs approval.",
+        agent: {
+          agentId: "studio-agent:purchase",
+          agentName: "Purchase Agent",
+          agentAvatarId: 1
+        },
+        timestamp: "2026-06-12T12:00:00.000Z",
+        mode: "SIMULATION",
+        status: "pending",
+        priority: "high",
+        contextSections: [],
+        payload: {}
+      },
+      emittedAt: "2026-06-12T12:00:00.000Z"
+    };
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.(event);
+      mocks.streamHandlers.onHitlEvent?.(event);
+    });
+
+    await waitFor(() => expect(result.current.hitlWidgets).toHaveLength(1));
+    expect(result.current.hitlWidgets[0]?.title).toBe("PURCHASE ORDER");
+    expect(mocks.speakTextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("hydrates pending HITL cards from the initial stream snapshot", async () => {
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalled());
+
+    const event = requiredHitlEvent();
+    if (event.type !== "decision" || !event.item) {
+      throw new Error("Test event must include a HITL item.");
+    }
+    const item = event.item;
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.({
+        type: "snapshot",
+        items: [item],
+        emittedAt: "2026-06-12T12:00:00.000Z"
+      });
+    });
+
+    await waitFor(() => expect(result.current.hitlWidgets).toHaveLength(1));
+    expect(result.current.hitlWidgets[0]?.decisionId).toBe(
+      "proposal::run%3A1::proposal%3A1"
+    );
+  });
+
+  it("reconnects the HITL stream so backend snapshots can replay pending work", async () => {
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.({
+        type: "ready",
+        emittedAt: "2026-06-12T12:00:00.000Z"
+      });
+    });
+    expect(result.current.backendConnectionState).toBe("connected");
+
+    vi.useFakeTimers();
+    act(() => {
+      mocks.streamHandlers.onHitlDisconnect?.({
+        phase: "error",
+        reason: "socket lost"
+      });
+    });
+    expect(result.current.backendConnectionState).toBe("disconnected");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalledTimes(2);
+
+    const event = requiredHitlEvent();
+    if (event.type !== "decision" || !event.item) {
+      throw new Error("Test event must include a HITL item.");
+    }
+    const item = event.item;
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.({
+        type: "snapshot",
+        items: [item],
+        emittedAt: "2026-06-12T12:00:05.000Z"
+      });
+    });
+
+    expect(result.current.hitlWidgets).toHaveLength(1);
+  });
+
+  it("does not show the global polling fallback when the optional HITL stream disconnects", async () => {
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalled());
+    expect(result.current.backendConnectionState).toBe("connecting");
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.({
+        type: "ready",
+        emittedAt: "2026-06-12T12:00:00.000Z"
+      });
+    });
+    expect(result.current.backendConnectionState).toBe("connected");
+
+    act(() => {
+      mocks.streamHandlers.onHitlDisconnect?.({
+        phase: "error",
+        reason: "HITL stream returned 404"
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.frontendLogMock).toHaveBeenCalledWith(
+        "warn",
+        "hitl stream disconnected during error: HITL stream returned 404"
+      )
+    );
+    expect(result.current.status).not.toBe(
+      "Verbindung wird wiederhergestellt... nutze Polling-Fallback."
+    );
+    expect(result.current.status).not.toBe(
+      "Verbindung wird wiederhergestellt… nutze Polling-Fallback."
+    );
+    expect(result.current.backendConnectionState).toBe("disconnected");
+  });
+
+  it("approves SIMULATION HITL decisions inline", async () => {
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalled());
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.({
+        type: "decision",
+        kind: "required",
+        decisionId: "proposal::run%3A1::proposal%3A1",
+        runId: "run:1",
+        proposalId: "proposal:1",
+        status: "pending",
+        item: {
+          decisionId: "proposal::run%3A1::proposal%3A1",
+          runId: "run:1",
+          proposalId: "proposal:1",
+          actionId: "PURCHASE_ORDER",
+          title: "PURCHASE ORDER",
+          description: "Supplier order needs approval.",
+          agent: {
+            agentId: "studio-agent:purchase",
+            agentName: "Purchase Agent",
+            agentAvatarId: 1
+          },
+          timestamp: "2026-06-12T12:00:00.000Z",
+          mode: "SIMULATION",
+          status: "pending",
+          priority: "high",
+          contextSections: [],
+          payload: {}
+        },
+        emittedAt: "2026-06-12T12:00:00.000Z"
+      });
+    });
+
+    await waitFor(() => expect(result.current.hitlWidgets).toHaveLength(1));
+    await act(async () => {
+      await result.current.approveHitl("proposal::run%3A1::proposal%3A1", "ok");
+    });
+
+    expect(mocks.approveHitlDecisionMock).toHaveBeenCalledWith({
+      runId: "run:1",
+      proposalId: "proposal:1",
+      decisionReason: "ok"
+    });
+    expect(result.current.status).toBe("HITL-Antwort gesendet.");
+    expect(result.current.hitlWidgets).toHaveLength(0);
+  });
+
+  it("optimistically closes a HITL card while approval is being sent", async () => {
+    const pendingApproval = deferred();
+    mocks.approveHitlDecisionMock.mockReturnValueOnce(pendingApproval.promise);
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalled());
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.(requiredHitlEvent());
+    });
+
+    await waitFor(() => expect(result.current.hitlWidgets).toHaveLength(1));
+    let approvePromise: Promise<void> | null = null;
+    await act(async () => {
+      approvePromise = result.current.approveHitl(
+        "proposal::run%3A1::proposal%3A1",
+        "ok",
+      );
+    });
+
+    expect(result.current.hitlWidgets).toHaveLength(0);
+    expect(result.current.status).toBe("HITL-Antwort wird gesendet...");
+
+    await act(async () => {
+      pendingApproval.resolve(undefined);
+      await approvePromise;
+    });
+
+    expect(result.current.status).toBe("HITL-Antwort gesendet.");
+    expect(result.current.hitlWidgets).toHaveLength(0);
+  });
+
+  it("restores an optimistically closed HITL card when approval fails", async () => {
+    const pendingApproval = deferred();
+    mocks.approveHitlDecisionMock.mockReturnValueOnce(pendingApproval.promise);
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalled());
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.(requiredHitlEvent());
+    });
+
+    await waitFor(() => expect(result.current.hitlWidgets).toHaveLength(1));
+    let approvePromise: Promise<void> | null = null;
+    await act(async () => {
+      approvePromise = result.current.approveHitl(
+        "proposal::run%3A1::proposal%3A1",
+        "ok",
+      );
+    });
+    expect(result.current.hitlWidgets).toHaveLength(0);
+
+    await act(async () => {
+      pendingApproval.reject(new Error("backend unavailable"));
+      await approvePromise;
+    });
+
+    expect(result.current.status).toBe("HITL-Aktion fehlgeschlagen.");
+    expect(result.current.hitlWidgets).toHaveLength(1);
+  });
+
+  it("removes HITL cards when the backend reports a non-pending status", async () => {
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalled());
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.(requiredHitlEvent());
+    });
+    await waitFor(() => expect(result.current.hitlWidgets).toHaveLength(1));
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.({
+        type: "decision",
+        kind: "updated",
+        decisionId: "proposal::run%3A1::proposal%3A1",
+        runId: "run:1",
+        proposalId: "proposal:1",
+        status: "approved",
+        emittedAt: "2026-06-12T12:00:01.000Z"
+      });
+    });
+
+    expect(result.current.hitlWidgets).toHaveLength(0);
+  });
+
+  it("sends HITL request-more-info responses back to the backend run", async () => {
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalled());
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.(requiredHitlEvent());
+      mocks.streamHandlers.onHitlEvent?.(
+        requiredHitlEvent({
+          decisionId: "proposal::run%3A2::proposal%3A2",
+          runId: "run:2",
+          proposalId: "proposal:2",
+          title: "SECOND PURCHASE ORDER"
+        }),
+      );
+    });
+
+    await waitFor(() => expect(result.current.hitlWidgets).toHaveLength(2));
+    await act(async () => {
+      await result.current.requestMoreInfoForHitl(
+        "proposal::run%3A1::proposal%3A1",
+        " Bitte Lieferantwerk pruefen ",
+      );
+    });
+
+    expect(mocks.requestMoreInfoForHitlMock).toHaveBeenCalledWith({
+      runId: "run:1",
+      message: "Bitte Lieferantwerk pruefen"
+    });
+    expect(result.current.status).toBe("Rückfrage gesendet. HITL bleibt offen.");
+    expect(result.current.hitlWidgets).toHaveLength(2);
+    expect(result.current.hitlWidgets[0]?.decisionId).toBe(
+      "proposal::run%3A1::proposal%3A1",
+    );
   });
 
   it("uses selected voice and persists TTS off across remounts", async () => {
@@ -189,7 +664,9 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       avatarManifest: null,
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
-      ttsEnabled: true
+      ttsEnabled: true,
+      transcriptionProvider: "openai-realtime",
+      transcriptionProviders: ["openai-realtime", "openai-file-fallback"]
     });
     mocks.listTtsVoicesMock.mockResolvedValue(["onyx", "echo"]);
     mocks.createRequestMock.mockResolvedValue({
@@ -251,7 +728,9 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       avatarManifest: null,
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
-      ttsEnabled: true
+      ttsEnabled: true,
+      transcriptionProvider: "openai-realtime",
+      transcriptionProviders: ["openai-realtime", "openai-file-fallback"]
     });
     mocks.listTtsVoicesMock.mockResolvedValue(["onyx", "shimmer", "echo"]);
 
@@ -422,7 +901,9 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       avatarManifest: null,
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
-      ttsEnabled: true
+      ttsEnabled: true,
+      transcriptionProvider: "openai-realtime",
+      transcriptionProviders: ["openai-realtime", "openai-file-fallback"]
     });
     mocks.createRequestMock.mockResolvedValue({
       accepted: true,

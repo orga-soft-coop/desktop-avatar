@@ -11,15 +11,20 @@ import type {
   ChatMessage,
   CompanionState,
   CreateDesktopAvatarRequestInput,
+  BackendConnectionState,
   DesktopAvatarRequestDocument,
   DesktopAvatarStreamEvent,
+  DesktopAvatarHitlApprovalWidget,
   DevToolsLatencySnapshot,
+  HitlDecisionQueueItem,
+  HitlDecisionStreamEvent,
   LocalChatMessageInput,
   LocalChatRequest,
   MessageSource,
   PeekMode,
   PeekPosition,
   PromptRoute,
+  TranscriptionProviderId,
   StreamDeltaPayload,
   StreamEnvelope,
   StreamErrorPayload,
@@ -28,6 +33,7 @@ import type {
 } from "../lib/contracts";
 import {
   desktopAvatarApiClient,
+  type HitlDecisionStreamConnection,
   type DesktopAvatarStreamConnection,
 } from "../lib/desktop-avatar-api";
 import {
@@ -37,11 +43,22 @@ import {
   isDesktopAvatarTerminalStatus,
 } from "../lib/desktop-avatar-orchestrator";
 import { routePrompt } from "../lib/router";
-import { t } from "../lib/i18n";
+import {
+  getLocale,
+  setLocale as setI18nLocale,
+  supportedLocales,
+  t,
+  type LocaleId,
+} from "../lib/i18n";
 import {
   frontendLog,
+  appendTranscriptionAudio,
+  commitTranscriptionTurn,
+  getTranscriptionProvider,
   getBootstrapState,
   listTtsVoices,
+  onTranscriptionProviderChanged,
+  onTranscriptionSessionEvent,
   onTrayPeekCollapse,
   onTrayPeekOpen,
   onTrayPeekPositionChanged,
@@ -54,7 +71,9 @@ import {
   startWindowDragForMode,
   speakText,
   stopSpeaking,
-  transcribeAudio,
+  startTranscriptionSession,
+  stopTranscriptionSession,
+  setTranscriptionProvider,
   type WindowResizeAnchor,
 } from "../lib/tauri";
 import {
@@ -72,8 +91,6 @@ const PEEK_POSITION_STORAGE_KEY = "desktop-avatar.peekPosition";
 const PEEK_ANIMATION_ENABLED_STORAGE_KEY =
   "desktop-avatar.peekAnimationEnabled";
 const LAST_EXPANDED_SIZE_STORAGE_KEY = "desktop-avatar.lastExpandedSize";
-const LOCAL_CHAT_SYSTEM_PROMPT = t("localChat.systemPrompt");
-const LOCAL_CHAT_FALLBACK_RESPONSE = t("status.localFallback");
 const DEFAULT_PEEK_MODE: PeekMode = "peek";
 const DEFAULT_PEEK_POSITION: PeekPosition = "top-right";
 const MODE_TRANSITION_COLLAPSE_OUT_MS = 210;
@@ -90,6 +107,9 @@ const VOICE_MAX_INITIAL_SILENCE_MS = 7_000;
 const VOICE_MIN_TRANSCRIPTION_MS = 700;
 const VOICE_MIN_TRANSCRIPTION_BYTES = 1_500;
 const VOICE_TRANSCRIPT_PREVIEW_MS = 2200;
+const VOICE_PCM_SAMPLE_RATE = 24_000;
+const VOICE_STT_CHUNK_BYTES = 12 * 1024;
+const HITL_STREAM_RECONNECT_MS = 5_000;
 const LEGACY_OPENAI_TTS_DEFAULT_VOICE = "onyx";
 const PREFERRED_OPENAI_TTS_DEFAULT_VOICE = "shimmer";
 
@@ -173,6 +193,7 @@ function buildUserMessage(text: string, source: MessageSource): ChatMessage {
 }
 
 function buildLocalHistory(messages: ChatMessage[]): LocalChatMessageInput[] {
+  const systemPrompt = t("localChat.systemPrompt");
   const history = messages
     .filter((message) => message.role !== "system" && message.text.trim())
     .map<LocalChatMessageInput>((message) => ({
@@ -183,7 +204,7 @@ function buildLocalHistory(messages: ChatMessage[]): LocalChatMessageInput[] {
   return [
     {
       role: "system",
-      content: LOCAL_CHAT_SYSTEM_PROMPT,
+      content: systemPrompt,
     },
     ...history,
   ];
@@ -204,7 +225,7 @@ function sanitizeLocalAssistantText(value: string | null | undefined): string {
   }
 
   const fullPromptPattern = new RegExp(
-    escapeRegExp(LOCAL_CHAT_SYSTEM_PROMPT),
+    escapeRegExp(t("localChat.systemPrompt")),
     "gi",
   );
   sanitized = sanitized.replace(fullPromptPattern, "").trim();
@@ -216,14 +237,131 @@ function sanitizeLocalAssistantText(value: string | null | undefined): string {
   return sanitized;
 }
 
-async function blobToBase64(blob: Blob): Promise<string> {
-  const arrayBuffer = await blob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
+function toHitlWidget(item: HitlDecisionQueueItem): DesktopAvatarHitlApprovalWidget {
+  return {
+    type: "hitlApproval",
+    decisionId: item.decisionId,
+    runId: item.runId,
+    ...(item.proposalId ? { proposalId: item.proposalId } : {}),
+    ...(item.actionId ? { actionId: item.actionId } : {}),
+    title: item.title,
+    description: item.description,
+    agentName: item.agent.agentName,
+    mode: item.mode,
+    status: item.status,
+    priority: item.priority,
+    contextSections: item.contextSections,
+  };
+}
+
+function upsertHitlWidget(
+  widgets: DesktopAvatarHitlApprovalWidget[],
+  next: DesktopAvatarHitlApprovalWidget,
+): DesktopAvatarHitlApprovalWidget[] {
+  const index = widgets.findIndex((widget) => widget.decisionId === next.decisionId);
+  if (index < 0) {
+    return [...widgets, next];
+  }
+  return widgets.map((widget, candidateIndex) =>
+    candidateIndex === index ? next : widget,
+  );
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
+  for (const value of bytes) {
+    binary += String.fromCharCode(value);
+  }
   return btoa(binary);
+}
+
+function splitBytesToBase64Chunks(
+  bytes: Uint8Array,
+  chunkSize = VOICE_STT_CHUNK_BYTES,
+): string[] {
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+    chunks.push(bytesToBase64(chunk));
+  }
+  return chunks;
+}
+
+function clampSample(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value > 1) {
+    return 1;
+  }
+  if (value < -1) {
+    return -1;
+  }
+  return value;
+}
+
+function readMixedSample(buffer: AudioBuffer, frameIndex: number): number {
+  const clampedIndex = Math.max(0, Math.min(buffer.length - 1, frameIndex));
+  let sum = 0;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    sum += buffer.getChannelData(channel)[clampedIndex] ?? 0;
+  }
+  return sum / Math.max(1, buffer.numberOfChannels);
+}
+
+function audioBufferToPcm16(buffer: AudioBuffer, targetSampleRate = VOICE_PCM_SAMPLE_RATE): Uint8Array {
+  const frameCount = Math.max(
+    1,
+    Math.round((buffer.length * targetSampleRate) / buffer.sampleRate),
+  );
+  const pcm = new Uint8Array(frameCount * 2);
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const sourcePosition = (frame * buffer.sampleRate) / targetSampleRate;
+    const leftIndex = Math.floor(sourcePosition);
+    const rightIndex = Math.min(leftIndex + 1, buffer.length - 1);
+    const ratio = sourcePosition - leftIndex;
+    const leftSample = readMixedSample(buffer, leftIndex);
+    const rightSample = readMixedSample(buffer, rightIndex);
+    const interpolated = clampSample(leftSample + (rightSample - leftSample) * ratio);
+    const int16 = interpolated < 0 ? interpolated * 0x8000 : interpolated * 0x7fff;
+    const signed = Math.max(-32768, Math.min(32767, Math.round(int16)));
+    const byteOffset = frame * 2;
+    pcm[byteOffset] = signed & 0xff;
+    pcm[byteOffset + 1] = (signed >> 8) & 0xff;
+  }
+  return pcm;
+}
+
+async function decodeBlobToAudioBuffer(blob: Blob): Promise<AudioBuffer> {
+  const audioContext = new AudioContext();
+  try {
+    const arrayBuffer = await blob.arrayBuffer();
+    return await audioContext.decodeAudioData(arrayBuffer.slice(0));
+  } finally {
+    await audioContext.close().catch(() => undefined);
+  }
+}
+
+async function prepareTranscriptionUpload(
+  blob: Blob,
+  provider: TranscriptionProviderId,
+): Promise<{ mimeType: string; chunks: string[]; totalBytes: number }> {
+  if (provider === "openai-realtime") {
+    const audioBuffer = await decodeBlobToAudioBuffer(blob);
+    const pcm = audioBufferToPcm16(audioBuffer, VOICE_PCM_SAMPLE_RATE);
+    return {
+      mimeType: "audio/pcm",
+      chunks: splitBytesToBase64Chunks(pcm),
+      totalBytes: pcm.length,
+    };
+  }
+
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  return {
+    mimeType: blob.type || "audio/webm",
+    chunks: splitBytesToBase64Chunks(bytes),
+    totalBytes: bytes.length,
+  };
 }
 
 function preferredMimeType(): string {
@@ -601,6 +739,12 @@ export function useDesktopCompanion() {
   const [ttsEnabled, setTtsEnabled] = useState(
     () => readStoredTtsEnabled() ?? true,
   );
+  const [locale, setLocaleState] = useState<LocaleId>(() => getLocale());
+  const [transcriptionProvider, setTranscriptionProviderState] =
+    useState<TranscriptionProviderId>("openai-realtime");
+  const [transcriptionProviders, setTranscriptionProvidersState] = useState<
+    TranscriptionProviderId[]
+  >(["openai-realtime", "openai-file-fallback"]);
   const [ttsVoices, setTtsVoices] = useState<string[]>([]);
   const [selectedTtsVoice, setSelectedTtsVoiceState] = useState<string | null>(
     () => readStoredTtsVoice(),
@@ -622,10 +766,14 @@ export function useDesktopCompanion() {
   );
   const [latencyTimeline, setLatencyTimeline] =
     useState<LatencyTimeline | null>(null);
+  const [hitlWidgets, setHitlWidgets] = useState<DesktopAvatarHitlApprovalWidget[]>([]);
+  const [backendConnectionState, setBackendConnectionState] =
+    useState<BackendConnectionState>("connecting");
 
   const requestContextsRef = useRef(new Map<string, SubmissionContext>());
   const messagesRef = useRef<ChatMessage[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const activeTranscriptionSessionIdRef = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recordingAudioContextRef = useRef<AudioContext | null>(null);
@@ -649,12 +797,172 @@ export function useDesktopCompanion() {
   );
   const desktopAvatarConnectionRef =
     useRef<DesktopAvatarStreamConnection | null>(null);
+  const hitlDecisionConnectionRef =
+    useRef<HitlDecisionStreamConnection | null>(null);
+  const announcedHitlDecisionIdsRef = useRef(new Set<string>());
+  const locallySubmittedHitlDecisionIdsRef = useRef(new Set<string>());
   const desktopAvatarPollTimeoutRef = useRef<number | null>(null);
   const desktopAvatarPollAttemptRef = useRef(0);
   const desktopAvatarPollErrorCountRef = useRef(0);
   const lastSpokenDesktopAvatarKeyRef = useRef<string | null>(null);
   const isTtsSpeakingRef = useRef(false);
   const peekModeRef = useRef<PeekMode>(peekMode);
+  const ttsEnabledRef = useRef(ttsEnabled);
+  const selectedTtsVoiceRef = useRef(selectedTtsVoice);
+
+  useEffect(() => {
+    ttsEnabledRef.current = ttsEnabled;
+  }, [ttsEnabled]);
+
+  useEffect(() => {
+    selectedTtsVoiceRef.current = selectedTtsVoice;
+  }, [selectedTtsVoice]);
+
+  useEffect(() => {
+    function announceHitl(widget: DesktopAvatarHitlApprovalWidget): void {
+      if (announcedHitlDecisionIdsRef.current.has(widget.decisionId)) {
+        return;
+      }
+      announcedHitlDecisionIdsRef.current.add(widget.decisionId);
+      const announcement = t("widgets.hitl.announcement", { title: widget.title });
+      setStatus(announcement);
+      setCompanionState("thinking");
+      if (ttsEnabledRef.current) {
+        void speakText(
+          `hitl:${widget.decisionId}`,
+          announcement,
+          selectedTtsVoiceRef.current,
+        );
+      }
+    }
+
+    function handleHitlEvent(event: HitlDecisionStreamEvent): void {
+      setBackendConnectionState("connected");
+      if (event.type === "snapshot") {
+        setHitlWidgets(
+          event.items
+            .filter(
+              (item) =>
+                item.status === "pending" &&
+                !locallySubmittedHitlDecisionIdsRef.current.has(item.decisionId),
+            )
+            .map((item) => toHitlWidget(item)),
+        );
+        return;
+      }
+      if (event.type !== "decision") {
+        return;
+      }
+      if (
+        event.kind === "resolved" ||
+        event.kind === "execution_started" ||
+        event.kind === "execution_finished" ||
+        event.status !== "pending"
+      ) {
+        locallySubmittedHitlDecisionIdsRef.current.delete(event.decisionId);
+        setHitlWidgets((current) =>
+          current.filter((widget) => widget.decisionId !== event.decisionId),
+        );
+        setStatus(t("widgets.hitl.updated"));
+        return;
+      }
+      if (!event.item) {
+        return;
+      }
+      if (locallySubmittedHitlDecisionIdsRef.current.has(event.decisionId)) {
+        return;
+      }
+      const widget = toHitlWidget(event.item);
+      setHitlWidgets((current) => upsertHitlWidget(current, widget));
+      if (event.kind === "required") {
+        announceHitl(widget);
+      }
+    }
+
+    let active = true;
+    let reconnectTimeoutId: number | null = null;
+    let connecting = false;
+
+    function clearReconnectTimeout(): void {
+      if (reconnectTimeoutId === null) {
+        return;
+      }
+      window.clearTimeout(reconnectTimeoutId);
+      reconnectTimeoutId = null;
+    }
+
+    function scheduleReconnect(): void {
+      if (!active || reconnectTimeoutId !== null) {
+        return;
+      }
+      reconnectTimeoutId = window.setTimeout(() => {
+        reconnectTimeoutId = null;
+        void connectHitlStream();
+      }, HITL_STREAM_RECONNECT_MS);
+    }
+
+    async function connectHitlStream(): Promise<void> {
+      if (!active || connecting) {
+        return;
+      }
+      connecting = true;
+      setBackendConnectionState((current) =>
+        current === "connected" ? current : "connecting",
+      );
+      const previousConnection = hitlDecisionConnectionRef.current;
+      hitlDecisionConnectionRef.current = null;
+      try {
+        await previousConnection?.close().catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          void frontendLog(
+            "warn",
+            `hitl stream cleanup before reconnect failed: ${message}`,
+          );
+        });
+        const connection =
+          await desktopAvatarApiClient.connectHitlDecisionStream({
+            onEvent: handleHitlEvent,
+            onDisconnect: (event) => {
+              if (!active) {
+                return;
+              }
+              const reason = event.reason ? `: ${event.reason}` : "";
+              setBackendConnectionState("disconnected");
+              void frontendLog(
+                "warn",
+                `hitl stream disconnected during ${event.phase}${reason}`,
+              );
+              scheduleReconnect();
+            },
+          });
+        if (!active) {
+          void connection.close();
+          return;
+        }
+        hitlDecisionConnectionRef.current = connection;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setBackendConnectionState("unavailable");
+        void frontendLog("warn", `hitl stream unavailable: ${message}`);
+        scheduleReconnect();
+      } finally {
+        connecting = false;
+      }
+    }
+
+    void connectHitlStream();
+
+    return () => {
+      active = false;
+      clearReconnectTimeout();
+      const connection = hitlDecisionConnectionRef.current;
+      hitlDecisionConnectionRef.current = null;
+      void connection?.close();
+    };
+  }, []);
+  const transcriptionProviderRef = useRef<TranscriptionProviderId>(
+    transcriptionProvider,
+  );
   const applyPeekModeRef = useRef<(mode: PeekMode) => Promise<void>>(
     async () => {},
   );
@@ -670,6 +978,10 @@ export function useDesktopCompanion() {
   useEffect(() => {
     peekModeRef.current = peekMode;
   }, [peekMode]);
+
+  useEffect(() => {
+    transcriptionProviderRef.current = transcriptionProvider;
+  }, [transcriptionProvider]);
 
   const patchLatencyByRequestKey = useCallback(
     (
@@ -1092,6 +1404,8 @@ export function useDesktopCompanion() {
   useEffect(() => {
     let unlistenStream: (() => void) | undefined;
     let unlistenTts: (() => void) | undefined;
+    let unlistenTranscription: (() => void) | undefined;
+    let unlistenTranscriptionProvider: (() => void) | undefined;
     let unlistenTrayPeekOpen: (() => void) | undefined;
     let unlistenTrayPeekCollapse: (() => void) | undefined;
     let unlistenTrayPeekPositionChanged: (() => void) | undefined;
@@ -1105,6 +1419,14 @@ export function useDesktopCompanion() {
         storeTtsEnabled(next);
         return next;
       });
+      setTranscriptionProviderState(bootstrap.transcriptionProvider);
+      setTranscriptionProvidersState(bootstrap.transcriptionProviders);
+
+      void getTranscriptionProvider()
+        .then((provider) => {
+          setTranscriptionProviderState(provider);
+        })
+        .catch(() => undefined);
       const presetSizes = getWindowSizesForPreset(sizePreset);
       const expandedHeight = Math.max(
         presetSizes.expanded.height,
@@ -1190,6 +1512,32 @@ export function useDesktopCompanion() {
       unlistenTts = unlisten;
     });
 
+    void onTranscriptionSessionEvent((event) => {
+      if (event.type === "partial") {
+        setStatus(
+          t("status.transcribingPartial", {
+            text: event.text.trim(),
+          }),
+        );
+        setCompanionState("transcribing");
+        return;
+      }
+      if (event.type === "error") {
+        void frontendLog(
+          "warn",
+          `transcription provider ${event.provider} failed: ${event.message}`,
+        );
+      }
+    }).then((unlisten) => {
+      unlistenTranscription = unlisten;
+    });
+
+    void onTranscriptionProviderChanged((event) => {
+      setTranscriptionProviderState(event.provider);
+    }).then((unlisten) => {
+      unlistenTranscriptionProvider = unlisten;
+    });
+
     void onTrayPeekOpen(() => {
       void applyPeekModeRef.current("expanded");
     }).then((unlisten) => {
@@ -1215,12 +1563,20 @@ export function useDesktopCompanion() {
     return () => {
       unlistenStream?.();
       unlistenTts?.();
+      unlistenTranscription?.();
+      unlistenTranscriptionProvider?.();
       unlistenTrayPeekOpen?.();
       unlistenTrayPeekCollapse?.();
       unlistenTrayPeekPositionChanged?.();
       clearRecordingMonitor();
       clearRecordingStream();
       mediaRecorderRef.current = null;
+      if (activeTranscriptionSessionIdRef.current) {
+        void stopTranscriptionSession({
+          sessionId: activeTranscriptionSessionIdRef.current,
+        });
+        activeTranscriptionSessionIdRef.current = null;
+      }
       chunksRef.current = [];
       recordingAutoStopReasonRef.current = null;
       void cleanupDesktopAvatarRuntime();
@@ -1338,7 +1694,7 @@ export function useDesktopCompanion() {
       const cleanedSpeech = sanitizeLocalAssistantText(payload.speechText);
       const fallbackUsed = !cleanedDisplay && !cleanedSpeech;
       const displayText =
-        cleanedDisplay || cleanedSpeech || LOCAL_CHAT_FALLBACK_RESPONSE;
+        cleanedDisplay || cleanedSpeech || t("status.localFallback");
       const speechText = cleanedSpeech || cleanedDisplay || displayText;
       if (fallbackUsed) {
         void frontendLog(
@@ -1753,6 +2109,12 @@ export function useDesktopCompanion() {
         stream,
         mimeType ? { mimeType } : undefined,
       );
+      const transcriptionSessionId = crypto.randomUUID();
+      await startTranscriptionSession({
+        sessionId: transcriptionSessionId,
+        locale: navigator.language,
+      });
+      activeTranscriptionSessionIdRef.current = transcriptionSessionId;
       streamRef.current = stream;
       mediaRecorderRef.current = recorder;
       chunksRef.current = [];
@@ -1871,14 +2233,34 @@ export function useDesktopCompanion() {
             return;
           }
 
-          const audioBase64 = await blobToBase64(blob);
           setCompanionState("transcribing");
           setStatus(t("status.transcribing"));
-          const transcript = await transcribeAudio({
-            audioBase64,
-            mimeType: blob.type || "audio/webm",
-            locale: navigator.language,
+          const activeSessionId = activeTranscriptionSessionIdRef.current;
+          if (!activeSessionId) {
+            throw new Error("No active transcription session.");
+          }
+          const upload = await prepareTranscriptionUpload(
+            blob,
+            transcriptionProviderRef.current,
+          );
+          void frontendLog(
+            "info",
+            `voice transcription upload: provider=${transcriptionProviderRef.current} mime=${upload.mimeType} bytes=${upload.totalBytes} chunks=${upload.chunks.length}`,
+          );
+          for (const chunk of upload.chunks) {
+            await appendTranscriptionAudio({
+              sessionId: activeSessionId,
+              audioBase64: chunk,
+              mimeType: upload.mimeType,
+            });
+          }
+          const transcript = await commitTranscriptionTurn({
+            sessionId: activeSessionId,
           });
+          await stopTranscriptionSession({ sessionId: activeSessionId }).catch(
+            () => undefined,
+          );
+          activeTranscriptionSessionIdRef.current = null;
           const cleanedTranscript = transcript.trim();
           if (cleanedTranscript) {
             setStatus(
@@ -1917,6 +2299,12 @@ export function useDesktopCompanion() {
           clearRecordingMonitor();
           clearRecordingStream();
           mediaRecorderRef.current = null;
+          if (activeTranscriptionSessionIdRef.current) {
+            await stopTranscriptionSession({
+              sessionId: activeTranscriptionSessionIdRef.current,
+            }).catch(() => undefined);
+            activeTranscriptionSessionIdRef.current = null;
+          }
           chunksRef.current = [];
           recordingAutoStopReasonRef.current = null;
         }
@@ -1939,6 +2327,12 @@ export function useDesktopCompanion() {
       clearRecordingMonitor();
       clearRecordingStream();
       mediaRecorderRef.current = null;
+      if (activeTranscriptionSessionIdRef.current) {
+        await stopTranscriptionSession({
+          sessionId: activeTranscriptionSessionIdRef.current,
+        }).catch(() => undefined);
+        activeTranscriptionSessionIdRef.current = null;
+      }
       chunksRef.current = [];
       recordingAutoStopReasonRef.current = null;
     }
@@ -1957,6 +2351,110 @@ export function useDesktopCompanion() {
       await startRecording();
     }
   }
+
+  const findHitlWidget = useCallback(
+    (decisionId: string) =>
+      hitlWidgets.find((widget) => widget.decisionId === decisionId) ?? null,
+    [hitlWidgets],
+  );
+
+  const markHitlActionSending = useCallback((decisionId: string) => {
+    locallySubmittedHitlDecisionIdsRef.current.add(decisionId);
+    setHitlWidgets((current) =>
+      current.filter((item) => item.decisionId !== decisionId),
+    );
+    setStatus(t("widgets.hitl.sending"));
+    setCompanionState("thinking");
+  }, []);
+
+  const restoreHitlAction = useCallback((widget: DesktopAvatarHitlApprovalWidget) => {
+    locallySubmittedHitlDecisionIdsRef.current.delete(widget.decisionId);
+    setHitlWidgets((current) => upsertHitlWidget(current, widget));
+    setStatus(t("widgets.hitl.actionFailed"));
+    setCompanionState("error");
+  }, []);
+
+  const markHitlActionSent = useCallback((decisionId: string) => {
+    setStatus(t("widgets.hitl.sent"));
+    setCompanionState("idle");
+  }, []);
+
+  const markHitlMoreInfoSent = useCallback(() => {
+    setStatus(t("widgets.hitl.moreInfoSent"));
+    setCompanionState("idle");
+  }, []);
+
+  const approveHitl = useCallback(
+    async (decisionId: string, decisionReason?: string) => {
+      const widget = findHitlWidget(decisionId);
+      if (!widget?.proposalId) {
+        return;
+      }
+      markHitlActionSending(decisionId);
+      try {
+        await desktopAvatarApiClient.approveHitlDecision({
+          runId: widget.runId,
+          proposalId: widget.proposalId,
+          ...(decisionReason?.trim()
+            ? { decisionReason: decisionReason.trim() }
+            : {}),
+        });
+        markHitlActionSent(decisionId);
+      } catch {
+        restoreHitlAction(widget);
+      }
+    },
+    [findHitlWidget, markHitlActionSending, markHitlActionSent, restoreHitlAction],
+  );
+
+  const rejectHitl = useCallback(
+    async (decisionId: string, decisionReason: string) => {
+      const widget = findHitlWidget(decisionId);
+      const reason = decisionReason.trim();
+      if (!widget?.proposalId || reason.length === 0) {
+        return;
+      }
+      markHitlActionSending(decisionId);
+      try {
+        await desktopAvatarApiClient.rejectHitlDecision({
+          runId: widget.runId,
+          proposalId: widget.proposalId,
+          decisionReason: reason,
+        });
+        markHitlActionSent(decisionId);
+      } catch {
+        restoreHitlAction(widget);
+      }
+    },
+    [findHitlWidget, markHitlActionSending, markHitlActionSent, restoreHitlAction],
+  );
+
+  const requestMoreInfoForHitl = useCallback(
+    async (decisionId: string, message: string) => {
+      const widget = findHitlWidget(decisionId);
+      const trimmed = message.trim();
+      if (!widget || trimmed.length === 0) {
+        return;
+      }
+      setStatus(t("widgets.hitl.sending"));
+      setCompanionState("thinking");
+      try {
+        await desktopAvatarApiClient.requestMoreInfoForHitl({
+          runId: widget.runId,
+          message: trimmed,
+        });
+        markHitlMoreInfoSent();
+      } catch {
+        restoreHitlAction(widget);
+      }
+    },
+    [findHitlWidget, markHitlMoreInfoSent, restoreHitlAction],
+  );
+
+  const openHitl = useCallback((decisionId: string) => {
+    const url = `/Hitl?decisionId=${encodeURIComponent(decisionId)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  }, []);
 
   const canSend = useMemo(() => draft.trim().length > 0, [draft]);
   const latencyDebug = useMemo(
@@ -1977,14 +2475,20 @@ export function useDesktopCompanion() {
     peekMode,
     peekPosition,
     animationEnabled,
+    backendConnectionState,
     isRecording,
     messages,
+    hitlWidgets,
+    locale,
+    supportedLocales,
     latencyDebug,
     selectedTtsVoice,
     status,
     sizePreset,
     ttsEnabled,
     ttsVoices,
+    transcriptionProvider,
+    transcriptionProviders,
     windowSize,
     activeAnimation: activeDesktopAvatarRequestRef.current
       ? desktopAvatarState.animation
@@ -1993,11 +2497,23 @@ export function useDesktopCompanion() {
     setSizePreset,
     submitCurrentDraft: () => submitPrompt(draft, "text"),
     submitSuggestion: (value: string) => submitPrompt(value, "text"),
+    approveHitl,
+    rejectHitl,
+    requestMoreInfoForHitl,
+    openHitl,
     toggleExpanded,
     openAgent: () => setUiMode("expanded"),
     collapseToPeek: () => setUiMode("peek"),
     setPeekPosition: (position: PeekPosition) => applyPeekPosition(position),
     toggleRecording,
+    selectLocale: (nextLocale: LocaleId) => {
+      const next = setI18nLocale(nextLocale);
+      setLocaleState(next);
+    },
+    selectTranscriptionProvider: async (provider: TranscriptionProviderId) => {
+      const next = await setTranscriptionProvider(provider);
+      setTranscriptionProviderState(next);
+    },
     retryLastPrompt,
     selectTtsVoice: (voice: string | null) => {
       const normalized = voice?.trim() ?? "";

@@ -3,6 +3,7 @@ import type {
   AvatarManifest,
   DesktopAvatarResponse,
   DesktopAvatarStreamEvent,
+  HitlDecisionStreamEvent,
   DesktopAvatarWidgetPayload
 } from "../lib/contracts";
 
@@ -59,6 +60,54 @@ describe("desktop avatar contracts", () => {
     };
 
     expect(event.talk.text).toContain("10");
+  });
+
+  it("accepts HITL approval widgets and stream events", () => {
+    const widget: DesktopAvatarWidgetPayload = {
+      type: "hitlApproval",
+      decisionId: "proposal::run%3A1::proposal%3A1",
+      runId: "run:1",
+      proposalId: "proposal:1",
+      actionId: "PURCHASE_ORDER",
+      title: "PURCHASE ORDER",
+      description: "Bestellung freigeben.",
+      agentName: "Purchase Agent",
+      mode: "SIMULATION",
+      status: "pending",
+      priority: "high",
+      contextSections: []
+    };
+    const event: HitlDecisionStreamEvent = {
+      type: "decision",
+      kind: "required",
+      decisionId: widget.decisionId,
+      runId: widget.runId,
+      proposalId: widget.proposalId,
+      status: "pending",
+      item: {
+        decisionId: widget.decisionId,
+        runId: widget.runId,
+        proposalId: widget.proposalId,
+        actionId: "PURCHASE_ORDER",
+        title: widget.title,
+        description: widget.description,
+        agent: {
+          agentId: "studio-agent:purchase",
+          agentName: "Purchase Agent",
+          agentAvatarId: 1
+        },
+        timestamp: "2026-06-12T12:00:00.000Z",
+        mode: "SIMULATION",
+        status: "pending",
+        priority: "high",
+        contextSections: [],
+        payload: {}
+      },
+      emittedAt: "2026-06-12T12:00:00.000Z"
+    };
+
+    expect(widget.type).toBe("hitlApproval");
+    expect(event.kind).toBe("required");
   });
 
   it("accepts packed GLB avatar manifest shape", () => {

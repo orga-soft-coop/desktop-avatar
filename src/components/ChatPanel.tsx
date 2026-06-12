@@ -1,7 +1,11 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { AvatarCameraConfig } from "../lib/avatar-stage-config";
-import type { DevToolsLatencySnapshot } from "../lib/contracts";
-import { t } from "../lib/i18n";
+import type {
+  BackendConnectionState,
+  DevToolsLatencySnapshot,
+  TranscriptionProviderId
+} from "../lib/contracts";
+import { t, type LocaleId } from "../lib/i18n";
 import { SIZE_PRESET_OPTIONS, type SizePreset } from "../lib/window-presets";
 
 export type DevToolsDemoWidgetKind =
@@ -13,6 +17,7 @@ export type DevToolsDemoWidgetKind =
   | "areaChart";
 
 type DevToolsSectionKey =
+  | "interface"
   | "voice"
   | "latency"
   | "widgetDemo"
@@ -28,8 +33,14 @@ interface ChatPanelProps {
   uiTheme: "dark" | "light";
   sizePreset: SizePreset;
   ttsEnabled: boolean;
+  backendConnectionState: BackendConnectionState;
+  backendConnectionLabel: string;
+  locale?: LocaleId;
+  supportedLocales?: LocaleId[];
   ttsVoices?: string[];
   selectedTtsVoice?: string | null;
+  transcriptionProvider?: TranscriptionProviderId;
+  transcriptionProviders?: TranscriptionProviderId[];
   latencyDebug?: DevToolsLatencySnapshot | null;
   error?: string | null;
   animationNames?: string[];
@@ -49,7 +60,9 @@ interface ChatPanelProps {
   onToggleExpanded: () => void;
   onToggleTheme: () => void;
   onToggleTts: () => void;
+  onSelectLocale?: (locale: LocaleId) => void;
   onSelectTtsVoice?: (voice: string | null) => void;
+  onSelectTranscriptionProvider?: (provider: TranscriptionProviderId) => void;
   onToggleRecording: () => void;
   onSelectSizePreset: (preset: SizePreset) => void;
   onRetry: () => void;
@@ -92,6 +105,10 @@ function DevToolsSection({ title, summary, open, onToggle, children }: DevToolsS
   );
 }
 
+function localeLabel(locale: LocaleId): string {
+  return locale === "en" ? t("devTools.languageEnglish") : t("devTools.languageGerman");
+}
+
 export function ChatPanel({
   draft,
   isExpanded,
@@ -99,8 +116,14 @@ export function ChatPanel({
   uiTheme,
   sizePreset,
   ttsEnabled,
+  backendConnectionState,
+  backendConnectionLabel,
+  locale = "de",
+  supportedLocales = ["de"],
   ttsVoices,
   selectedTtsVoice,
+  transcriptionProvider = "openai-realtime",
+  transcriptionProviders = ["openai-realtime", "openai-file-fallback"],
   latencyDebug,
   error,
   animationNames,
@@ -120,7 +143,9 @@ export function ChatPanel({
   onToggleExpanded,
   onToggleTheme,
   onToggleTts,
+  onSelectLocale,
   onSelectTtsVoice,
+  onSelectTranscriptionProvider,
   onToggleRecording,
   onSelectSizePreset,
   onRetry,
@@ -131,6 +156,7 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [devToolsOpen, setDevToolsOpen] = useState(false);
   const [openSections, setOpenSections] = useState<Record<DevToolsSectionKey, boolean>>({
+    interface: true,
     voice: true,
     latency: false,
     widgetDemo: true,
@@ -142,7 +168,10 @@ export function ChatPanel({
   const [configCopied, setConfigCopied] = useState(false);
   const draftTextareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const hasVoiceControls = Boolean(onSelectTtsVoice && (ttsVoices?.length ?? 0) > 0);
+  const hasVoiceControls =
+    Boolean(onSelectTranscriptionProvider) ||
+    Boolean(onSelectTtsVoice && (ttsVoices?.length ?? 0) > 0);
+  const hasInterfaceControls = Boolean(onSelectLocale && supportedLocales.length > 1);
   const hasLatency = Boolean(latencyDebug);
   const hasAnimationControls = Boolean(onSelectAnimation && animationNames && animationNames.length > 0);
   const hasRuntimeInfo = Boolean(avatarAssetKind || selectedAnimationClip || resolvedAnimationMapping);
@@ -159,6 +188,7 @@ export function ChatPanel({
 
   const hasDevTools = Boolean(
     hasVoiceControls ||
+      hasInterfaceControls ||
       hasLatency ||
       hasAnimationControls ||
       hasRuntimeInfo ||
@@ -173,6 +203,7 @@ export function ChatPanel({
 
   const collapseAllSections = () => {
     setOpenSections({
+      interface: false,
       voice: false,
       latency: false,
       widgetDemo: false,
@@ -349,6 +380,16 @@ export function ChatPanel({
             <small className="chat-panel__hint">{t("chat.launcherHint")}</small>
 
             <div className="chat-panel__actions">
+              <span
+                className="chat-panel__backend-status"
+                data-state={backendConnectionState}
+                role="status"
+                aria-label={backendConnectionLabel}
+                title={backendConnectionLabel}
+              >
+                <span className="chat-panel__backend-status-dot" aria-hidden="true" />
+                <span>{backendConnectionLabel}</span>
+              </span>
               <button
                 type="button"
                 onClick={onToggleRecording}
@@ -512,6 +553,31 @@ export function ChatPanel({
                     </button>
                   </div>
 
+                  {hasInterfaceControls ? (
+                    <DevToolsSection
+                      title={t("devTools.interface")}
+                      summary={localeLabel(locale)}
+                      open={openSections.interface}
+                      onToggle={() => toggleSection("interface")}
+                    >
+                      <div className="chat-panel__devtools-row">
+                        <label>{t("devTools.language")}</label>
+                        <select
+                          value={locale}
+                          onChange={(event) =>
+                            onSelectLocale?.(event.target.value as LocaleId)
+                          }
+                        >
+                          {supportedLocales.map((supportedLocale) => (
+                            <option key={supportedLocale} value={supportedLocale}>
+                              {localeLabel(supportedLocale)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </DevToolsSection>
+                  ) : null}
+
                   {hasVoiceControls ? (
                     <DevToolsSection
                       title={t("devTools.voice")}
@@ -533,6 +599,27 @@ export function ChatPanel({
                           ))}
                         </select>
                       </div>
+                      {onSelectTranscriptionProvider ? (
+                        <div className="chat-panel__devtools-row">
+                          <label>{t("devTools.transcriptionProvider")}</label>
+                          <select
+                            value={transcriptionProvider}
+                            onChange={(event) =>
+                              onSelectTranscriptionProvider(
+                                event.target.value as TranscriptionProviderId,
+                              )
+                            }
+                          >
+                            {transcriptionProviders.map((provider) => (
+                              <option key={provider} value={provider}>
+                                {provider === "openai-realtime"
+                                  ? t("devTools.transcriptionProviderRealtime")
+                                  : t("devTools.transcriptionProviderFile")}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : null}
                     </DevToolsSection>
                   ) : null}
 

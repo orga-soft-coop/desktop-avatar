@@ -5,11 +5,11 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use reqwest::{
     header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE},
     multipart::{Form, Part},
@@ -26,11 +26,19 @@ use tauri::{
     WebviewWindow, WindowEvent,
 };
 use tokio::{process::Command, sync::Mutex};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{client::IntoClientRequest, protocol::Message as WsMessage},
+};
 
 const CHAT_STREAM_EVENT: &str = "chat-stream-event";
 const DESKTOP_AVATAR_STREAM_EVENT: &str = "desktop-avatar-stream-event";
 const DESKTOP_AVATAR_STREAM_LIFECYCLE_EVENT: &str = "desktop-avatar-stream-lifecycle";
+const HITL_DECISION_STREAM_EVENT: &str = "hitl-decision-stream-event";
+const HITL_DECISION_STREAM_LIFECYCLE_EVENT: &str = "hitl-decision-stream-lifecycle";
 const TTS_STATE_EVENT: &str = "tts-state";
+const TRANSCRIPTION_STREAM_EVENT: &str = "transcription-stream-event";
+const TRANSCRIPTION_PROVIDER_CHANGED_EVENT: &str = "transcription-provider-changed";
 const DEFAULT_PEEK_WIDTH: f64 = 235.0;
 const DEFAULT_PEEK_HEIGHT: f64 = 235.0;
 const MAX_PEEK_WIDTH: f64 = 360.0;
@@ -42,12 +50,16 @@ const EXPANDED_WINDOW_MARGIN: f64 = 24.0;
 const TRANSITION_STEPS: u32 = 14;
 const TRANSITION_DURATION_MS: u64 = 240;
 const TRANSITION_STAGE_DURATION_MS: u64 = 150;
+const TRANSCRIPTION_MAX_AUDIO_BYTES: usize = 24 * 1024 * 1024;
+const TRANSCRIPTION_CHUNK_BYTES: usize = 12 * 1024;
+const TRANSCRIPTION_READ_TIMEOUT_SECS: u64 = 20;
 
 #[derive(Clone)]
 struct AppState {
     client: Client,
     config: Arc<AppConfig>,
     desktop_avatar_streams: Arc<Mutex<HashMap<String, async_runtime::JoinHandle<()>>>>,
+    hitl_decision_stream: Arc<Mutex<Option<async_runtime::JoinHandle<()>>>>,
     last_tts_text_by_request: Arc<Mutex<HashMap<String, String>>>,
     peek_position: Arc<Mutex<PeekPosition>>,
     current_window_mode: Arc<Mutex<WindowMode>>,
@@ -57,6 +69,8 @@ struct AppState {
     drag_tracking_mode: Arc<Mutex<Option<WindowMode>>>,
     drag_tracking_revision: Arc<Mutex<u64>>,
     peek_size: Arc<Mutex<WindowSize>>,
+    transcription_provider: Arc<Mutex<TranscriptionProviderId>>,
+    transcription_sessions: Arc<Mutex<HashMap<String, TranscriptionSession>>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -87,12 +101,51 @@ impl Default for WindowMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum TranscriptionProviderId {
+    OpenAiRealtime,
+    OpenAiFileFallback,
+}
+
+impl TranscriptionProviderId {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "openai-realtime" => Ok(Self::OpenAiRealtime),
+            "openai-file-fallback" => Ok(Self::OpenAiFileFallback),
+            _ => Err(format!(
+                "Unsupported transcription provider: {}",
+                value.trim()
+            )),
+        }
+    }
+}
+
+fn transcription_provider_label(provider: TranscriptionProviderId) -> &'static str {
+    match provider {
+        TranscriptionProviderId::OpenAiRealtime => "openai-realtime",
+        TranscriptionProviderId::OpenAiFileFallback => "openai-file-fallback",
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TranscriptionSession {
+    session_id: String,
+    provider: TranscriptionProviderId,
+    locale: Option<String>,
+    mime_type: String,
+    audio_bytes: Vec<u8>,
+}
+
 #[derive(Clone, Debug)]
 struct AppConfig {
     comm_officer_base_url: Option<String>,
     comm_officer_token: Option<String>,
     openai_api_key: Option<String>,
     openai_stt_model: String,
+    transcription_provider_default: TranscriptionProviderId,
+    transcription_provider_fallback: Option<TranscriptionProviderId>,
+    openai_realtime_stt_model: String,
     tts_provider: TtsProviderMode,
     openai_tts_enabled: bool,
     openai_tts_model: String,
@@ -144,6 +197,8 @@ struct BootstrapState {
     collapsed_size: WindowSize,
     expanded_size: WindowSize,
     tts_enabled: bool,
+    transcription_provider: String,
+    transcription_providers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -274,10 +329,33 @@ struct DesktopAvatarRequestDocument {
     updated_at: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct HitlDecisionInput {
+    run_id: String,
+    proposal_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decision_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct HitlRequestMoreInfoInput {
+    run_id: String,
+    message: String,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct DesktopAvatarStreamLifecycleEvent {
     avatar_request_id: String,
+    phase: String,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct HitlDecisionStreamLifecycleEvent {
     phase: String,
     reason: Option<String>,
 }
@@ -288,6 +366,79 @@ struct SpeechTranscriptionRequest {
     audio_base64: String,
     mime_type: String,
     locale: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptionSessionStartRequest {
+    session_id: String,
+    locale: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptionSessionAppendAudioRequest {
+    session_id: String,
+    audio_base64: String,
+    mime_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptionSessionCommitTurnRequest {
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptionSessionStopRequest {
+    session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptionSessionStartResult {
+    session_id: String,
+    provider: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TranscriptionStreamEvent {
+    SessionReady {
+        session_id: String,
+        provider: String,
+    },
+    SpeechStarted {
+        session_id: String,
+        provider: String,
+    },
+    SpeechStopped {
+        session_id: String,
+        provider: String,
+    },
+    Partial {
+        session_id: String,
+        text: String,
+        provider: String,
+    },
+    Final {
+        session_id: String,
+        text: String,
+        provider: String,
+        fallback_used: bool,
+    },
+    Error {
+        session_id: String,
+        provider: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptionProviderChangedEvent {
+    provider: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -554,6 +705,19 @@ impl AppConfig {
         let tts_provider = env::var("TTS_PROVIDER")
             .map(|value| TtsProviderMode::parse(&value))
             .unwrap_or(TtsProviderMode::Auto);
+        let transcription_provider_default = env::var("TRANSCRIPTION_PROVIDER_DEFAULT")
+            .ok()
+            .as_deref()
+            .and_then(|value| TranscriptionProviderId::parse(value).ok())
+            .unwrap_or(TranscriptionProviderId::OpenAiRealtime);
+        let transcription_provider_fallback = env::var("TRANSCRIPTION_PROVIDER_FALLBACK")
+            .ok()
+            .as_deref()
+            .and_then(|value| TranscriptionProviderId::parse(value).ok())
+            .or_else(|| {
+                (transcription_provider_default == TranscriptionProviderId::OpenAiRealtime)
+                    .then_some(TranscriptionProviderId::OpenAiFileFallback)
+            });
 
         let openai_tts_default_voice =
             env::var("OPENAI_TTS_VOICE").unwrap_or_else(|_| "shimmer".to_string());
@@ -615,6 +779,10 @@ impl AppConfig {
             comm_officer_token: env::var("COMM_OFFICER_TOKEN").ok(),
             openai_api_key: env::var("OPENAI_API_KEY").ok(),
             openai_stt_model: env::var("OPENAI_STT_MODEL")
+                .unwrap_or_else(|_| "gpt-4o-mini-transcribe".to_string()),
+            transcription_provider_default,
+            transcription_provider_fallback,
+            openai_realtime_stt_model: env::var("OPENAI_REALTIME_STT_MODEL")
                 .unwrap_or_else(|_| "gpt-4o-mini-transcribe".to_string()),
             tts_provider,
             openai_tts_enabled: env::var("OPENAI_TTS_ENABLED")
@@ -845,6 +1013,14 @@ async fn load_bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapSta
             height: EXPANDED_HEIGHT,
         },
         tts_enabled: state.config.enable_tts,
+        transcription_provider: transcription_provider_label(
+            *state.transcription_provider.lock().await,
+        )
+        .to_string(),
+        transcription_providers: vec![
+            transcription_provider_label(TranscriptionProviderId::OpenAiRealtime).to_string(),
+            transcription_provider_label(TranscriptionProviderId::OpenAiFileFallback).to_string(),
+        ],
     })
 }
 
@@ -1581,6 +1757,184 @@ async fn desktop_avatar_request_stream_stop(
 }
 
 #[tauri::command]
+async fn hitl_decision_stream_start(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let url = absolute_comm_officer_url(&base_url, "/v1/hitl/decision-events/stream");
+
+    if let Some(existing) = state.hitl_decision_stream.lock().await.take() {
+        existing.abort();
+    }
+
+    let client = state.client.clone();
+    let stream_slot = state.hitl_decision_stream.clone();
+    let handle = async_runtime::spawn(async move {
+        let response = with_auth(
+            client
+                .get(url)
+                .header(ACCEPT, "text/event-stream")
+                .header(CONTENT_TYPE, "application/json"),
+            &token,
+        )
+        .send()
+        .await;
+
+        match response {
+            Ok(response) => {
+                if let Err(error) = process_hitl_decision_stream(window.clone(), response).await {
+                    let _ =
+                        emit_hitl_decision_stream_lifecycle(&window, "error", Some(error));
+                } else {
+                    let _ = emit_hitl_decision_stream_lifecycle(&window, "closed", None);
+                }
+            }
+            Err(error) => {
+                let _ = emit_hitl_decision_stream_lifecycle(
+                    &window,
+                    "error",
+                    Some(error.to_string()),
+                );
+            }
+        }
+
+        stream_slot.lock().await.take();
+    });
+
+    *state.hitl_decision_stream.lock().await = Some(handle);
+    Ok(())
+}
+
+#[tauri::command]
+async fn hitl_decision_stream_stop(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Some(handle) = state.hitl_decision_stream.lock().await.take() {
+        handle.abort();
+    }
+    emit_hitl_decision_stream_lifecycle(&window, "aborted", None)
+}
+
+fn hitl_idempotency_key(prefix: &str, run_id: &str, proposal_id: Option<&str>) -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    format!(
+        "desktop-avatar-{prefix}-{run_id}-{}-{millis}",
+        proposal_id.unwrap_or("run")
+    )
+}
+
+async fn post_hitl_decision(
+    state: State<'_, AppState>,
+    input: HitlDecisionInput,
+    approved: bool,
+) -> Result<(), String> {
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let url = absolute_comm_officer_url(
+        &base_url,
+        &format!(
+            "/v1/runs/{}/proposals/{}/decision",
+            input.run_id, input.proposal_id
+        ),
+    );
+    let body = json!({
+        "approved": approved,
+        "requestedBy": "desktop-avatar",
+        "decisionReason": input.decision_reason,
+    });
+    let response = with_auth(
+        state
+            .client
+            .post(url)
+            .header(CONTENT_TYPE, "application/json")
+            .header(
+                "x-idempotency-key",
+                hitl_idempotency_key(
+                    if approved { "approve" } else { "reject" },
+                    input.run_id.as_str(),
+                    Some(input.proposal_id.as_str()),
+                ),
+            )
+            .json(&body),
+        &token,
+    )
+    .send()
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!("HITL decision returned {status}: {text}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn hitl_decision_approve(
+    state: State<'_, AppState>,
+    input: HitlDecisionInput,
+) -> Result<(), String> {
+    post_hitl_decision(state, input, true).await
+}
+
+#[tauri::command]
+async fn hitl_decision_reject(
+    state: State<'_, AppState>,
+    input: HitlDecisionInput,
+) -> Result<(), String> {
+    post_hitl_decision(state, input, false).await
+}
+
+#[tauri::command]
+async fn hitl_request_more_info(
+    state: State<'_, AppState>,
+    input: HitlRequestMoreInfoInput,
+) -> Result<(), String> {
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let url = absolute_comm_officer_url(
+        &base_url,
+        &format!("/v1/runs/{}/request-more-info", input.run_id),
+    );
+    let response = with_auth(
+        state
+            .client
+            .post(url)
+            .header(CONTENT_TYPE, "application/json")
+            .header(
+                "x-idempotency-key",
+                hitl_idempotency_key("more-info", input.run_id.as_str(), None),
+            )
+            .json(&json!({
+                "message": input.message,
+                "requestedBy": "desktop-avatar",
+                "autoProcess": true,
+            })),
+        &token,
+    )
+    .send()
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!("HITL request-more-info returned {status}: {text}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn chat_send_business(
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -1717,38 +2071,100 @@ async fn speech_transcribe(
     state: State<'_, AppState>,
     request: SpeechTranscriptionRequest,
 ) -> Result<String, String> {
+    let audio = BASE64
+        .decode(request.audio_base64.as_bytes())
+        .map_err(|error| error.to_string())?;
+    transcribe_with_openai_file_api(
+        state.inner(),
+        &audio,
+        request.mime_type.as_str(),
+        request.locale.as_deref(),
+    )
+    .await
+}
+
+fn build_transcription_provider_chain(
+    selected: TranscriptionProviderId,
+    fallback: Option<TranscriptionProviderId>,
+) -> Vec<TranscriptionProviderId> {
+    let mut chain = vec![selected];
+    if let Some(next) = fallback {
+        if next != selected {
+            chain.push(next);
+        }
+    }
+    chain
+}
+
+fn wrap_pcm16le_as_wav(bytes: &[u8], sample_rate: u32, channels: u16) -> Vec<u8> {
+    let bits_per_sample: u16 = 16;
+    let block_align = channels * (bits_per_sample / 8);
+    let byte_rate = sample_rate * u32::from(block_align);
+    let data_len = bytes.len() as u32;
+    let mut out = Vec::with_capacity(44 + bytes.len());
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36u32.saturating_add(data_len)).to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16u32.to_le_bytes()); // PCM chunk size
+    out.extend_from_slice(&1u16.to_le_bytes()); // audio format PCM
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&bits_per_sample.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    out.extend_from_slice(bytes);
+    out
+}
+
+async fn transcribe_with_openai_file_api(
+    state: &AppState,
+    audio: &[u8],
+    mime_type: &str,
+    locale: Option<&str>,
+) -> Result<String, String> {
     let api_key = state
         .config
         .openai_api_key
         .clone()
         .ok_or_else(|| "OPENAI_API_KEY is missing.".to_string())?;
+    let normalized_mime = normalize_audio_mime_for_transcription(mime_type);
+    let (payload, payload_mime, extension) = if normalized_mime == "audio/pcm" {
+        (
+            wrap_pcm16le_as_wav(audio, 24_000, 1),
+            "audio/wav".to_string(),
+            "wav".to_string(),
+        )
+    } else {
+        (
+            audio.to_vec(),
+            normalized_mime.clone(),
+            mime_extension(normalized_mime.as_str()).to_string(),
+        )
+    };
+    let audio_len = payload.len();
 
-    let audio = BASE64
-        .decode(request.audio_base64.as_bytes())
-        .map_err(|error| error.to_string())?;
-    let audio_len = audio.len();
-
-    let normalized_mime = normalize_audio_mime_for_transcription(&request.mime_type);
-    let extension = mime_extension(normalized_mime.as_str());
     append_log(
         &state.config.log_file_path,
         format!(
-            "stt: start mimeRaw={} mimeNormalized={} extension={} bytes={}",
-            truncate_for_log(&request.mime_type, 120),
-            normalized_mime,
+            "stt:file start mimeRaw={} mimeNormalized={} extension={} bytes={}",
+            truncate_for_log(mime_type, 120),
+            payload_mime,
             extension,
             audio_len
         ),
     );
-    let part = Part::bytes(audio)
-        .file_name(format!("speech.{extension}"))
-        .mime_str(normalized_mime.as_str())
-        .map_err(|error| error.to_string())?;
 
+    let part = Part::bytes(payload)
+        .file_name(format!("speech.{extension}"))
+        .mime_str(payload_mime.as_str())
+        .map_err(|error| error.to_string())?;
     let mut form = Form::new()
         .part("file", part)
         .text("model", state.config.openai_stt_model.clone());
-    if let Some(language) = resolve_transcription_language(request.locale.as_deref()) {
+    if let Some(language) = resolve_transcription_language(locale) {
         form = form.text("language", language);
     }
 
@@ -1760,7 +2176,6 @@ async fn speech_transcribe(
         .send()
         .await
         .map_err(|error| error.to_string())?;
-
     let status = response.status();
     let value = response
         .json::<Value>()
@@ -1777,9 +2192,9 @@ async fn speech_transcribe(
         append_log(
             &state.config.log_file_path,
             format!(
-                "stt: failed status={} mime={} bytes={} message={}",
+                "stt:file failed status={} mime={} bytes={} message={}",
                 status.as_u16(),
-                normalized_mime,
+                payload_mime,
                 audio_len,
                 truncate_for_log(&message, 220)
             ),
@@ -1793,6 +2208,423 @@ async fn speech_transcribe(
         .unwrap_or_default()
         .trim()
         .to_string())
+}
+
+fn emit_transcription_stream_event(
+    window: &WebviewWindow,
+    event: TranscriptionStreamEvent,
+) -> Result<(), String> {
+    window
+        .emit(TRANSCRIPTION_STREAM_EVENT, event)
+        .map_err(|error| error.to_string())
+}
+
+fn emit_transcription_provider_changed(
+    window: &WebviewWindow,
+    provider: TranscriptionProviderId,
+) -> Result<(), String> {
+    window
+        .emit(
+            TRANSCRIPTION_PROVIDER_CHANGED_EVENT,
+            TranscriptionProviderChangedEvent {
+                provider: transcription_provider_label(provider).to_string(),
+            },
+        )
+        .map_err(|error| error.to_string())
+}
+
+async fn transcribe_with_openai_realtime(
+    window: &WebviewWindow,
+    state: &AppState,
+    session_id: &str,
+    audio: &[u8],
+    locale: Option<&str>,
+) -> Result<String, String> {
+    let api_key = state
+        .config
+        .openai_api_key
+        .clone()
+        .ok_or_else(|| "OPENAI_API_KEY is missing.".to_string())?;
+    if audio.is_empty() {
+        return Err("No audio available for transcription.".to_string());
+    }
+
+    let mut request = "wss://api.openai.com/v1/realtime?intent=transcription"
+        .into_client_request()
+        .map_err(|error| error.to_string())?;
+    let auth_header = format!("Bearer {api_key}")
+        .parse()
+        .map_err(|error| format!("invalid auth header: {error}"))?;
+    let beta_header = "realtime=v1"
+        .parse()
+        .map_err(|error| format!("invalid realtime header: {error}"))?;
+    request.headers_mut().insert("Authorization", auth_header);
+    request.headers_mut().insert("OpenAI-Beta", beta_header);
+
+    append_log(
+        &state.config.log_file_path,
+        format!(
+            "stt:realtime connect sessionId={} bytes={}",
+            session_id,
+            audio.len()
+        ),
+    );
+
+    let (mut socket, _) = connect_async(request).await.map_err(|error| error.to_string())?;
+
+    let language = resolve_transcription_language(locale);
+    let setup_event = json!({
+      "type": "transcription_session.update",
+      "input_audio_format": "pcm16",
+      "input_audio_transcription": {
+        "model": state.config.openai_realtime_stt_model,
+        "language": language,
+      },
+      "turn_detection": null,
+      "input_audio_noise_reduction": {
+        "type": "near_field"
+      }
+    });
+    socket
+        .send(WsMessage::Text(setup_event.to_string().into()))
+        .await
+        .map_err(|error| error.to_string())?;
+
+    for chunk in audio.chunks(TRANSCRIPTION_CHUNK_BYTES) {
+        let append_event = json!({
+          "type": "input_audio_buffer.append",
+          "audio": BASE64.encode(chunk),
+        });
+        socket
+            .send(WsMessage::Text(append_event.to_string().into()))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    socket
+        .send(WsMessage::Text(
+            json!({ "type": "input_audio_buffer.commit" })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let mut transcript = String::new();
+    let mut saw_completed = false;
+    loop {
+        let next = tokio::time::timeout(
+            Duration::from_secs(TRANSCRIPTION_READ_TIMEOUT_SECS),
+            socket.next(),
+        )
+        .await
+        .map_err(|_| "Realtime transcription timeout.".to_string())?;
+        let Some(frame) = next else {
+            break;
+        };
+        let frame = frame.map_err(|error| error.to_string())?;
+        let payload_text = match frame {
+            WsMessage::Text(value) => value.to_string(),
+            WsMessage::Binary(value) => String::from_utf8_lossy(&value).to_string(),
+            WsMessage::Close(_) => break,
+            WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+            _ => continue,
+        };
+
+        let value = match serde_json::from_str::<Value>(payload_text.as_str()) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let event_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
+        match event_type {
+            "input_audio_buffer.speech_started" => {
+                let _ = emit_transcription_stream_event(
+                    window,
+                    TranscriptionStreamEvent::SpeechStarted {
+                        session_id: session_id.to_string(),
+                        provider: transcription_provider_label(TranscriptionProviderId::OpenAiRealtime)
+                            .to_string(),
+                    },
+                );
+            }
+            "input_audio_buffer.speech_stopped" => {
+                let _ = emit_transcription_stream_event(
+                    window,
+                    TranscriptionStreamEvent::SpeechStopped {
+                        session_id: session_id.to_string(),
+                        provider: transcription_provider_label(TranscriptionProviderId::OpenAiRealtime)
+                            .to_string(),
+                    },
+                );
+            }
+            "conversation.item.input_audio_transcription.delta" => {
+                if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                    if !delta.trim().is_empty() {
+                        transcript.push_str(delta);
+                        let _ = emit_transcription_stream_event(
+                            window,
+                            TranscriptionStreamEvent::Partial {
+                                session_id: session_id.to_string(),
+                                text: transcript.trim().to_string(),
+                                provider:
+                                    transcription_provider_label(TranscriptionProviderId::OpenAiRealtime)
+                                        .to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+            "conversation.item.input_audio_transcription.completed" => {
+                let completed = value
+                    .get("transcript")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .to_string();
+                if !completed.is_empty() {
+                    transcript = completed;
+                }
+                saw_completed = true;
+                break;
+            }
+            "conversation.item.input_audio_transcription.failed" => {
+                let message = value
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Realtime transcription failed.")
+                    .to_string();
+                return Err(message);
+            }
+            "error" => {
+                let message = value
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Realtime session error.")
+                    .to_string();
+                return Err(message);
+            }
+            _ => {}
+        }
+    }
+
+    if !saw_completed && transcript.trim().is_empty() {
+        return Err("Realtime transcription returned no transcript.".to_string());
+    }
+
+    let _ = socket.send(WsMessage::Close(None)).await;
+    Ok(transcript.trim().to_string())
+}
+
+#[tauri::command]
+async fn transcription_provider_get(state: State<'_, AppState>) -> Result<String, String> {
+    let provider = *state.transcription_provider.lock().await;
+    Ok(transcription_provider_label(provider).to_string())
+}
+
+#[tauri::command]
+async fn transcription_provider_set(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    provider: String,
+) -> Result<String, String> {
+    let parsed = TranscriptionProviderId::parse(provider.as_str())?;
+    {
+        let mut guard = state.transcription_provider.lock().await;
+        *guard = parsed;
+    }
+    append_log(
+        &state.config.log_file_path,
+        format!(
+            "stt: provider switched to {}",
+            transcription_provider_label(parsed)
+        ),
+    );
+    emit_transcription_provider_changed(&window, parsed)?;
+    Ok(transcription_provider_label(parsed).to_string())
+}
+
+#[tauri::command]
+async fn transcription_session_start(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    request: TranscriptionSessionStartRequest,
+) -> Result<TranscriptionSessionStartResult, String> {
+    let session_id = request.session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("sessionId is required.".to_string());
+    }
+    let provider = *state.transcription_provider.lock().await;
+    {
+        let mut sessions = state.transcription_sessions.lock().await;
+        sessions.insert(
+            session_id.clone(),
+            TranscriptionSession {
+                session_id: session_id.clone(),
+                provider,
+                locale: request.locale.clone(),
+                mime_type: "audio/webm".to_string(),
+                audio_bytes: Vec::new(),
+            },
+        );
+    }
+    emit_transcription_stream_event(
+        &window,
+        TranscriptionStreamEvent::SessionReady {
+            session_id: session_id.clone(),
+            provider: transcription_provider_label(provider).to_string(),
+        },
+    )?;
+    emit_transcription_stream_event(
+        &window,
+        TranscriptionStreamEvent::SpeechStarted {
+            session_id: session_id.clone(),
+            provider: transcription_provider_label(provider).to_string(),
+        },
+    )?;
+    Ok(TranscriptionSessionStartResult {
+        session_id,
+        provider: transcription_provider_label(provider).to_string(),
+    })
+}
+
+#[tauri::command]
+async fn transcription_session_append_audio(
+    state: State<'_, AppState>,
+    request: TranscriptionSessionAppendAudioRequest,
+) -> Result<(), String> {
+    let chunk = BASE64
+        .decode(request.audio_base64.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let normalized_mime = normalize_audio_mime_for_transcription(request.mime_type.as_str());
+    let mut sessions = state.transcription_sessions.lock().await;
+    let session = sessions
+        .get_mut(request.session_id.as_str())
+        .ok_or_else(|| "Transcription session not found.".to_string())?;
+    if session.mime_type != normalized_mime && !session.audio_bytes.is_empty() {
+        return Err("All chunks in one transcription session must use the same mime type.".to_string());
+    }
+    session.mime_type = normalized_mime;
+    if session.audio_bytes.len() + chunk.len() > TRANSCRIPTION_MAX_AUDIO_BYTES {
+        return Err(format!(
+            "Audio payload exceeds {} bytes limit.",
+            TRANSCRIPTION_MAX_AUDIO_BYTES
+        ));
+    }
+    session.audio_bytes.extend_from_slice(chunk.as_slice());
+    Ok(())
+}
+
+#[tauri::command]
+async fn transcription_session_commit_turn(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    request: TranscriptionSessionCommitTurnRequest,
+) -> Result<String, String> {
+    let fallback_provider = state.config.transcription_provider_fallback;
+    let (session_id, selected_provider, locale, mime_type, audio) = {
+        let mut sessions = state.transcription_sessions.lock().await;
+        let session = sessions
+            .get_mut(request.session_id.as_str())
+            .ok_or_else(|| "Transcription session not found.".to_string())?;
+        if session.audio_bytes.is_empty() {
+            return Err("No audio received for this session.".to_string());
+        }
+        let snapshot = (
+            session.session_id.clone(),
+            session.provider,
+            session.locale.clone(),
+            session.mime_type.clone(),
+            session.audio_bytes.clone(),
+        );
+        session.audio_bytes.clear();
+        snapshot
+    };
+    emit_transcription_stream_event(
+        &window,
+        TranscriptionStreamEvent::SpeechStopped {
+            session_id: session_id.clone(),
+            provider: transcription_provider_label(selected_provider).to_string(),
+        },
+    )?;
+
+    let provider_chain = build_transcription_provider_chain(selected_provider, fallback_provider);
+    let mut last_error: Option<String> = None;
+    for (provider_index, provider) in provider_chain.iter().copied().enumerate() {
+        let fallback_used = provider_index > 0;
+        let provider_label = transcription_provider_label(provider).to_string();
+        append_log(
+            &state.config.log_file_path,
+            format!(
+                "stt: session commit sessionId={} provider={} fallback={} mime={} bytes={}",
+                session_id,
+                provider_label,
+                fallback_used,
+                mime_type,
+                audio.len()
+            ),
+        );
+        let result = match provider {
+            TranscriptionProviderId::OpenAiRealtime => {
+                transcribe_with_openai_realtime(
+                    &window,
+                    state.inner(),
+                    session_id.as_str(),
+                    &audio,
+                    locale.as_deref(),
+                )
+                .await
+            }
+            TranscriptionProviderId::OpenAiFileFallback => {
+                transcribe_with_openai_file_api(
+                    state.inner(),
+                    &audio,
+                    mime_type.as_str(),
+                    locale.as_deref(),
+                )
+                .await
+            }
+        };
+
+        match result {
+            Ok(text) => {
+                let normalized = text.trim().to_string();
+                emit_transcription_stream_event(
+                    &window,
+                    TranscriptionStreamEvent::Final {
+                        session_id: session_id.clone(),
+                        text: normalized.clone(),
+                        provider: provider_label,
+                        fallback_used,
+                    },
+                )?;
+                return Ok(normalized);
+            }
+            Err(message) => {
+                last_error = Some(message.clone());
+                let _ = emit_transcription_stream_event(
+                    &window,
+                    TranscriptionStreamEvent::Error {
+                        session_id: session_id.clone(),
+                        provider: provider_label,
+                        message,
+                    },
+                );
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "Transcription failed.".to_string()))
+}
+
+#[tauri::command]
+async fn transcription_session_stop(
+    state: State<'_, AppState>,
+    request: TranscriptionSessionStopRequest,
+) -> Result<(), String> {
+    let mut sessions = state.transcription_sessions.lock().await;
+    sessions.remove(request.session_id.as_str());
+    Ok(())
 }
 
 #[tauri::command]
@@ -2609,6 +3441,61 @@ async fn process_desktop_avatar_stream(
     Ok(())
 }
 
+async fn process_hitl_decision_stream(
+    window: WebviewWindow,
+    response: reqwest::Response,
+) -> Result<(), String> {
+    let status = response.status();
+    if !status.is_success() {
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!("HITL stream returned {status}: {text}"));
+    }
+
+    let mut parser = SseParser {
+        current: SseFrame::new(),
+    };
+    let mut pending = String::new();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        pending.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(index) = pending.find('\n') {
+            let mut line = pending[..index].to_string();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            pending.replace_range(..=index, "");
+            if let Some(frame) = parser.push_line(line.as_str()) {
+                let payload: Value = serde_json::from_str(frame.data().as_str())
+                    .map_err(|error| error.to_string())?;
+                emit_hitl_decision_stream_event(&window, payload)?;
+            }
+        }
+    }
+
+    if !pending.is_empty() {
+        let line = pending.trim_end_matches('\r').to_string();
+        if let Some(frame) = parser.push_line(line.as_str()) {
+            let payload: Value =
+                serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
+            emit_hitl_decision_stream_event(&window, payload)?;
+        }
+    }
+
+    if let Some(frame) = parser.finish() {
+        let payload: Value =
+            serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
+        emit_hitl_decision_stream_event(&window, payload)?;
+    }
+
+    Ok(())
+}
+
 async fn process_local_stream(
     window: WebviewWindow,
     request_id: String,
@@ -2756,6 +3643,28 @@ fn emit_desktop_avatar_stream_lifecycle(
         .map_err(|error| error.to_string())
 }
 
+fn emit_hitl_decision_stream_event(window: &WebviewWindow, payload: Value) -> Result<(), String> {
+    window
+        .emit(HITL_DECISION_STREAM_EVENT, payload)
+        .map_err(|error| error.to_string())
+}
+
+fn emit_hitl_decision_stream_lifecycle(
+    window: &WebviewWindow,
+    phase: &str,
+    reason: Option<String>,
+) -> Result<(), String> {
+    window
+        .emit(
+            HITL_DECISION_STREAM_LIFECYCLE_EVENT,
+            HitlDecisionStreamLifecycleEvent {
+                phase: phase.to_string(),
+                reason,
+            },
+        )
+        .map_err(|error| error.to_string())
+}
+
 fn emit_tts_state(
     window: &WebviewWindow,
     request_id: &str,
@@ -2879,6 +3788,7 @@ fn mime_type_for_path(path: &str) -> String {
 
 fn mime_extension(mime: &str) -> &'static str {
     match mime.trim().to_ascii_lowercase().as_str() {
+        "audio/pcm" | "audio/l16" => "wav",
         "audio/mp4" | "audio/x-m4a" | "audio/m4a" => "m4a",
         "audio/webm" => "webm",
         "audio/mpeg" | "audio/mp3" | "audio/mpga" => "mp3",
@@ -2898,6 +3808,7 @@ fn normalize_audio_mime_for_transcription(mime: &str) -> String {
         .unwrap_or_default();
 
     match normalized.as_str() {
+        "audio/pcm" | "audio/l16" => "audio/pcm".to_string(),
         "audio/mp4" | "audio/x-m4a" | "audio/m4a" => "audio/mp4".to_string(),
         "audio/webm" => "audio/webm".to_string(),
         "audio/mpeg" | "audio/mp3" | "audio/mpga" => "audio/mpeg".to_string(),
@@ -2970,6 +3881,7 @@ fn resolve_transcription_language(request_locale: Option<&str>) -> Option<String
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let bootstrap_config = AppConfig::load();
+    let default_transcription_provider = bootstrap_config.transcription_provider_default;
     let mut persisted_window_state = read_persisted_window_state(&bootstrap_config.window_state_path);
     let normalized_peek_size = normalize_peek_size(
         persisted_window_state.peek_size.width,
@@ -2985,6 +3897,7 @@ pub fn run() {
         client: Client::new(),
         config: Arc::new(bootstrap_config),
         desktop_avatar_streams: Arc::new(Mutex::new(HashMap::new())),
+        hitl_decision_stream: Arc::new(Mutex::new(None)),
         last_tts_text_by_request: Arc::new(Mutex::new(HashMap::new())),
         peek_position: Arc::new(Mutex::new(persisted_window_state.peek_position)),
         current_window_mode: Arc::new(Mutex::new(WindowMode::default())),
@@ -2994,6 +3907,8 @@ pub fn run() {
         drag_tracking_mode: Arc::new(Mutex::new(None)),
         drag_tracking_revision: Arc::new(Mutex::new(0)),
         peek_size: Arc::new(Mutex::new(persisted_window_state.peek_size)),
+        transcription_provider: Arc::new(Mutex::new(default_transcription_provider)),
+        transcription_sessions: Arc::new(Mutex::new(HashMap::new())),
     };
     let provider_label = tts_provider_name(state.config.tts_provider);
     let local_tts_url = state
@@ -3031,9 +3946,20 @@ pub fn run() {
             desktop_avatar_request_get,
             desktop_avatar_request_stream,
             desktop_avatar_request_stream_stop,
+            hitl_decision_stream_start,
+            hitl_decision_stream_stop,
+            hitl_decision_approve,
+            hitl_decision_reject,
+            hitl_request_more_info,
             chat_send_business,
             chat_send_local,
             speech_transcribe,
+            transcription_provider_get,
+            transcription_provider_set,
+            transcription_session_start,
+            transcription_session_append_audio,
+            transcription_session_commit_turn,
+            transcription_session_stop,
             tts_list_voices,
             tts_speak,
             tts_stop
@@ -3185,6 +4111,24 @@ pub fn run() {
             // TTS toggle
             let tts_toggle_label = ui_text("tray.toggleTts");
             let tts_toggle = MenuItemBuilder::with_id("tts_toggle", &tts_toggle_label).build(app)?;
+            let transcription_provider_realtime = MenuItemBuilder::with_id(
+                "transcription_provider_realtime",
+                ui_text("tray.transcriptionProviderRealtime"),
+            )
+            .build(app)?;
+            let transcription_provider_file = MenuItemBuilder::with_id(
+                "transcription_provider_file",
+                ui_text("tray.transcriptionProviderFile"),
+            )
+            .build(app)?;
+            let transcription_provider_menu = SubmenuBuilder::with_id(
+                app,
+                "transcription_provider",
+                ui_text("tray.transcriptionProvider"),
+            )
+            .item(&transcription_provider_realtime)
+            .item(&transcription_provider_file)
+            .build()?;
 
             // Always on top toggle
             let always_on_top_label = ui_text("tray.toggleAlwaysOnTop");
@@ -3207,6 +4151,7 @@ pub fn run() {
                 .item(&reset_window_position)
                 .item(&PredefinedMenuItem::separator(app)?)
                 .item(&tts_toggle)
+                .item(&transcription_provider_menu)
                 .item(&always_on_top)
                 .item(&PredefinedMenuItem::separator(app)?)
                 .item(&api_url_item)
@@ -3362,6 +4307,25 @@ pub fn run() {
                         "tts_toggle" => {
                             if let Some(win) = app.get_webview_window("main") {
                                 let _ = win.emit("tray-tts-toggle", ());
+                            }
+                        }
+                        "transcription_provider_realtime" | "transcription_provider_file" => {
+                            let provider = if id == "transcription_provider_file" {
+                                TranscriptionProviderId::OpenAiFileFallback
+                            } else {
+                                TranscriptionProviderId::OpenAiRealtime
+                            };
+                            let state = app.state::<AppState>();
+                            let provider_state = state.transcription_provider.clone();
+                            if let Some(win) = app.get_webview_window("main") {
+                                let win_clone = win.clone();
+                                async_runtime::spawn(async move {
+                                    {
+                                        let mut guard = provider_state.lock().await;
+                                        *guard = provider;
+                                    }
+                                    let _ = emit_transcription_provider_changed(&win_clone, provider);
+                                });
                             }
                         }
                         "always_on_top" => {

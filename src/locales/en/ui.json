@@ -5,6 +5,9 @@
   "chat": {
     "placeholder": "Ask me anything...",
     "launcherHint": "enter to send · esc to close",
+    "transcript": "Conversation",
+    "newChat": "New chat",
+    "assistantWorking": "I am working on it...",
     "openAgent": "Open agent",
     "retry": "Try again",
     "send": "Send",
@@ -129,6 +132,7 @@
       "moreInfo": "Ask back",
       "open": "Open HITL",
       "announcement": "A HITL approval is waiting: {{title}}.",
+      "announcementBatch": "{{count}} HITL approvals are waiting.",
       "updated": "HITL approval updated.",
       "sending": "Sending HITL response...",
       "moreInfoSent": "Question sent. HITL remains open.",

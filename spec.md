@@ -24,6 +24,7 @@ HITL notifications are provider-driven by the Agent Studio backend SSE stream.
 - Backend emits:
   - `hitl-decision-stream-event`
   - `hitl-decision-stream-lifecycle`
+- Incoming `required` decision bursts are displayed as individual approval cards but announced as one short spoken/status update per burst.
 
 ### Safety rules
 

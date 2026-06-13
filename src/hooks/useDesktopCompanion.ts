@@ -110,6 +110,7 @@ const VOICE_TRANSCRIPT_PREVIEW_MS = 2200;
 const VOICE_PCM_SAMPLE_RATE = 24_000;
 const VOICE_STT_CHUNK_BYTES = 12 * 1024;
 const HITL_STREAM_RECONNECT_MS = 5_000;
+const HITL_ANNOUNCEMENT_BATCH_MS = 250;
 const LEGACY_OPENAI_TTS_DEFAULT_VOICE = "onyx";
 const PREFERRED_OPENAI_TTS_DEFAULT_VOICE = "shimmer";
 
@@ -789,6 +790,7 @@ export function useDesktopCompanion() {
     "manual" | "silence" | "limit" | null
   >(null);
   const lastSubmissionRef = useRef<SubmissionContext | null>(null);
+  const conversationEpochRef = useRef(0);
   const activeLocalRequestIdRef = useRef<string | null>(null);
   const activeDesktopAvatarRequestRef =
     useRef<ActiveDesktopAvatarRequest | null>(null);
@@ -800,6 +802,10 @@ export function useDesktopCompanion() {
   const hitlDecisionConnectionRef =
     useRef<HitlDecisionStreamConnection | null>(null);
   const announcedHitlDecisionIdsRef = useRef(new Set<string>());
+  const pendingHitlAnnouncementsRef = useRef(
+    new Map<string, DesktopAvatarHitlApprovalWidget>(),
+  );
+  const hitlAnnouncementTimeoutRef = useRef<number | null>(null);
   const locallySubmittedHitlDecisionIdsRef = useRef(new Set<string>());
   const desktopAvatarPollTimeoutRef = useRef<number | null>(null);
   const desktopAvatarPollAttemptRef = useRef(0);
@@ -819,21 +825,54 @@ export function useDesktopCompanion() {
   }, [selectedTtsVoice]);
 
   useEffect(() => {
-    function announceHitl(widget: DesktopAvatarHitlApprovalWidget): void {
+    function clearHitlAnnouncementTimeout(): void {
+      if (hitlAnnouncementTimeoutRef.current === null) {
+        return;
+      }
+      window.clearTimeout(hitlAnnouncementTimeoutRef.current);
+      hitlAnnouncementTimeoutRef.current = null;
+    }
+
+    function flushHitlAnnouncements(): void {
+      hitlAnnouncementTimeoutRef.current = null;
+      const widgets = Array.from(pendingHitlAnnouncementsRef.current.values());
+      pendingHitlAnnouncementsRef.current.clear();
+      if (widgets.length === 0) {
+        return;
+      }
+
+      const announcement =
+        widgets.length === 1
+          ? t("widgets.hitl.announcement", { title: widgets[0]!.title })
+          : t("widgets.hitl.announcementBatch", { count: widgets.length });
+      setStatus(announcement);
+      setCompanionState("thinking");
+      if (ttsEnabledRef.current) {
+        const speechId =
+          widgets.length === 1
+            ? `hitl:${widgets[0]!.decisionId}`
+            : `hitl:batch:${widgets
+                .map((widget) => widget.decisionId)
+                .join("|")}`;
+        void speakText(speechId, announcement, selectedTtsVoiceRef.current);
+      }
+    }
+
+    function scheduleHitlAnnouncement(
+      widget: DesktopAvatarHitlApprovalWidget,
+    ): void {
       if (announcedHitlDecisionIdsRef.current.has(widget.decisionId)) {
         return;
       }
       announcedHitlDecisionIdsRef.current.add(widget.decisionId);
-      const announcement = t("widgets.hitl.announcement", { title: widget.title });
-      setStatus(announcement);
-      setCompanionState("thinking");
-      if (ttsEnabledRef.current) {
-        void speakText(
-          `hitl:${widget.decisionId}`,
-          announcement,
-          selectedTtsVoiceRef.current,
-        );
+      pendingHitlAnnouncementsRef.current.set(widget.decisionId, widget);
+      if (hitlAnnouncementTimeoutRef.current !== null) {
+        return;
       }
+      hitlAnnouncementTimeoutRef.current = window.setTimeout(
+        flushHitlAnnouncements,
+        HITL_ANNOUNCEMENT_BATCH_MS,
+      );
     }
 
     function handleHitlEvent(event: HitlDecisionStreamEvent): void {
@@ -860,6 +899,10 @@ export function useDesktopCompanion() {
         event.status !== "pending"
       ) {
         locallySubmittedHitlDecisionIdsRef.current.delete(event.decisionId);
+        pendingHitlAnnouncementsRef.current.delete(event.decisionId);
+        if (pendingHitlAnnouncementsRef.current.size === 0) {
+          clearHitlAnnouncementTimeout();
+        }
         setHitlWidgets((current) =>
           current.filter((widget) => widget.decisionId !== event.decisionId),
         );
@@ -875,7 +918,7 @@ export function useDesktopCompanion() {
       const widget = toHitlWidget(event.item);
       setHitlWidgets((current) => upsertHitlWidget(current, widget));
       if (event.kind === "required") {
-        announceHitl(widget);
+        scheduleHitlAnnouncement(widget);
       }
     }
 
@@ -954,6 +997,8 @@ export function useDesktopCompanion() {
 
     return () => {
       active = false;
+      clearHitlAnnouncementTimeout();
+      pendingHitlAnnouncementsRef.current.clear();
       clearReconnectTimeout();
       const connection = hitlDecisionConnectionRef.current;
       hitlDecisionConnectionRef.current = null;
@@ -1369,10 +1414,24 @@ export function useDesktopCompanion() {
           avatarRequestId,
           streamUrl,
           onEvent: (event) => {
+            const activeRequest = activeDesktopAvatarRequestRef.current;
+            if (
+              !activeRequest ||
+              activeRequest.avatarRequestId !== avatarRequestId
+            ) {
+              return;
+            }
             markDesktopStreamEvent(event);
             desktopAvatarDispatch({ type: "streamEvent", event });
           },
           onDisconnect: (event) => {
+            const activeRequest = activeDesktopAvatarRequestRef.current;
+            if (
+              !activeRequest ||
+              activeRequest.avatarRequestId !== avatarRequestId
+            ) {
+              return;
+            }
             if (event.phase === "aborted") {
               return;
             }
@@ -1657,6 +1716,12 @@ export function useDesktopCompanion() {
   ]);
 
   async function handleLocalStreamEvent(event: StreamEnvelope) {
+    if (
+      event.requestId !== activeLocalRequestIdRef.current &&
+      !requestContextsRef.current.has(event.requestId)
+    ) {
+      return;
+    }
     activeLocalRequestIdRef.current = event.requestId;
     markLocalStreamEvent(event);
 
@@ -1776,6 +1841,7 @@ export function useDesktopCompanion() {
     statusText?: string;
   }) {
     const startedAtMs = Date.now();
+    const requestEpoch = conversationEpochRef.current;
     await stopSpeaking();
     await cleanupDesktopAvatarRuntime();
 
@@ -1847,6 +1913,9 @@ export function useDesktopCompanion() {
       };
       await sendLocalChat(request);
     } catch (caughtError) {
+      if (requestEpoch !== conversationEpochRef.current) {
+        return;
+      }
       const message = errorMessage(
         caughtError,
         t("status.requestCouldNotStart"),
@@ -1872,6 +1941,7 @@ export function useDesktopCompanion() {
     route: PromptRoute,
     clientRequestId?: string,
   ) {
+    const requestEpoch = conversationEpochRef.current;
     const requestId =
       clientRequestId ?? `desktop-avatar-client:${crypto.randomUUID()}`;
     const startedAtMs = Date.now();
@@ -1934,6 +2004,9 @@ export function useDesktopCompanion() {
       const result = await desktopAvatarApiClient.createRequest(
         buildDesktopAvatarRequestInput(prompt, source, requestId),
       );
+      if (requestEpoch !== conversationEpochRef.current) {
+        return;
+      }
       activeDesktopAvatarRequestRef.current = {
         ...(activeDesktopAvatarRequestRef.current ?? {
           assistantMessageId: assistantMessage.id,
@@ -1957,6 +2030,9 @@ export function useDesktopCompanion() {
         result.pollUrl,
       );
     } catch (caughtError) {
+      if (requestEpoch !== conversationEpochRef.current) {
+        return;
+      }
       const message = errorMessage(
         caughtError,
         t("status.requestCouldNotStart"),
@@ -2084,6 +2160,25 @@ export function useDesktopCompanion() {
       lastSubmissionRef.current;
     const retryId = route === "localChat" ? undefined : clientRequestId;
     await submitPrompt(prompt, source, retryId);
+  }
+
+  async function clearConversation() {
+    conversationEpochRef.current += 1;
+    messagesRef.current = [];
+    requestContextsRef.current.clear();
+    lastSubmissionRef.current = null;
+    activeLocalRequestIdRef.current = null;
+    activeDesktopAvatarRequestRef.current = null;
+    lastSpokenDesktopAvatarKeyRef.current = null;
+    setMessages([]);
+    setDraft("");
+    setError(null);
+    setStatus(null);
+    setLatencyTimeline(null);
+    setCompanionState("idle");
+    desktopAvatarDispatch({ type: "reset" });
+    await stopSpeaking();
+    await cleanupDesktopAvatarRuntime();
   }
 
   async function startRecording() {
@@ -2497,6 +2592,7 @@ export function useDesktopCompanion() {
     setSizePreset,
     submitCurrentDraft: () => submitPrompt(draft, "text"),
     submitSuggestion: (value: string) => submitPrompt(value, "text"),
+    clearConversation,
     approveHitl,
     rejectHitl,
     requestMoreInfoForHitl,

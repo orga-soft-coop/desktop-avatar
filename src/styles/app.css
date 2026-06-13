@@ -837,6 +837,135 @@ button {
   margin: 0;
 }
 
+/* --- Transcript --- */
+
+.chat-panel__transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.chat-panel__transcript-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 0.68rem;
+}
+
+.chat-panel__clear {
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 9px;
+  padding: 5px 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.72);
+  font: inherit;
+  font-size: 0.68rem;
+  line-height: 1;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.chat-panel__clear:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: white;
+}
+
+.chat-panel__messages {
+  display: flex;
+  max-height: 228px;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
+.chat-panel__message {
+  display: flex;
+  width: 100%;
+}
+
+.chat-panel__message[data-role="user"] {
+  justify-content: flex-end;
+}
+
+.chat-panel__message[data-role="assistant"] {
+  justify-content: flex-start;
+}
+
+.chat-panel__message-bubble {
+  max-width: 86%;
+  min-width: 0;
+  border-radius: 14px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.chat-panel__message[data-role="user"] .chat-panel__message-bubble {
+  background: rgba(166, 206, 57, 0.18);
+  border-color: rgba(166, 206, 57, 0.2);
+  color: white;
+}
+
+.chat-panel__message[data-role="assistant"] .chat-panel__message-bubble {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.chat-panel__message-bubble p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.chat-panel__message-widget {
+  display: inline-flex;
+  max-width: 100%;
+  margin-top: 7px;
+  border-radius: 999px;
+  padding: 4px 7px;
+  background: rgba(127, 182, 218, 0.16);
+  color: rgba(203, 232, 252, 0.96);
+  font-size: 0.68rem;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.chat-panel__message-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.chat-panel__message-chip {
+  min-width: 0;
+  border: 1px solid rgba(166, 206, 57, 0.22);
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: rgba(166, 206, 57, 0.12);
+  color: rgba(233, 250, 180, 0.96);
+  font: inherit;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.chat-panel__message-chip:hover {
+  background: rgba(166, 206, 57, 0.22);
+}
+
 /* --- Composer (input + send) --- */
 
 .chat-panel__composer {
@@ -2328,6 +2457,7 @@ button {
 }
 
 .app-shell[data-theme="light"] .chat-panel__hint,
+.app-shell[data-theme="light"] .chat-panel__transcript-header,
 .app-shell[data-theme="light"] .chat-panel__launcher small,
 .app-shell[data-theme="light"] .chat-panel__devtools-k,
 .app-shell[data-theme="light"] .chat-panel__devtools-row > label,
@@ -2339,6 +2469,42 @@ button {
 .app-shell[data-theme="light"] .data-table thead th,
 .app-shell[data-theme="light"] .data-table__meta {
   color: var(--da-text-subtle) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__clear,
+.app-shell[data-theme="light"] .chat-panel__message-bubble {
+  background: rgba(15, 23, 42, 0.04) !important;
+  border-color: rgba(15, 23, 42, 0.08) !important;
+  color: var(--da-text) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__clear:hover {
+  background: rgba(15, 23, 42, 0.08) !important;
+  color: var(--da-text) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__message[data-role="user"] .chat-panel__message-bubble {
+  background: rgba(112, 150, 28, 0.14) !important;
+  border-color: rgba(112, 150, 28, 0.2) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__message[data-role="assistant"] .chat-panel__message-bubble {
+  background: rgba(255, 255, 255, 0.72) !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__message-widget {
+  background: rgba(33, 116, 172, 0.12) !important;
+  color: #13547d !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__message-chip {
+  background: rgba(112, 150, 28, 0.1) !important;
+  border-color: rgba(112, 150, 28, 0.18) !important;
+  color: #526d14 !important;
+}
+
+.app-shell[data-theme="light"] .chat-panel__message-chip:hover {
+  background: rgba(112, 150, 28, 0.18) !important;
 }
 
 .app-shell[data-theme="light"] .chat-panel__composer textarea,

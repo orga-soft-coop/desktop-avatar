@@ -386,7 +386,81 @@ describe("useDesktopCompanion desktop avatar integration", () => {
 
     await waitFor(() => expect(result.current.hitlWidgets).toHaveLength(1));
     expect(result.current.hitlWidgets[0]?.title).toBe("PURCHASE ORDER");
-    expect(mocks.speakTextMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mocks.speakTextMock).toHaveBeenCalledTimes(1));
+    expect(mocks.speakTextMock).toHaveBeenCalledWith(
+      "hitl:proposal::run%3A1::proposal%3A1",
+      "Eine HITL-Freigabe wartet: PURCHASE ORDER.",
+      null,
+    );
+  });
+
+  it("batches a burst of HITL required announcements into one spoken update", async () => {
+    mocks.getBootstrapStateMock.mockResolvedValue({
+      avatarManifest: null,
+      collapsedSize: { width: 520, height: 780 },
+      expandedSize: { width: 520, height: 920 },
+      ttsEnabled: true,
+      transcriptionProvider: "openai-realtime",
+      transcriptionProviders: ["openai-realtime", "openai-file-fallback"]
+    });
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalled());
+
+    act(() => {
+      for (let index = 1; index <= 5; index += 1) {
+        mocks.streamHandlers.onHitlEvent?.(
+          requiredHitlEvent({
+            decisionId: `proposal::run%3A${index}::proposal%3A${index}`,
+            runId: `run:${index}`,
+            proposalId: `proposal:${index}`,
+            title: `PURCHASE ORDER ${index}`
+          }),
+        );
+      }
+    });
+
+    await waitFor(() => expect(result.current.hitlWidgets).toHaveLength(5));
+    await waitFor(() => expect(mocks.speakTextMock).toHaveBeenCalledTimes(1));
+    expect(result.current.status).toBe("5 HITL-Freigaben warten.");
+    expect(mocks.speakTextMock).toHaveBeenCalledWith(
+      expect.stringContaining("hitl:batch:"),
+      "5 HITL-Freigaben warten.",
+      null,
+    );
+  });
+
+  it("does not announce a HITL decision that resolves before the batch timer fires", async () => {
+    mocks.getBootstrapStateMock.mockResolvedValue({
+      avatarManifest: null,
+      collapsedSize: { width: 520, height: 780 },
+      expandedSize: { width: 520, height: 920 },
+      ttsEnabled: true,
+      transcriptionProvider: "openai-realtime",
+      transcriptionProviders: ["openai-realtime", "openai-file-fallback"]
+    });
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectHitlDecisionStreamMock).toHaveBeenCalled());
+
+    vi.useFakeTimers();
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.(requiredHitlEvent());
+      mocks.streamHandlers.onHitlEvent?.({
+        type: "decision",
+        kind: "resolved",
+        decisionId: "proposal::run%3A1::proposal%3A1",
+        runId: "run:1",
+        proposalId: "proposal:1",
+        status: "approved",
+        emittedAt: "2026-06-12T12:00:01.000Z"
+      });
+      vi.advanceTimersByTime(300);
+    });
+
+    expect(result.current.hitlWidgets).toHaveLength(0);
+    expect(result.current.status).toBe("HITL-Freigabe aktualisiert.");
+    expect(mocks.speakTextMock).not.toHaveBeenCalled();
   });
 
   it("hydrates pending HITL cards from the initial stream snapshot", async () => {
@@ -870,6 +944,94 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       expect(result.current.latencyDebug?.completedMs).not.toBeNull();
       expect(result.current.latencyDebug?.usedPolling).toBe(false);
     });
+  });
+
+  it("clears the local conversation without deleting HITL state", async () => {
+    mocks.createRequestMock.mockResolvedValue({
+      accepted: true,
+      avatarRequestId: "req-clear",
+      status: "RECEIVED",
+      streamUrl: "/stream/req-clear",
+      pollUrl: "/poll/req-clear",
+      idempotent: false
+    });
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    act(() => {
+      result.current.setDraft("Welche Bestellungen sind offen?");
+    });
+    await act(async () => {
+      await result.current.submitCurrentDraft();
+    });
+
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.(requiredHitlEvent());
+      mocks.streamHandlers.onEvent?.({
+        type: "talk",
+        avatarRequestId: "req-clear",
+        talk: { text: "Drei Bestellungen sind offen." },
+        emittedAt: "2026-04-09T12:00:01.000Z"
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.hitlWidgets).toHaveLength(1);
+    });
+
+    await act(async () => {
+      await result.current.clearConversation();
+    });
+
+    expect(result.current.messages).toHaveLength(0);
+    expect(result.current.draft).toBe("");
+    expect(result.current.status).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.latencyDebug).toBeNull();
+    expect(result.current.hitlWidgets).toHaveLength(1);
+  });
+
+  it("ignores a desktop-avatar create response that resolves after the conversation was cleared", async () => {
+    const pendingCreate = deferred<CreateDesktopAvatarRequestResult>();
+    mocks.createRequestMock.mockReturnValueOnce(pendingCreate.promise);
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    act(() => {
+      result.current.setDraft("Welche Artikel muss ich nachbestellen?");
+    });
+    let submitPromise: Promise<void> | null = null;
+    act(() => {
+      submitPromise = result.current.submitCurrentDraft();
+    });
+
+    await waitFor(() => {
+      expect(mocks.createRequestMock).toHaveBeenCalledTimes(1);
+      expect(result.current.messages).toHaveLength(2);
+    });
+
+    await act(async () => {
+      await result.current.clearConversation();
+    });
+
+    await act(async () => {
+      pendingCreate.resolve({
+        accepted: true,
+        avatarRequestId: "req-cleared-late",
+        status: "RECEIVED",
+        streamUrl: "/stream/req-cleared-late",
+        pollUrl: "/poll/req-cleared-late",
+        idempotent: false
+      });
+      await submitPromise;
+    });
+
+    expect(result.current.messages).toHaveLength(0);
+    expect(result.current.status).toBeNull();
+    expect(mocks.connectStreamMock).not.toHaveBeenCalled();
   });
 
   it("uses API-first routing for non-casual prompts", async () => {

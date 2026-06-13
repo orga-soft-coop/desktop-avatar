@@ -5,6 +5,9 @@
   "chat": {
     "placeholder": "Frag mich etwas...",
     "launcherHint": "↵ senden · esc schließen",
+    "transcript": "Verlauf",
+    "newChat": "Neuer Chat",
+    "assistantWorking": "Ich arbeite daran...",
     "openAgent": "Agent öffnen",
     "retry": "Erneut versuchen",
     "send": "Senden",
@@ -129,6 +132,7 @@
       "moreInfo": "Rückfrage",
       "open": "HITL öffnen",
       "announcement": "Eine HITL-Freigabe wartet: {{title}}.",
+      "announcementBatch": "{{count}} HITL-Freigaben warten.",
       "updated": "HITL-Freigabe aktualisiert.",
       "sending": "HITL-Antwort wird gesendet...",
       "moreInfoSent": "Rückfrage gesendet. HITL bleibt offen.",

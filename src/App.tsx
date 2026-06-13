@@ -721,6 +721,7 @@ export default function App() {
               selectedTtsVoice={companion.selectedTtsVoice}
               transcriptionProvider={companion.transcriptionProvider}
               transcriptionProviders={companion.transcriptionProviders}
+              messages={companion.messages}
               latencyDebug={companion.latencyDebug}
               animationNames={animationNames}
               cameraConfig={cameraConfig}
@@ -744,6 +745,8 @@ export default function App() {
               onSelectLocale={companion.selectLocale}
               onSelectTtsVoice={companion.selectTtsVoice}
               onSelectTranscriptionProvider={companion.selectTranscriptionProvider}
+              onClearConversation={companion.clearConversation}
+              onSuggestionSubmit={companion.submitSuggestion}
               onRetry={companion.retryLastPrompt}
               onDragStart={companion.startWindowDrag}
               onSelectAnimation={setForcedAnimation}

@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { AvatarCameraConfig } from "../lib/avatar-stage-config";
 import type {
   BackendConnectionState,
+  ChatMessage,
   DevToolsLatencySnapshot,
   TranscriptionProviderId
 } from "../lib/contracts";
@@ -41,6 +42,7 @@ interface ChatPanelProps {
   selectedTtsVoice?: string | null;
   transcriptionProvider?: TranscriptionProviderId;
   transcriptionProviders?: TranscriptionProviderId[];
+  messages?: ChatMessage[];
   latencyDebug?: DevToolsLatencySnapshot | null;
   error?: string | null;
   animationNames?: string[];
@@ -65,6 +67,8 @@ interface ChatPanelProps {
   onSelectTranscriptionProvider?: (provider: TranscriptionProviderId) => void;
   onToggleRecording: () => void;
   onSelectSizePreset: (preset: SizePreset) => void;
+  onClearConversation?: () => void;
+  onSuggestionSubmit?: (value: string) => void;
   onRetry: () => void;
   onDragStart: () => void;
   onSelectAnimation?: (name: string | null) => void;
@@ -124,6 +128,7 @@ export function ChatPanel({
   selectedTtsVoice,
   transcriptionProvider = "openai-realtime",
   transcriptionProviders = ["openai-realtime", "openai-file-fallback"],
+  messages = [],
   latencyDebug,
   error,
   animationNames,
@@ -148,6 +153,8 @@ export function ChatPanel({
   onSelectTranscriptionProvider,
   onToggleRecording,
   onSelectSizePreset,
+  onClearConversation,
+  onSuggestionSubmit,
   onRetry,
   onDragStart,
   onSelectAnimation,
@@ -167,6 +174,7 @@ export function ChatPanel({
   });
   const [configCopied, setConfigCopied] = useState(false);
   const draftTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const messagesListRef = useRef<HTMLDivElement>(null);
 
   const hasVoiceControls =
     Boolean(onSelectTranscriptionProvider) ||
@@ -179,6 +187,16 @@ export function ChatPanel({
   const hasCameraControls = Boolean(cameraConfig && onCameraConfigChange);
   const hasWidgetDemoControls = Boolean(onToggleDemoWidget || onClearDemoWidgets);
   const selectedDemoCount = activeDemoWidgets.length;
+  const visibleMessages = messages.filter(
+    (message) =>
+      message.role !== "system" &&
+      (message.text.trim() ||
+        message.isStreaming ||
+        message.widget ||
+        (message.followUpQuestions?.length ?? 0) > 0)
+  );
+  const hasConversation = visibleMessages.length > 0;
+  const latestVisibleMessage = visibleMessages[visibleMessages.length - 1] ?? null;
   const widgetDemoSummary =
     selectedDemoCount === 0
       ? t("devTools.demoSummary.none")
@@ -281,6 +299,18 @@ export function ChatPanel({
     }
   }, [draft]);
 
+  useLayoutEffect(() => {
+    const messagesList = messagesListRef.current;
+    if (!messagesList) {
+      return;
+    }
+    messagesList.scrollTop = messagesList.scrollHeight;
+  }, [
+    latestVisibleMessage?.id,
+    latestVisibleMessage?.text,
+    latestVisibleMessage?.isStreaming
+  ]);
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -346,6 +376,71 @@ export function ChatPanel({
                   <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
                 </svg>
               </button>
+            </div>
+          ) : null}
+
+          {hasConversation ? (
+            <div className="chat-panel__transcript" aria-label={t("chat.transcript")}>
+              <div className="chat-panel__transcript-header">
+                <span>{t("chat.transcript")}</span>
+                {onClearConversation ? (
+                  <button
+                    className="chat-panel__clear"
+                    type="button"
+                    onClick={onClearConversation}
+                    title={t("chat.newChat")}
+                  >
+                    {t("chat.newChat")}
+                  </button>
+                ) : null}
+              </div>
+              <div className="chat-panel__messages" ref={messagesListRef}>
+                {visibleMessages.map((message) => {
+                  const hasFollowUps = (message.followUpQuestions?.length ?? 0) > 0;
+                  const assistantText =
+                    message.text.trim() ||
+                    (message.isStreaming ? t("chat.assistantWorking") : "");
+                  const displayText = message.role === "assistant" ? assistantText : message.text;
+
+                  return (
+                    <article
+                      key={message.id}
+                      className="chat-panel__message"
+                      data-role={message.role}
+                      data-streaming={message.isStreaming ? "true" : "false"}
+                    >
+                      <div className="chat-panel__message-bubble">
+                        {displayText ? <p>{displayText}</p> : null}
+                        {message.widget ? (
+                          <span className="chat-panel__message-widget">
+                            {message.widget.title}
+                          </span>
+                        ) : null}
+                        {hasFollowUps ? (
+                          <div className="chat-panel__message-chips">
+                            {message.followUpQuestions!.map((question) => (
+                              <button
+                                key={question}
+                                type="button"
+                                className="chat-panel__message-chip"
+                                onClick={() => {
+                                  if (onSuggestionSubmit) {
+                                    onSuggestionSubmit(question);
+                                    return;
+                                  }
+                                  onDraftChange(question);
+                                }}
+                              >
+                                {question}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
             </div>
           ) : null}
 

@@ -72,7 +72,7 @@ Copy `.env.example` to `.env` and configure:
 
 - **Routing**: `src/lib/router.ts` classifies prompts to local LLM or business backend via keyword matching
 - **Streaming**: Server-Sent Events (SSE) for real-time response streaming from both backends
-- **HITL streaming**: A separate backend SSE stream feeds approval cards and announcements without coupling to request-scoped assistant streams
+- **HITL streaming**: A separate backend SSE stream feeds approval cards and batched announcements without coupling to request-scoped assistant streams
 - **Tauri IPC**: All backend calls go through `src/lib/tauri.ts` using Tauri commands
 - **Avatar Assets**: Manifest-based system supporting local paths, relative paths, and HTTPS URLs
 - **Animation State**: Avatar transitions between idle/listening/thinking/speaking states

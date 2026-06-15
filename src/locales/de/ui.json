@@ -7,8 +7,10 @@
     "launcherHint": "↵ senden · esc schließen",
     "transcript": "Verlauf",
     "newChat": "Neuer Chat",
+    "emptyTranscript": "Noch kein Chatverlauf.",
     "assistantWorking": "Ich arbeite daran...",
     "openAgent": "Agent öffnen",
+    "openRadar": "Operator-Radar öffnen",
     "retry": "Erneut versuchen",
     "send": "Senden",
     "stopRecording": "Aufnahme stoppen",
@@ -88,6 +90,14 @@
     "demoText": "Text",
     "demoClarification": "Rückfrage",
     "demoAreaChart": "Flächenchart",
+    "demoHitlApproval": "HITL",
+    "demoOperatorRadar": "Radar",
+    "radarScenarios": "Radar-Szenarien",
+    "radarScenarioForecastRunning": "Forecast läuft",
+    "radarScenarioForecastCompleted": "Forecast abgeschlossen",
+    "radarScenarioHitlOpen": "HITL offen",
+    "radarScenarioRunFailed": "Run fehlgeschlagen",
+    "radarScenarioWarehouseReorder": "Nachbestellung prüfen",
     "demoError": "Fehlerkarte",
     "demoSummary": {
       "none": "keins aktiv",
@@ -97,6 +107,13 @@
       "text": "Text",
       "clarification": "Rückfrage",
       "areaChart": "Flächenchart",
+      "hitlApproval": "HITL",
+      "operatorRadar": "Radar",
+      "radarForecastRunning": "Forecast läuft",
+      "radarForecastCompleted": "Forecast abgeschlossen",
+      "radarHitlOpen": "HITL offen",
+      "radarRunFailed": "Run fehlgeschlagen",
+      "radarWarehouseReorder": "Nachbestellung",
       "error": "Fehlerkarte"
     }
   },
@@ -139,6 +156,55 @@
       "sent": "HITL-Antwort gesendet.",
       "actionFailed": "HITL-Aktion fehlgeschlagen."
     },
+    "radar": {
+      "title": "Operator-Radar",
+      "summary": "Radar-Zusammenfassung",
+      "empty": "Aktuell liegen keine Operator-Signale vor.",
+      "errorMessage": "Operator-Radar ist aktuell nicht erreichbar.",
+      "total": "{{count}} gesamt",
+      "approvals": "{{count}} HITL offen",
+      "running": "{{count}} aktiv",
+      "failed": "{{count}} Fehler",
+      "showDetails": "Details",
+      "hideDetails": "Details ausblenden",
+      "snooze": "10 Min ausblenden",
+      "follow": "Beobachten",
+      "following": "Wird beobachtet",
+      "completionOnly": "Bei Abschluss melden",
+      "openHitl": "HITL öffnen",
+      "detail": {
+        "why": "Warum sehe ich das?",
+        "whyFallback": "Dieses Signal wird angezeigt, weil es aktuell im Operator-Radar priorisiert wurde.",
+        "timeline": "Aktivitätsverlauf",
+        "source": "Quelle",
+        "request": "Request",
+        "run": "Run",
+        "proposal": "Vorschlag",
+        "decision": "Entscheidung",
+        "action": "Aktion",
+        "status": "Status"
+      },
+      "severity": {
+        "info": "Info",
+        "warning": "Warnung",
+        "high": "Hoch",
+        "critical": "Kritisch"
+      },
+      "status": {
+        "needsApproval": "Freigabe offen",
+        "waiting": "Wartet",
+        "running": "Läuft",
+        "completed": "Abgeschlossen",
+        "failed": "Fehler",
+        "blocked": "Blockiert"
+      },
+      "audience": {
+        "personal": "Persönlich",
+        "team": "Team",
+        "department": "Bereich",
+        "management": "Management"
+      }
+    },
     "table": {
       "searchPlaceholder": "In allen Spalten suchen…",
       "noResults": "Keine Treffer",
@@ -154,7 +220,8 @@
       "connected": "Backend verbunden",
       "disconnected": "Backend getrennt",
       "unavailable": "Backend nicht erreichbar",
-      "pendingHitl": "{{count}} HITL-Meldung(en) warten. {{backend}}."
+      "pendingHitl": "{{count}} HITL-Meldung(en) warten. {{backend}}.",
+      "pendingRadar": "{{count}} Radar-Signal(e) aktiv. {{backend}}."
     }
   },
   "slider": {

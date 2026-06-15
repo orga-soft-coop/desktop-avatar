@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CreateDesktopAvatarRequestInput,
   CreateDesktopAvatarRequestResult,
+  DesktopAvatarRadarStreamEvent,
+  DesktopAvatarRadarStreamLifecycleEvent,
   DesktopAvatarRequestDocument,
   DesktopAvatarStreamEvent,
   DesktopAvatarStreamLifecycleEvent,
@@ -19,6 +21,8 @@ const mocks = vi.hoisted(() => {
     onDisconnect: ((event: DesktopAvatarStreamLifecycleEvent) => void) | null;
     onHitlEvent: ((event: HitlDecisionStreamEvent) => void) | null;
     onHitlDisconnect: ((event: HitlDecisionStreamLifecycleEvent) => void) | null;
+    onRadarEvent: ((event: DesktopAvatarRadarStreamEvent) => void) | null;
+    onRadarDisconnect: ((event: DesktopAvatarRadarStreamLifecycleEvent) => void) | null;
     onTtsState: ((event: TtsStateEvent) => void) | null;
     onTranscriptionSessionEvent: ((event: TranscriptionSessionEvent) => void) | null;
     onTranscriptionProviderChanged: ((event: TranscriptionProviderChangedEvent) => void) | null;
@@ -30,6 +34,8 @@ const mocks = vi.hoisted(() => {
     onDisconnect: null,
     onHitlEvent: null,
     onHitlDisconnect: null,
+    onRadarEvent: null,
+    onRadarDisconnect: null,
     onTtsState: null,
     onTranscriptionSessionEvent: null,
     onTranscriptionProviderChanged: null,
@@ -104,6 +110,7 @@ const mocks = vi.hoisted(() => {
     transcribeAudioMock: vi.fn(),
     createRequestMock: vi.fn(),
     getRequestMock: vi.fn(),
+    getRadarMock: vi.fn(),
     connectStreamMock: vi.fn(async (args: {
       avatarRequestId: string;
       streamUrl?: string;
@@ -132,6 +139,19 @@ const mocks = vi.hoisted(() => {
         })
       };
     }),
+    connectRadarStreamMock: vi.fn(async (args: {
+      onEvent: (event: DesktopAvatarRadarStreamEvent) => void;
+      onDisconnect: (event: DesktopAvatarRadarStreamLifecycleEvent) => void;
+    }) => {
+      streamHandlers.onRadarEvent = args.onEvent;
+      streamHandlers.onRadarDisconnect = args.onDisconnect;
+      return {
+        close: vi.fn(async () => {
+          streamHandlers.onRadarEvent = null;
+          streamHandlers.onRadarDisconnect = null;
+        })
+      };
+    }),
     approveHitlDecisionMock: vi.fn(),
     rejectHitlDecisionMock: vi.fn(),
     requestMoreInfoForHitlMock: vi.fn()
@@ -142,8 +162,10 @@ vi.mock("../lib/desktop-avatar-api", () => ({
   desktopAvatarApiClient: {
     createRequest: mocks.createRequestMock,
     getRequest: mocks.getRequestMock,
+    getRadar: mocks.getRadarMock,
     connectStream: mocks.connectStreamMock,
     connectHitlDecisionStream: mocks.connectHitlDecisionStreamMock,
+    connectRadarStream: mocks.connectRadarStreamMock,
     approveHitlDecision: mocks.approveHitlDecisionMock,
     rejectHitlDecision: mocks.rejectHitlDecisionMock,
     requestMoreInfoForHitl: mocks.requestMoreInfoForHitlMock
@@ -330,11 +352,168 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     mocks.transcribeAudioMock.mockReset();
     mocks.createRequestMock.mockReset();
     mocks.getRequestMock.mockReset();
+    mocks.getRadarMock.mockReset().mockResolvedValue({
+      generatedAt: "2026-06-14T09:00:00.000Z",
+      summary: {
+        totalCount: 0,
+        criticalCount: 0,
+        highCount: 0,
+        needsApprovalCount: 0,
+        runningCount: 0,
+        failedCount: 0
+      },
+      items: []
+    });
     mocks.connectStreamMock.mockClear();
     mocks.connectHitlDecisionStreamMock.mockClear();
+    mocks.connectRadarStreamMock.mockClear();
     mocks.approveHitlDecisionMock.mockReset().mockResolvedValue(undefined);
     mocks.rejectHitlDecisionMock.mockReset().mockResolvedValue(undefined);
     mocks.requestMoreInfoForHitlMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("keeps radar polling passive until the user opens the radar", async () => {
+    mocks.getRadarMock.mockResolvedValue({
+      generatedAt: "2026-06-14T09:00:00.000Z",
+      summary: {
+        totalCount: 1,
+        criticalCount: 0,
+        highCount: 1,
+        needsApprovalCount: 1,
+        runningCount: 0,
+        failedCount: 0,
+        topSignalId: "radar:hitl:decision-1"
+      },
+      items: [
+        {
+          signalId: "radar:hitl:decision-1",
+          kind: "hitlApproval",
+          severity: "high",
+          status: "needsApproval",
+          title: "Freigabe wartet",
+          description: "Eine Freigabe wartet.",
+          studioAgentId: "studio-agent:warehouse",
+          agentName: "Warehouse Agent",
+          agentRole: "DOMAIN",
+          decisionId: "decision-1",
+          updatedAt: "2026-06-14T09:00:00.000Z",
+          audience: {
+            scope: "team"
+          }
+        }
+      ]
+    });
+
+    const { result } = renderHook(() => useDesktopCompanion());
+
+    await waitFor(() => expect(result.current.operatorRadarSignalCount).toBe(1));
+    expect(result.current.operatorRadarWidget).toBeNull();
+
+    act(() => {
+      result.current.openOperatorRadar();
+    });
+
+    await waitFor(() =>
+      expect(result.current.operatorRadarWidget?.type).toBe("operatorRadar"),
+    );
+  });
+
+  it("updates the radar count from stream snapshots without opening the widget", async () => {
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.connectRadarStreamMock).toHaveBeenCalled());
+
+    act(() => {
+      mocks.streamHandlers.onRadarEvent?.({
+        type: "snapshot",
+        eventId: "radar:snapshot:1",
+        emittedAt: "2026-06-14T09:00:00.000Z",
+        radar: {
+          generatedAt: "2026-06-14T09:00:00.000Z",
+          summary: {
+            totalCount: 1,
+            criticalCount: 0,
+            highCount: 0,
+            needsApprovalCount: 0,
+            runningCount: 1,
+            failedCount: 0,
+            topSignalId: "radar:runtime:warehouse:running"
+          },
+          items: [
+            {
+              signalId: "radar:runtime:warehouse:running",
+              kind: "runtimeRunning",
+              severity: "info",
+              status: "running",
+              title: "Warehouse Agent prüft Nachbestellbedarf",
+              description: "Runtime-Flow läuft.",
+              studioAgentId: "studio-agent:warehouse",
+              agentName: "Warehouse Agent",
+              agentRole: "DOMAIN",
+              updatedAt: "2026-06-14T09:00:00.000Z",
+              audience: {
+                scope: "team"
+              }
+            }
+          ]
+        }
+      });
+    });
+
+    await waitFor(() => expect(result.current.operatorRadarSignalCount).toBe(1));
+    expect(result.current.operatorRadarWidget).toBeNull();
+  });
+
+  it("filters snoozed radar signals locally from count and widget", async () => {
+    mocks.getRadarMock.mockResolvedValue({
+      generatedAt: "2026-06-14T09:00:00.000Z",
+      summary: {
+        totalCount: 1,
+        criticalCount: 0,
+        highCount: 0,
+        needsApprovalCount: 0,
+        runningCount: 1,
+        failedCount: 0,
+        topSignalId: "radar:runtime:warehouse:running"
+      },
+      items: [
+        {
+          signalId: "radar:runtime:warehouse:running",
+          kind: "runtimeRunning",
+          severity: "info",
+          status: "running",
+          title: "Warehouse Agent prüft Nachbestellbedarf",
+          description: "Runtime-Flow läuft.",
+          studioAgentId: "studio-agent:warehouse",
+          agentName: "Warehouse Agent",
+          agentRole: "DOMAIN",
+          updatedAt: "2026-06-14T09:00:00.000Z",
+          audience: {
+            scope: "team"
+          }
+        }
+      ]
+    });
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(result.current.operatorRadarSignalCount).toBe(1));
+
+    act(() => {
+      result.current.openOperatorRadar();
+    });
+    await waitFor(() =>
+      expect(result.current.operatorRadarWidget?.type).toBe("operatorRadar"),
+    );
+
+    act(() => {
+      result.current.snoozeOperatorRadarSignal("radar:runtime:warehouse:running");
+    });
+
+    expect(result.current.operatorRadarSignalCount).toBe(0);
+    expect(
+      result.current.operatorRadarWidget?.type === "operatorRadar"
+        ? result.current.operatorRadarWidget.items
+        : [],
+    ).toHaveLength(0);
   });
 
   it("adds a HITL card and announces a required decision once", async () => {

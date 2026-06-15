@@ -1,4 +1,7 @@
-import type { DesktopAvatarWidgetPayload } from "../lib/contracts";
+import type {
+  DesktopAvatarRadarSignal,
+  DesktopAvatarWidgetPayload
+} from "../lib/contracts";
 import { t } from "../lib/i18n";
 import { DataTable } from "./DataTable";
 import { WidgetAreaChart } from "./WidgetAreaChart";
@@ -14,6 +17,9 @@ interface DesktopAvatarWidgetPanelProps {
   onHitlReject?: (decisionId: string, reason: string) => void;
   onHitlRequestMoreInfo?: (decisionId: string, message: string) => void;
   onOpenHitl?: (decisionId: string) => void;
+  onRadarSnooze?: (signalId: string) => void;
+  onRadarFollowToggle?: (signalId: string) => void;
+  onRadarCompletionOnly?: (signalId: string) => void;
 }
 
 function formatScalar(value: string | number | boolean | null): string {
@@ -26,6 +32,31 @@ function formatScalar(value: string | number | boolean | null): string {
   return String(value);
 }
 
+function formatRadarTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function radarSourceDetailRows(item: DesktopAvatarRadarSignal): Array<[string, string]> {
+  const source = item.source;
+  return [
+    [t("widgets.radar.detail.source"), source?.label ?? item.kind],
+    ...(source?.requestId ? [[t("widgets.radar.detail.request"), source.requestId] as [string, string]] : []),
+    ...(item.runId ? [[t("widgets.radar.detail.run"), item.runId] as [string, string]] : []),
+    ...(item.proposalId
+      ? [[t("widgets.radar.detail.proposal"), item.proposalId] as [string, string]]
+      : []),
+    ...(item.decisionId
+      ? [[t("widgets.radar.detail.decision"), item.decisionId] as [string, string]]
+      : []),
+    ...(item.actionId ? [[t("widgets.radar.detail.action"), item.actionId] as [string, string]] : []),
+    ...(source?.status ? [[t("widgets.radar.detail.status"), source.status] as [string, string]] : [])
+  ];
+}
+
 export function DesktopAvatarWidgetPanel({
   widget,
   followUpQuestions = [],
@@ -34,7 +65,10 @@ export function DesktopAvatarWidgetPanel({
   onHitlApprove,
   onHitlReject,
   onHitlRequestMoreInfo,
-  onOpenHitl
+  onOpenHitl,
+  onRadarSnooze,
+  onRadarFollowToggle,
+  onRadarCompletionOnly
 }: DesktopAvatarWidgetPanelProps) {
   if (widget.type === "table") {
     return (
@@ -114,6 +148,19 @@ export function DesktopAvatarWidgetPanel({
     return <WidgetAreaChart widget={widget} onClose={onDismiss} />;
   }
 
+  if (widget.type === "operatorRadar") {
+    return (
+      <OperatorRadarCard
+        widget={widget}
+        onClose={onDismiss}
+        onOpenHitl={onOpenHitl}
+        onRadarSnooze={onRadarSnooze}
+        onRadarFollowToggle={onRadarFollowToggle}
+        onRadarCompletionOnly={onRadarCompletionOnly}
+      />
+    );
+  }
+
   if (widget.type === "hitlApproval") {
     return (
       <HitlApprovalCard
@@ -132,6 +179,174 @@ export function DesktopAvatarWidgetPanel({
       <WidgetHeader title={widget.title} onClose={onDismiss} />
       <p className="widget-card__body-text">{widget.message}</p>
     </section>
+  );
+}
+
+function OperatorRadarCard({
+  widget,
+  onClose,
+  onOpenHitl,
+  onRadarSnooze,
+  onRadarFollowToggle,
+  onRadarCompletionOnly
+}: {
+  widget: Extract<DesktopAvatarWidgetPayload, { type: "operatorRadar" }>;
+  onClose?: () => void;
+  onOpenHitl?: (decisionId: string) => void;
+  onRadarSnooze?: (signalId: string) => void;
+  onRadarFollowToggle?: (signalId: string) => void;
+  onRadarCompletionOnly?: (signalId: string) => void;
+}) {
+  const topSignal = widget.items[0] ?? null;
+  const hasSignals = widget.items.length > 0;
+  const [expandedSignalId, setExpandedSignalId] = useState<string | null>(null);
+  return (
+    <section className="widget-card widget-card--radar backdrop-blur">
+      <WidgetHeader title={widget.title} onClose={onClose} />
+      {hasSignals ? (
+        <div className="widget-card__radar-summary" aria-label={t("widgets.radar.summary")}>
+          <span>{t("widgets.radar.total", { count: widget.summary.totalCount })}</span>
+          <span>{t("widgets.radar.approvals", { count: widget.summary.needsApprovalCount })}</span>
+          <span>{t("widgets.radar.running", { count: widget.summary.runningCount })}</span>
+          <span>{t("widgets.radar.failed", { count: widget.summary.failedCount })}</span>
+        </div>
+      ) : null}
+      {topSignal ? (
+        <div className="widget-card__radar-top" data-severity={topSignal.severity}>
+          <span className="widget-card__radar-kicker">
+            {t(`widgets.radar.severity.${topSignal.severity}`)}
+          </span>
+          <strong>{topSignal.title}</strong>
+          <p>{topSignal.description}</p>
+        </div>
+      ) : (
+        <p className="widget-card__body-text">{t("widgets.radar.empty")}</p>
+      )}
+      {widget.items.length > 0 ? (
+        <div className="widget-card__radar-list">
+          {widget.items.map((item) => (
+            <article
+              key={item.signalId}
+              className="widget-card__radar-item"
+              data-severity={item.severity}
+            >
+              <div className="widget-card__radar-item-header">
+                <span className="widget-card__radar-agent">{item.agentName}</span>
+                <span className="widget-card__radar-status">
+                  {t(`widgets.radar.status.${item.status}`)}
+                </span>
+              </div>
+              <strong>{item.title}</strong>
+              <p>{item.description}</p>
+              <div className="widget-card__radar-meta">
+                <span>{formatRadarTimestamp(item.updatedAt)}</span>
+                <span>{t(`widgets.radar.audience.${item.audience.scope}`)}</span>
+                {item.actionId ? <span>{item.actionId}</span> : null}
+              </div>
+              <div className="widget-card__radar-actions">
+                <button
+                  type="button"
+                  className="widget-card__chip widget-card__radar-open"
+                  aria-expanded={expandedSignalId === item.signalId}
+                  onClick={() =>
+                    setExpandedSignalId((current) =>
+                      current === item.signalId ? null : item.signalId,
+                    )
+                  }
+                >
+                  {expandedSignalId === item.signalId
+                    ? t("widgets.radar.hideDetails")
+                    : t("widgets.radar.showDetails")}
+                </button>
+                {item.severity !== "critical" ? (
+                  <button
+                    type="button"
+                    className="widget-card__chip widget-card__radar-open"
+                    onClick={() => onRadarSnooze?.(item.signalId)}
+                  >
+                    {t("widgets.radar.snooze")}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className={`widget-card__chip widget-card__radar-open ${
+                    item.clientState?.followed ? "is-active" : ""
+                  }`}
+                  onClick={() => onRadarFollowToggle?.(item.signalId)}
+                >
+                  {item.clientState?.followed
+                    ? t("widgets.radar.following")
+                    : t("widgets.radar.follow")}
+                </button>
+                {item.status === "running" ? (
+                  <button
+                    type="button"
+                    className="widget-card__chip widget-card__radar-open"
+                    onClick={() => onRadarCompletionOnly?.(item.signalId)}
+                  >
+                    {t("widgets.radar.completionOnly")}
+                  </button>
+                ) : null}
+                {item.kind === "hitlApproval" && item.decisionId ? (
+                  <button
+                    type="button"
+                    className="widget-card__chip widget-card__radar-open"
+                    onClick={() => onOpenHitl?.(item.decisionId!)}
+                  >
+                    {t("widgets.radar.openHitl")}
+                  </button>
+                ) : null}
+              </div>
+              {expandedSignalId === item.signalId ? (
+                <RadarSignalDetails item={item} />
+              ) : null}
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function RadarSignalDetails({ item }: { item: DesktopAvatarRadarSignal }) {
+  const detailRows = radarSourceDetailRows(item);
+  const timeline = item.timeline ?? [];
+  return (
+    <div className="widget-card__radar-detail">
+      <div>
+        <span className="widget-card__radar-detail-title">
+          {t("widgets.radar.detail.why")}
+        </span>
+        <p>{item.why ?? t("widgets.radar.detail.whyFallback")}</p>
+      </div>
+      <dl className="widget-card__radar-detail-grid">
+        {detailRows.map(([label, value]) => (
+          <div key={`${label}:${value}`}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {timeline.length > 0 ? (
+        <div>
+          <span className="widget-card__radar-detail-title">
+            {t("widgets.radar.detail.timeline")}
+          </span>
+          <ol className="widget-card__radar-timeline">
+            {timeline.map((event) => (
+              <li key={event.id}>
+                <time>{formatRadarTimestamp(event.timestamp)}</time>
+                <div>
+                  <strong>{event.title}</strong>
+                  {event.description ? <p>{event.description}</p> : null}
+                  {event.status ? <span>{event.status}</span> : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

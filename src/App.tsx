@@ -13,7 +13,11 @@ import { DataPanelSlider } from "./components/DataPanelSlider";
 import { DesktopAvatarWidgetPanel } from "./components/DesktopAvatarWidgetPanel";
 import { SpeechBubble } from "./components/SpeechBubble";
 import { useDesktopCompanion } from "./hooks/useDesktopCompanion";
-import type { DesktopAvatarWidgetPayload } from "./lib/contracts";
+import type {
+  DesktopAvatarOperatorRadarWidget,
+  DesktopAvatarRadarSignal,
+  DesktopAvatarWidgetPayload
+} from "./lib/contracts";
 import { t } from "./lib/i18n";
 import { getWindowGeometry } from "./lib/tauri";
 
@@ -60,7 +64,7 @@ function backendConnectionLabel(state: ReturnType<typeof useDesktopCompanion>["b
 
 interface PanelEntry {
   id: string;
-  source: "request" | "hitl" | "demo";
+  source: "request" | "radar" | "hitl" | "demo";
   messageId?: string;
   decisionId?: string;
   demoKind?: DevToolsDemoWidgetKind;
@@ -85,6 +89,7 @@ export default function App() {
   const [activeDemoWidgets, setActiveDemoWidgets] = useState<DevToolsDemoWidgetKind[]>([]);
   const [activePanelEntryId, setActivePanelEntryId] = useState<string | null>(null);
   const [renderedPanelEntries, setRenderedPanelEntries] = useState<PanelEntry[]>([]);
+  const [radarOpenRequested, setRadarOpenRequested] = useState(false);
   const [widgetPanelState, setWidgetPanelState] = useState<
     "closed" | "opening" | "open" | "closing"
   >("closed");
@@ -212,25 +217,40 @@ export default function App() {
     followUpQuestions: []
   }));
 
+  const radarPanelEntries: PanelEntry[] = companion.operatorRadarWidget
+    ? [
+        {
+          id: "radar:operator",
+          source: "radar",
+          widget: companion.operatorRadarWidget,
+          followUpQuestions: []
+        }
+      ]
+    : [];
+
   const panelEntries: PanelEntry[] = [
     ...requestPanelEntries,
     ...hitlPanelEntries,
+    ...radarPanelEntries,
     ...demoPanelEntries
   ];
   const activePanelIndex = panelEntries.findIndex((entry) => entry.id === activePanelEntryId);
+  const preferredFallbackPanelEntry =
+    hitlPanelEntries[hitlPanelEntries.length - 1] ??
+    panelEntries[panelEntries.length - 1] ??
+    null;
   const activePanelEntry =
     activePanelIndex >= 0
       ? panelEntries[activePanelIndex]
-      : panelEntries.length > 0
-        ? panelEntries[panelEntries.length - 1]
-        : null;
+      : preferredFallbackPanelEntry;
+  const effectiveActivePanelEntryId = activePanelEntry?.id ?? activePanelEntryId;
   const visiblePanelWidget = activePanelEntry?.widget ?? null;
   const widgetTooltipOpen = isExpanded && Boolean(visiblePanelWidget);
   const widgetDockVisible =
     isExpanded && widgetDockPrepared && (widgetTooltipOpen || renderedPanelEntries.length > 0);
   const displayedPanelEntries = widgetTooltipOpen ? panelEntries : renderedPanelEntries;
   const displayedActivePanelIndex = displayedPanelEntries.findIndex(
-    (entry) => entry.id === activePanelEntryId
+    (entry) => entry.id === effectiveActivePanelEntryId
   );
   const clampedDisplayedActivePanelIndex =
     displayedPanelEntries.length === 0
@@ -246,13 +266,19 @@ export default function App() {
   const widgetArrowTone = displayedActiveWidget?.type === "error" ? "error" : "default";
   const backendLabel = backendConnectionLabel(companion.backendConnectionState);
   const pendingHitlCount = companion.hitlWidgets.length;
-  const pendingHitlBadge = pendingHitlCount > 99 ? "99+" : String(pendingHitlCount);
+  const peekAlertCount = Math.max(pendingHitlCount, companion.operatorRadarSignalCount);
+  const pendingHitlBadge = peekAlertCount > 99 ? "99+" : String(peekAlertCount);
   const peekBackendLabel =
     pendingHitlCount > 0
       ? t("connection.backend.pendingHitl", {
           count: pendingHitlCount,
           backend: backendLabel
         })
+      : companion.operatorRadarSignalCount > 0
+        ? t("connection.backend.pendingRadar", {
+            count: companion.operatorRadarSignalCount,
+            backend: backendLabel
+          })
       : backendLabel;
   const cameraConfigSnippet = formatAvatarCameraConfig(cameraConfig);
   const presetSizes = getWindowSizesForPreset(companion.sizePreset);
@@ -429,9 +455,9 @@ export default function App() {
       return;
     }
     if (!activePanelEntryId || !panelEntries.some((entry) => entry.id === activePanelEntryId)) {
-      setActivePanelEntryId(panelEntries[panelEntries.length - 1]!.id);
+      setActivePanelEntryId(preferredFallbackPanelEntry?.id ?? panelEntries[panelEntries.length - 1]!.id);
     }
-  }, [activePanelEntryId, panelEntries]);
+  }, [activePanelEntryId, panelEntries, preferredFallbackPanelEntry]);
 
   useEffect(() => {
     const latestHitl = companion.hitlWidgets[companion.hitlWidgets.length - 1];
@@ -439,6 +465,14 @@ export default function App() {
       setActivePanelEntryId(`hitl:${latestHitl.decisionId}`);
     }
   }, [companion.hitlWidgets]);
+
+  useEffect(() => {
+    if (!radarOpenRequested || !companion.operatorRadarWidget) {
+      return;
+    }
+    setActivePanelEntryId("radar:operator");
+    setRadarOpenRequested(false);
+  }, [radarOpenRequested, companion.operatorRadarWidget]);
 
   useEffect(() => {
     // The native shell can change size externally when switching peek/expanded mode.
@@ -548,6 +582,11 @@ export default function App() {
       setActiveDemoWidgets((current) => current.filter((kind) => kind !== entry.demoKind));
       return;
     }
+    if (entry.source === "radar") {
+      setRadarOpenRequested(false);
+      companion.dismissOperatorRadar();
+      return;
+    }
     if (!entry.messageId) {
       return;
     }
@@ -573,6 +612,8 @@ export default function App() {
 
   const closeAllWidgets = useCallback(() => {
     setActiveDemoWidgets([]);
+    setRadarOpenRequested(false);
+    companion.dismissOperatorRadar();
     setDismissedWidgetMessageIds((previous) => {
       const next = new Set(previous);
       for (const entry of panelEntries) {
@@ -582,7 +623,12 @@ export default function App() {
       }
       return next;
     });
-  }, [panelEntries]);
+  }, [companion, panelEntries]);
+
+  const handleOpenRadar = useCallback(() => {
+    setRadarOpenRequested(true);
+    companion.openOperatorRadar();
+  }, [companion]);
 
   const selectPanelEntryAt = useCallback(
     (index: number) => {
@@ -643,13 +689,13 @@ export default function App() {
           <div
             className="peek-backend-connection-dot"
             data-state={companion.backendConnectionState}
-            data-has-hitl={pendingHitlCount > 0 ? "true" : "false"}
+            data-has-hitl={peekAlertCount > 0 ? "true" : "false"}
             role="status"
             aria-label={peekBackendLabel}
             title={peekBackendLabel}
           >
             <span className="peek-backend-connection-dot__status" aria-hidden="true" />
-            {pendingHitlCount > 0 ? (
+            {peekAlertCount > 0 ? (
               <span className="peek-backend-connection-dot__count" aria-hidden="true">
                 {pendingHitlBadge}
               </span>
@@ -715,6 +761,7 @@ export default function App() {
               ttsEnabled={companion.ttsEnabled}
               backendConnectionState={companion.backendConnectionState}
               backendConnectionLabel={backendLabel}
+              radarSignalCount={companion.operatorRadarSignalCount}
               locale={companion.locale}
               supportedLocales={companion.supportedLocales}
               ttsVoices={companion.ttsVoices}
@@ -740,6 +787,7 @@ export default function App() {
               onToggleExpanded={handleToggleExpanded}
               uiTheme={uiTheme}
               onToggleTheme={toggleUiTheme}
+              onOpenRadar={handleOpenRadar}
               onToggleRecording={companion.toggleRecording}
               onToggleTts={companion.toggleTts}
               onSelectLocale={companion.selectLocale}
@@ -782,6 +830,9 @@ export default function App() {
                   onHitlReject={companion.rejectHitl}
                   onHitlRequestMoreInfo={companion.requestMoreInfoForHitl}
                   onOpenHitl={companion.openHitl}
+                  onRadarSnooze={companion.snoozeOperatorRadarSignal}
+                  onRadarFollowToggle={companion.toggleFollowOperatorRadarSignal}
+                  onRadarCompletionOnly={companion.notifyOperatorRadarSignalOnCompletion}
                   onDismiss={() => dismissPanelEntry(entry)}
                 />
               ))}
@@ -806,9 +857,249 @@ function demoFollowUpQuestions(widget: DesktopAvatarWidgetPayload): string[] {
   return [];
 }
 
+function buildDemoRadarWidget(
+  title: string,
+  generatedAt: string,
+  item: DesktopAvatarRadarSignal,
+): DesktopAvatarOperatorRadarWidget {
+  return {
+    type: "operatorRadar",
+    title,
+    generatedAt,
+    summary: {
+      totalCount: 1,
+      criticalCount: item.severity === "critical" ? 1 : 0,
+      highCount: item.severity === "high" ? 1 : 0,
+      needsApprovalCount: item.status === "needsApproval" ? 1 : 0,
+      runningCount: item.status === "running" ? 1 : 0,
+      failedCount: item.status === "failed" || item.status === "blocked" ? 1 : 0,
+      topSignalId: item.signalId
+    },
+    items: [item]
+  };
+}
+
 function buildDemoWidget(kind: DevToolsDemoWidgetKind | null): DesktopAvatarWidgetPayload | null {
   if (!kind) {
     return null;
+  }
+
+  const radarScenarioGeneratedAt = "2026-06-15T07:15:00.000Z";
+
+  if (kind === "radarForecastRunning") {
+    return buildDemoRadarWidget("Demo: Forecast läuft", radarScenarioGeneratedAt, {
+      signalId: "demo-radar-forecast-running",
+      kind: "runtimeRunning",
+      severity: "info",
+      status: "running",
+      title: "Forecast wird erstellt",
+      description: "Forecast Agent berechnet die nächsten Nachfragewerte.",
+      studioAgentId: "demo-forecast-agent",
+      agentName: "Forecast Agent",
+      agentRole: "DOMAIN",
+      runId: "demo-run-forecast-001",
+      updatedAt: radarScenarioGeneratedAt,
+      audience: { scope: "personal", label: "DesktopAvatar request" },
+      source: {
+        kind: "desktopAvatarRequest",
+        label: "DesktopAvatar request lifecycle",
+        requestId: "demo-request-forecast-001",
+        runId: "demo-run-forecast-001",
+        status: "FETCHING_DATA"
+      },
+      why: "Dieses Signal wird angezeigt, weil eine DesktopAvatar-Anfrage aktuell von einem Agent verarbeitet wird.",
+      timeline: [
+        {
+          id: "demo-forecast-running:request",
+          title: "DesktopAvatar-Anfrage empfangen",
+          timestamp: radarScenarioGeneratedAt,
+          description: "Bitte erstelle einen Forecast.",
+          status: "chat"
+        },
+        {
+          id: "demo-forecast-running:run",
+          title: "Agent-Run gestartet",
+          timestamp: radarScenarioGeneratedAt,
+          description: "demo-run-forecast-001",
+          status: "SIMULATION"
+        },
+        {
+          id: "demo-forecast-running:status",
+          title: "Aktueller Request-Status",
+          timestamp: radarScenarioGeneratedAt,
+          description: "Forecast-Daten werden geladen.",
+          status: "FETCHING_DATA"
+        }
+      ]
+    });
+  }
+
+  if (kind === "radarForecastCompleted") {
+    return buildDemoRadarWidget("Demo: Forecast abgeschlossen", radarScenarioGeneratedAt, {
+      signalId: "demo-radar-forecast-completed",
+      kind: "runtimeCompleted",
+      severity: "info",
+      status: "completed",
+      title: "Forecast abgeschlossen",
+      description: "Die vom DesktopAvatar ausgelöste Forecast-Aktivität wurde abgeschlossen.",
+      studioAgentId: "demo-forecast-agent",
+      agentName: "Forecast Agent",
+      agentRole: "DOMAIN",
+      runId: "demo-run-forecast-002",
+      updatedAt: radarScenarioGeneratedAt,
+      audience: { scope: "personal", label: "DesktopAvatar request" },
+      source: {
+        kind: "desktopAvatarRequest",
+        label: "DesktopAvatar request lifecycle",
+        requestId: "demo-request-forecast-002",
+        runId: "demo-run-forecast-002",
+        status: "COMPLETED"
+      },
+      why: "Dieses Signal wird angezeigt, weil eine vom DesktopAvatar ausgelöste Aktivität gerade abgeschlossen wurde.",
+      timeline: [
+        {
+          id: "demo-forecast-completed:request",
+          title: "DesktopAvatar-Anfrage empfangen",
+          timestamp: radarScenarioGeneratedAt,
+          description: "Forecast fuer die naechsten 14 Tage.",
+          status: "chat"
+        },
+        {
+          id: "demo-forecast-completed:done",
+          title: "Antwort abgeschlossen",
+          timestamp: radarScenarioGeneratedAt,
+          description: "Forecast-Tabelle wurde erstellt.",
+          status: "COMPLETED"
+        }
+      ]
+    });
+  }
+
+  if (kind === "radarHitlOpen") {
+    return buildDemoRadarWidget("Demo: HITL offen", radarScenarioGeneratedAt, {
+      signalId: "demo-radar-hitl-open",
+      kind: "hitlApproval",
+      severity: "critical",
+      status: "needsApproval",
+      title: "Freigabe erforderlich",
+      description: "Purchase Agent wartet auf eine Entscheidung zur Nachbestellung.",
+      studioAgentId: "demo-purchase-agent",
+      agentName: "Purchase Agent",
+      agentRole: "DOMAIN",
+      runId: "demo-run-purchase-hitl",
+      proposalId: "demo-proposal-purchase-hitl",
+      decisionId: "demo-hitl-decision",
+      actionId: "PURCHASE_ORDER_CREATE",
+      updatedAt: radarScenarioGeneratedAt,
+      audience: { scope: "management", label: "Management" },
+      source: {
+        kind: "hitl",
+        label: "HITL decision queue",
+        runId: "demo-run-purchase-hitl",
+        proposalId: "demo-proposal-purchase-hitl",
+        decisionId: "demo-hitl-decision",
+        actionId: "PURCHASE_ORDER_CREATE",
+        status: "pending"
+      },
+      why: "Dieses Signal wird angezeigt, weil eine HITL-Entscheidung aktuell offen ist.",
+      timeline: [
+        {
+          id: "demo-hitl-open:proposal",
+          title: "Vorschlag erstellt",
+          timestamp: radarScenarioGeneratedAt,
+          description: "demo-proposal-purchase-hitl",
+          status: "PURCHASE_ORDER_CREATE"
+        },
+        {
+          id: "demo-hitl-open:decision",
+          title: "Freigabe erforderlich",
+          timestamp: radarScenarioGeneratedAt,
+          description: "Management-Freigabe wartet.",
+          status: "critical"
+        }
+      ]
+    });
+  }
+
+  if (kind === "radarRunFailed") {
+    return buildDemoRadarWidget("Demo: Run fehlgeschlagen", radarScenarioGeneratedAt, {
+      signalId: "demo-radar-run-failed",
+      kind: "runtimeFailure",
+      severity: "high",
+      status: "failed",
+      title: "Run fehlgeschlagen",
+      description: "Forecast Agent konnte die Datenquelle nicht lesen.",
+      studioAgentId: "demo-forecast-agent",
+      agentName: "Forecast Agent",
+      agentRole: "DOMAIN",
+      runId: "demo-run-forecast-failed",
+      updatedAt: radarScenarioGeneratedAt,
+      audience: { scope: "team", label: "Team operations" },
+      source: {
+        kind: "runtimeFlow",
+        label: "Studio Agent Runtime Flow",
+        runId: "demo-run-forecast-failed",
+        status: "FAILED"
+      },
+      why: "Dieses Signal wird angezeigt, weil der Runtime-Flow einen fehlgeschlagenen Skill meldet.",
+      timeline: [
+        {
+          id: "demo-run-failed:run",
+          title: "Agent-Run gestartet",
+          timestamp: radarScenarioGeneratedAt,
+          description: "demo-run-forecast-failed",
+          status: "SIMULATION"
+        },
+        {
+          id: "demo-run-failed:failure",
+          title: "Skill fehlgeschlagen",
+          timestamp: radarScenarioGeneratedAt,
+          description: "Datenquelle nicht erreichbar.",
+          status: "FAILED"
+        }
+      ]
+    });
+  }
+
+  if (kind === "radarWarehouseReorder") {
+    return buildDemoRadarWidget("Demo: Nachbestellung prüfen", radarScenarioGeneratedAt, {
+      signalId: "demo-radar-warehouse-reorder",
+      kind: "runtimeRunning",
+      severity: "info",
+      status: "running",
+      title: "Warehouse Agent prüft Nachbestellbedarf",
+      description: "Warehouse Agent liest Bestände und Mindestmengen.",
+      studioAgentId: "demo-warehouse-agent",
+      agentName: "Warehouse Agent",
+      agentRole: "DOMAIN",
+      runId: "demo-run-warehouse-reorder",
+      updatedAt: radarScenarioGeneratedAt,
+      audience: { scope: "team", label: "Team operations" },
+      source: {
+        kind: "desktopAvatarRequest",
+        label: "DesktopAvatar request lifecycle",
+        requestId: "demo-request-warehouse-reorder",
+        runId: "demo-run-warehouse-reorder",
+        status: "FETCHING_DATA"
+      },
+      why: "Dieses Signal wird angezeigt, weil eine DesktopAvatar-Anfrage aktuell von einem Agent verarbeitet wird.",
+      timeline: [
+        {
+          id: "demo-reorder:request",
+          title: "DesktopAvatar-Anfrage empfangen",
+          timestamp: radarScenarioGeneratedAt,
+          description: "Pruefe Nachbestellbedarf im Lager.",
+          status: "chat"
+        },
+        {
+          id: "demo-reorder:run",
+          title: "Agent-Run gestartet",
+          timestamp: radarScenarioGeneratedAt,
+          description: "demo-run-warehouse-reorder",
+          status: "SIMULATION"
+        }
+      ]
+    });
   }
 
   if (kind === "table") {
@@ -897,6 +1188,140 @@ function buildDemoWidget(kind: DevToolsDemoWidgetKind | null): DesktopAvatarWidg
         { monat: "Jun", nachfrage: 336, angebot: 315 }
       ],
       summary: "Trend: Nachfrage steigt schneller als Angebot. Differenz im Juni: 21 Einheiten."
+    };
+  }
+
+  if (kind === "hitlApproval") {
+    return {
+      type: "hitlApproval",
+      decisionId: "demo-hitl-decision",
+      runId: "demo-run-purchase-001",
+      proposalId: "demo-proposal-purchase-001",
+      actionId: "PURCHASE_ORDER_CREATE",
+      title: "Demo: Bestellung freigeben",
+      description: "Der Purchase Agent schlägt eine Nachbestellung für kritische Lagerbestände vor.",
+      agentName: "Purchase Agent",
+      mode: "SIMULATION",
+      status: "pending",
+      priority: "high",
+      contextSections: [
+        {
+          id: "demo-stock",
+          title: "Bestandskontext",
+          icon: "package",
+          entries: [
+            { label: "Artikel", value: "Olivenöl 5L", type: "text" },
+            { label: "Bestand", value: "18 Kanister", type: "metric", severity: "warning" },
+            { label: "Vorschlag", value: "48 Kanister bestellen", type: "text" }
+          ]
+        }
+      ]
+    };
+  }
+
+  if (kind === "operatorRadar") {
+    const generatedAt = "2026-06-15T07:00:00.000Z";
+    return {
+      type: "operatorRadar",
+      title: "Demo: Operator-Radar",
+      generatedAt,
+      summary: {
+        totalCount: 2,
+        criticalCount: 1,
+        highCount: 0,
+        needsApprovalCount: 1,
+        runningCount: 1,
+        failedCount: 0,
+        topSignalId: "demo-radar-hitl"
+      },
+      items: [
+        {
+          signalId: "demo-radar-hitl",
+          kind: "hitlApproval",
+          severity: "critical",
+          status: "needsApproval",
+          title: "Bestellung braucht Freigabe",
+          description: "Purchase Agent wartet auf eine Entscheidung zur Nachbestellung.",
+          studioAgentId: "demo-purchase-agent",
+          agentName: "Purchase Agent",
+          agentRole: "DOMAIN",
+          runId: "demo-run-purchase-001",
+          proposalId: "demo-proposal-purchase-001",
+          decisionId: "demo-hitl-decision",
+          actionId: "PURCHASE_ORDER_CREATE",
+          updatedAt: generatedAt,
+          audience: {
+            scope: "management",
+            label: "Management"
+          },
+          source: {
+            kind: "hitl",
+            label: "HITL decision queue",
+            runId: "demo-run-purchase-001",
+            proposalId: "demo-proposal-purchase-001",
+            decisionId: "demo-hitl-decision",
+            actionId: "PURCHASE_ORDER_CREATE",
+            status: "pending"
+          },
+          why: "Dieses Signal wird angezeigt, weil eine HITL-Entscheidung aktuell offen ist.",
+          timeline: [
+            {
+              id: "demo-radar-hitl:run",
+              title: "Run analysiert",
+              timestamp: generatedAt,
+              description: "demo-run-purchase-001",
+              status: "SIMULATION"
+            },
+            {
+              id: "demo-radar-hitl:decision",
+              title: "Freigabe erforderlich",
+              timestamp: generatedAt,
+              description: "Bestellung braucht Freigabe",
+              status: "critical"
+            }
+          ]
+        },
+        {
+          signalId: "demo-radar-runtime",
+          kind: "runtimeRunning",
+          severity: "info",
+          status: "running",
+          title: "Warehouse Agent prüft Bestand",
+          description: "Runtime-Flow läuft und sammelt aktuelle Lagerdaten.",
+          studioAgentId: "demo-warehouse-agent",
+          agentName: "Warehouse Agent",
+          agentRole: "DOMAIN",
+          runId: "demo-run-warehouse-001",
+          updatedAt: generatedAt,
+          audience: {
+            scope: "team",
+            label: "Team"
+          },
+          source: {
+            kind: "runtimeFlow",
+            label: "Studio Agent Runtime Flow",
+            runId: "demo-run-warehouse-001",
+            status: "RUNNING"
+          },
+          why: "Dieses Signal wird angezeigt, weil der Runtime-Flow aktive Agent-Arbeit meldet.",
+          timeline: [
+            {
+              id: "demo-radar-runtime:request",
+              title: "DesktopAvatar-Anfrage empfangen",
+              timestamp: generatedAt,
+              description: "Bestand pruefen",
+              status: "chat"
+            },
+            {
+              id: "demo-radar-runtime:run",
+              title: "Agent-Run gestartet",
+              timestamp: generatedAt,
+              description: "demo-run-warehouse-001",
+              status: "RUNNING"
+            }
+          ]
+        }
+      ]
     };
   }
 

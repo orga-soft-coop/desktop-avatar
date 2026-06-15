@@ -34,6 +34,9 @@ use tokio_tungstenite::{
 const CHAT_STREAM_EVENT: &str = "chat-stream-event";
 const DESKTOP_AVATAR_STREAM_EVENT: &str = "desktop-avatar-stream-event";
 const DESKTOP_AVATAR_STREAM_LIFECYCLE_EVENT: &str = "desktop-avatar-stream-lifecycle";
+const DESKTOP_AVATAR_RADAR_STREAM_EVENT: &str = "desktop-avatar-radar-stream-event";
+const DESKTOP_AVATAR_RADAR_STREAM_LIFECYCLE_EVENT: &str =
+    "desktop-avatar-radar-stream-lifecycle";
 const HITL_DECISION_STREAM_EVENT: &str = "hitl-decision-stream-event";
 const HITL_DECISION_STREAM_LIFECYCLE_EVENT: &str = "hitl-decision-stream-lifecycle";
 const TTS_STATE_EVENT: &str = "tts-state";
@@ -59,6 +62,7 @@ struct AppState {
     client: Client,
     config: Arc<AppConfig>,
     desktop_avatar_streams: Arc<Mutex<HashMap<String, async_runtime::JoinHandle<()>>>>,
+    desktop_avatar_radar_stream: Arc<Mutex<Option<async_runtime::JoinHandle<()>>>>,
     hitl_decision_stream: Arc<Mutex<Option<async_runtime::JoinHandle<()>>>>,
     last_tts_text_by_request: Arc<Mutex<HashMap<String, String>>>,
     peek_position: Arc<Mutex<PeekPosition>>,
@@ -356,6 +360,13 @@ struct DesktopAvatarStreamLifecycleEvent {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct HitlDecisionStreamLifecycleEvent {
+    phase: String,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopAvatarRadarStreamLifecycleEvent {
     phase: String,
     reason: Option<String>,
 }
@@ -1637,6 +1648,93 @@ async fn desktop_avatar_request_get(
         .json::<DesktopAvatarRequestDocument>()
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn desktop_avatar_radar_get(state: State<'_, AppState>) -> Result<Value, String> {
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let url = absolute_comm_officer_url(&base_url, "/v1/desktop-avatar/radar");
+
+    let response = with_auth(state.client.get(url), &token)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!("Operator-Radar returned {status}: {text}"));
+    }
+
+    response
+        .json::<Value>()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn desktop_avatar_radar_stream_start(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let url = absolute_comm_officer_url(&base_url, "/v1/desktop-avatar/radar/stream");
+
+    if let Some(existing) = state.desktop_avatar_radar_stream.lock().await.take() {
+        existing.abort();
+    }
+
+    let client = state.client.clone();
+    let stream_slot = state.desktop_avatar_radar_stream.clone();
+    let handle = async_runtime::spawn(async move {
+        let response = with_auth(
+            client
+                .get(url)
+                .header(ACCEPT, "text/event-stream")
+                .header(CONTENT_TYPE, "application/json"),
+            &token,
+        )
+        .send()
+        .await;
+
+        match response {
+            Ok(response) => {
+                if let Err(error) = process_desktop_avatar_radar_stream(window.clone(), response).await
+                {
+                    let _ =
+                        emit_desktop_avatar_radar_stream_lifecycle(&window, "error", Some(error));
+                } else {
+                    let _ = emit_desktop_avatar_radar_stream_lifecycle(&window, "closed", None);
+                }
+            }
+            Err(error) => {
+                let _ = emit_desktop_avatar_radar_stream_lifecycle(
+                    &window,
+                    "error",
+                    Some(error.to_string()),
+                );
+            }
+        }
+
+        stream_slot.lock().await.take();
+    });
+
+    *state.desktop_avatar_radar_stream.lock().await = Some(handle);
+    Ok(())
+}
+
+#[tauri::command]
+async fn desktop_avatar_radar_stream_stop(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Some(handle) = state.desktop_avatar_radar_stream.lock().await.take() {
+        handle.abort();
+    }
+    emit_desktop_avatar_radar_stream_lifecycle(&window, "aborted", None)
 }
 
 #[tauri::command]
@@ -3496,6 +3594,61 @@ async fn process_hitl_decision_stream(
     Ok(())
 }
 
+async fn process_desktop_avatar_radar_stream(
+    window: WebviewWindow,
+    response: reqwest::Response,
+) -> Result<(), String> {
+    let status = response.status();
+    if !status.is_success() {
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!("Operator-Radar stream returned {status}: {text}"));
+    }
+
+    let mut parser = SseParser {
+        current: SseFrame::new(),
+    };
+    let mut pending = String::new();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        pending.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(index) = pending.find('\n') {
+            let mut line = pending[..index].to_string();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            pending.replace_range(..=index, "");
+            if let Some(frame) = parser.push_line(line.as_str()) {
+                let payload: Value = serde_json::from_str(frame.data().as_str())
+                    .map_err(|error| error.to_string())?;
+                emit_desktop_avatar_radar_stream_event(&window, payload)?;
+            }
+        }
+    }
+
+    if !pending.is_empty() {
+        let line = pending.trim_end_matches('\r').to_string();
+        if let Some(frame) = parser.push_line(line.as_str()) {
+            let payload: Value =
+                serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
+            emit_desktop_avatar_radar_stream_event(&window, payload)?;
+        }
+    }
+
+    if let Some(frame) = parser.finish() {
+        let payload: Value =
+            serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
+        emit_desktop_avatar_radar_stream_event(&window, payload)?;
+    }
+
+    Ok(())
+}
+
 async fn process_local_stream(
     window: WebviewWindow,
     request_id: String,
@@ -3646,6 +3799,31 @@ fn emit_desktop_avatar_stream_lifecycle(
 fn emit_hitl_decision_stream_event(window: &WebviewWindow, payload: Value) -> Result<(), String> {
     window
         .emit(HITL_DECISION_STREAM_EVENT, payload)
+        .map_err(|error| error.to_string())
+}
+
+fn emit_desktop_avatar_radar_stream_event(
+    window: &WebviewWindow,
+    payload: Value,
+) -> Result<(), String> {
+    window
+        .emit(DESKTOP_AVATAR_RADAR_STREAM_EVENT, payload)
+        .map_err(|error| error.to_string())
+}
+
+fn emit_desktop_avatar_radar_stream_lifecycle(
+    window: &WebviewWindow,
+    phase: &str,
+    reason: Option<String>,
+) -> Result<(), String> {
+    window
+        .emit(
+            DESKTOP_AVATAR_RADAR_STREAM_LIFECYCLE_EVENT,
+            DesktopAvatarRadarStreamLifecycleEvent {
+                phase: phase.to_string(),
+                reason,
+            },
+        )
         .map_err(|error| error.to_string())
 }
 
@@ -3897,6 +4075,7 @@ pub fn run() {
         client: Client::new(),
         config: Arc::new(bootstrap_config),
         desktop_avatar_streams: Arc::new(Mutex::new(HashMap::new())),
+        desktop_avatar_radar_stream: Arc::new(Mutex::new(None)),
         hitl_decision_stream: Arc::new(Mutex::new(None)),
         last_tts_text_by_request: Arc::new(Mutex::new(HashMap::new())),
         peek_position: Arc::new(Mutex::new(persisted_window_state.peek_position)),
@@ -3944,6 +4123,9 @@ pub fn run() {
             window_start_drag,
             desktop_avatar_request_create,
             desktop_avatar_request_get,
+            desktop_avatar_radar_get,
+            desktop_avatar_radar_stream_start,
+            desktop_avatar_radar_stream_stop,
             desktop_avatar_request_stream,
             desktop_avatar_request_stream_stop,
             hitl_decision_stream_start,

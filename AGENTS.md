@@ -3,6 +3,7 @@
 ## Project Overview
 
 Cross-platform desktop companion application that renders a VRM 3D avatar with voice and text chat capabilities. Integrates with local LLMs (LM Studio) and a Communication Officer backend for business data queries.
+This directory is the existing Tauri DesktopAvatar app and the target client for DesktopAvatar features in this repository.
 
 ## Tech Stack
 
@@ -73,6 +74,7 @@ Copy `.env.example` to `.env` and configure:
 - **Routing**: `src/lib/router.ts` classifies prompts to local LLM or business backend via keyword matching
 - **Streaming**: Server-Sent Events (SSE) for real-time response streaming from both backends
 - **HITL streaming**: A separate backend SSE stream feeds approval cards and batched announcements without coupling to request-scoped assistant streams
+- **Operator Radar**: `GET /v1/desktop-avatar/radar` and `/radar/stream` provide a read-only widget feed; stream/poll updates may open existing HITL context, render source/why/timeline detail fields, and apply local-only Snooze/Follow display preferences but must not approve/reject or execute business actions itself
 - **Tauri IPC**: All backend calls go through `src/lib/tauri.ts` using Tauri commands
 - **Avatar Assets**: Manifest-based system supporting local paths, relative paths, and HTTPS URLs
 - **Animation State**: Avatar transitions between idle/listening/thinking/speaking states
@@ -97,3 +99,4 @@ Copy `.env.example` to `.env` and configure:
 - Window is transparent, borderless, always-on-top
 - Collapsed: 520×780, Expanded: 720×920
 - Supports `.fbx` (Mixamo) and `.vrma` animation formats
+- Agent-specific visual modes (Warehouse, Purchase, Production, Ops Manager) are future work. Current animation remains status-based (`attention`, `thinking`, `talking`, `idle`) even when Radar signals include `agentName`, `agentRole`, or `agentAvatarId`.

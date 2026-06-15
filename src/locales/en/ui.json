@@ -7,8 +7,10 @@
     "launcherHint": "enter to send · esc to close",
     "transcript": "Conversation",
     "newChat": "New chat",
+    "emptyTranscript": "No conversation yet.",
     "assistantWorking": "I am working on it...",
     "openAgent": "Open agent",
+    "openRadar": "Open operator radar",
     "retry": "Try again",
     "send": "Send",
     "stopRecording": "Stop recording",
@@ -88,6 +90,14 @@
     "demoText": "Text",
     "demoClarification": "Clarification",
     "demoAreaChart": "Area chart",
+    "demoHitlApproval": "HITL",
+    "demoOperatorRadar": "Radar",
+    "radarScenarios": "Radar scenarios",
+    "radarScenarioForecastRunning": "Forecast running",
+    "radarScenarioForecastCompleted": "Forecast completed",
+    "radarScenarioHitlOpen": "HITL open",
+    "radarScenarioRunFailed": "Run failed",
+    "radarScenarioWarehouseReorder": "Check reorder",
     "demoError": "Error card",
     "demoSummary": {
       "none": "none active",
@@ -97,6 +107,13 @@
       "text": "Text",
       "clarification": "Clarification",
       "areaChart": "Area chart",
+      "hitlApproval": "HITL",
+      "operatorRadar": "Radar",
+      "radarForecastRunning": "Forecast running",
+      "radarForecastCompleted": "Forecast completed",
+      "radarHitlOpen": "HITL open",
+      "radarRunFailed": "Run failed",
+      "radarWarehouseReorder": "Reorder check",
       "error": "Error card"
     }
   },
@@ -139,6 +156,55 @@
       "sent": "HITL response sent.",
       "actionFailed": "HITL action failed."
     },
+    "radar": {
+      "title": "Operator radar",
+      "summary": "Radar summary",
+      "empty": "No operator signals right now.",
+      "errorMessage": "Operator radar is currently unavailable.",
+      "total": "{{count}} total",
+      "approvals": "{{count}} HITL open",
+      "running": "{{count}} active",
+      "failed": "{{count}} errors",
+      "showDetails": "Details",
+      "hideDetails": "Hide details",
+      "snooze": "Hide 10 min",
+      "follow": "Follow",
+      "following": "Following",
+      "completionOnly": "Notify on completion",
+      "openHitl": "Open HITL",
+      "detail": {
+        "why": "Why am I seeing this?",
+        "whyFallback": "This signal is shown because it is currently prioritized in the operator radar.",
+        "timeline": "Activity timeline",
+        "source": "Source",
+        "request": "Request",
+        "run": "Run",
+        "proposal": "Proposal",
+        "decision": "Decision",
+        "action": "Action",
+        "status": "Status"
+      },
+      "severity": {
+        "info": "Info",
+        "warning": "Warning",
+        "high": "High",
+        "critical": "Critical"
+      },
+      "status": {
+        "needsApproval": "Approval needed",
+        "waiting": "Waiting",
+        "running": "Running",
+        "completed": "Completed",
+        "failed": "Failed",
+        "blocked": "Blocked"
+      },
+      "audience": {
+        "personal": "Personal",
+        "team": "Team",
+        "department": "Department",
+        "management": "Management"
+      }
+    },
     "table": {
       "searchPlaceholder": "Search all columns...",
       "noResults": "No results",
@@ -154,7 +220,8 @@
       "connected": "Backend connected",
       "disconnected": "Backend disconnected",
       "unavailable": "Backend unavailable",
-      "pendingHitl": "{{count}} HITL message(s) waiting. {{backend}}."
+      "pendingHitl": "{{count}} HITL message(s) waiting. {{backend}}.",
+      "pendingRadar": "{{count}} radar signal(s) active. {{backend}}."
     }
   },
   "slider": {

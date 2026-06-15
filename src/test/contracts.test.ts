@@ -51,6 +51,78 @@ describe("desktop avatar contracts", () => {
     expect(widget.type).toBe("areaChart");
   });
 
+  it("accepts operator radar widgets", () => {
+    const widget: DesktopAvatarWidgetPayload = {
+      type: "operatorRadar",
+      title: "Operator-Radar",
+      generatedAt: "2026-06-14T09:00:00.000Z",
+      summary: {
+        totalCount: 2,
+        criticalCount: 0,
+        highCount: 1,
+        needsApprovalCount: 1,
+        runningCount: 0,
+        failedCount: 0,
+        topSignalId: "radar:hitl:decision-1"
+      },
+      items: [
+        {
+          signalId: "radar:hitl:decision-1",
+          kind: "hitlApproval",
+          severity: "high",
+          status: "needsApproval",
+          title: "Freigabe wartet",
+          description: "Eine Freigabe wartet.",
+          studioAgentId: "studio-agent:warehouse",
+          agentName: "Warehouse Agent",
+          agentRole: "DOMAIN",
+          decisionId: "decision-1",
+          updatedAt: "2026-06-14T09:00:00.000Z",
+          audience: {
+            scope: "team"
+          },
+          source: {
+            kind: "hitl",
+            label: "HITL decision queue",
+            decisionId: "decision-1",
+            status: "pending"
+          },
+          why: "Dieses Signal wird angezeigt, weil eine HITL-Entscheidung aktuell offen ist.",
+          timeline: [
+            {
+              id: "decision-1:decision",
+              title: "Freigabe erforderlich",
+              timestamp: "2026-06-14T09:00:00.000Z",
+              status: "high"
+            }
+          ]
+        },
+        {
+          signalId: "radar:desktop-avatar:request-1",
+          kind: "runtimeCompleted",
+          severity: "info",
+          status: "completed",
+          title: "Analyse abgeschlossen",
+          description: "Die vom DesktopAvatar ausgelöste Agent-Aktivität wurde abgeschlossen.",
+          studioAgentId: "studio-agent:warehouse",
+          agentName: "Warehouse Agent",
+          agentRole: "DOMAIN",
+          runId: "run:2",
+          updatedAt: "2026-06-14T09:00:30.000Z",
+          audience: {
+            scope: "personal"
+          }
+        }
+      ]
+    };
+
+    expect(widget.type).toBe("operatorRadar");
+    expect(widget.items[0]?.audience.scope).toBe("team");
+    expect(widget.items[0]?.source?.kind).toBe("hitl");
+    expect(widget.items[0]?.timeline?.[0]?.title).toBe("Freigabe erforderlich");
+    expect(widget.items[1]?.status).toBe("completed");
+  });
+
   it("accepts talk stream events", () => {
     const event: DesktopAvatarStreamEvent = {
       type: "talk",

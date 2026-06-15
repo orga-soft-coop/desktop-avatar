@@ -4,6 +4,9 @@ import type {
   BootstrapState,
   CreateDesktopAvatarRequestInput,
   CreateDesktopAvatarRequestResult,
+  DesktopAvatarRadarResponse,
+  DesktopAvatarRadarStreamEvent,
+  DesktopAvatarRadarStreamLifecycleEvent,
   DesktopAvatarRequestDocument,
   DesktopAvatarStreamEvent,
   DesktopAvatarStreamLifecycleEvent,
@@ -189,6 +192,23 @@ export async function getDesktopAvatarRequest(args: {
   return invoke<DesktopAvatarRequestDocument>("desktop_avatar_request_get", args);
 }
 
+export async function getDesktopAvatarRadar(): Promise<DesktopAvatarRadarResponse> {
+  requireTauriRuntime("Operator-Radar");
+  return invoke<DesktopAvatarRadarResponse>("desktop_avatar_radar_get");
+}
+
+export async function startDesktopAvatarRadarStream(): Promise<void> {
+  requireTauriRuntime("Operator-Radar Stream");
+  await invoke("desktop_avatar_radar_stream_start");
+}
+
+export async function stopDesktopAvatarRadarStream(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  await invoke("desktop_avatar_radar_stream_stop");
+}
+
 export async function startDesktopAvatarStream(args: {
   avatarRequestId?: string;
   streamUrl?: string;
@@ -344,6 +364,30 @@ export function onDesktopAvatarStreamLifecycle(
   }
   return listen<DesktopAvatarStreamLifecycleEvent>(
     "desktop-avatar-stream-lifecycle",
+    ({ payload }) => listener(payload)
+  );
+}
+
+export function onDesktopAvatarRadarStreamEvent(
+  listener: (event: DesktopAvatarRadarStreamEvent) => void
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return Promise.resolve(() => {});
+  }
+  return listen<DesktopAvatarRadarStreamEvent>(
+    "desktop-avatar-radar-stream-event",
+    ({ payload }) => listener(payload)
+  );
+}
+
+export function onDesktopAvatarRadarStreamLifecycle(
+  listener: (event: DesktopAvatarRadarStreamLifecycleEvent) => void
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return Promise.resolve(() => {});
+  }
+  return listen<DesktopAvatarRadarStreamLifecycleEvent>(
+    "desktop-avatar-radar-stream-lifecycle",
     ({ payload }) => listener(payload)
   );
 }

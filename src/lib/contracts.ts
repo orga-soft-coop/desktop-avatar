@@ -125,6 +125,151 @@ export interface DesktopAvatarHitlApprovalWidget {
   contextSections: DesktopAvatarHitlContextSection[];
 }
 
+export type DesktopAvatarRadarSignalKind =
+  | "hitlApproval"
+  | "waitingDecision"
+  | "runtimeRunning"
+  | "runtimeCompleted"
+  | "runtimeFailure";
+export type DesktopAvatarRadarSeverity = "info" | "warning" | "high" | "critical";
+export type DesktopAvatarRadarStatus =
+  | "needsApproval"
+  | "waiting"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked";
+export type DesktopAvatarRadarAudienceScope =
+  | "personal"
+  | "team"
+  | "department"
+  | "management";
+export type StudioAgentRole = "DOMAIN" | "OPERATIONS_MANAGER";
+
+export interface DesktopAvatarRadarAudience {
+  scope: DesktopAvatarRadarAudienceScope;
+  label?: string;
+  note?: string;
+}
+
+export type DesktopAvatarRadarSourceKind =
+  | "hitl"
+  | "runtimeFlow"
+  | "desktopAvatarRequest";
+
+export interface DesktopAvatarRadarSource {
+  kind: DesktopAvatarRadarSourceKind;
+  label: string;
+  requestId?: string;
+  runId?: string;
+  proposalId?: string;
+  decisionId?: string;
+  actionId?: string;
+  status?: string;
+}
+
+export interface DesktopAvatarRadarTimelineItem {
+  id: string;
+  title: string;
+  timestamp: string;
+  description?: string;
+  status?: string;
+}
+
+export interface DesktopAvatarRadarSignalClientState {
+  followed?: boolean;
+  completionOnly?: boolean;
+  snoozedUntil?: string;
+}
+
+export interface DesktopAvatarRadarSignal {
+  signalId: string;
+  kind: DesktopAvatarRadarSignalKind;
+  severity: DesktopAvatarRadarSeverity;
+  status: DesktopAvatarRadarStatus;
+  title: string;
+  description: string;
+  studioAgentId: string;
+  agentName: string;
+  agentRole: StudioAgentRole;
+  agentAvatarId?: string | number;
+  runId?: string;
+  proposalId?: string;
+  decisionId?: string;
+  actionId?: string;
+  updatedAt: string;
+  audience: DesktopAvatarRadarAudience;
+  source?: DesktopAvatarRadarSource;
+  why?: string;
+  timeline?: DesktopAvatarRadarTimelineItem[];
+  clientState?: DesktopAvatarRadarSignalClientState;
+}
+
+export interface DesktopAvatarRadarSummary {
+  totalCount: number;
+  criticalCount: number;
+  highCount: number;
+  needsApprovalCount: number;
+  runningCount: number;
+  failedCount: number;
+  topSignalId?: string;
+}
+
+export interface DesktopAvatarRadarResponse {
+  generatedAt: string;
+  summary: DesktopAvatarRadarSummary;
+  items: DesktopAvatarRadarSignal[];
+}
+
+export type DesktopAvatarRadarStreamReason =
+  | "hitl"
+  | "runtimeFlow"
+  | "desktopAvatarRequest"
+  | "refresh";
+
+export interface DesktopAvatarRadarStreamReadyEvent {
+  type: "ready";
+  status: "connected";
+  retryMs?: number;
+  emittedAt: string;
+}
+
+export interface DesktopAvatarRadarStreamSnapshotEvent {
+  type: "snapshot";
+  eventId: string;
+  radar: DesktopAvatarRadarResponse;
+  emittedAt: string;
+}
+
+export interface DesktopAvatarRadarStreamUpdateEvent {
+  type: "update";
+  eventId: string;
+  reasons: DesktopAvatarRadarStreamReason[];
+  radar: DesktopAvatarRadarResponse;
+  emittedAt: string;
+}
+
+export interface DesktopAvatarRadarStreamErrorEvent {
+  type: "error";
+  eventId: string;
+  message: string;
+  emittedAt: string;
+}
+
+export type DesktopAvatarRadarStreamEvent =
+  | DesktopAvatarRadarStreamReadyEvent
+  | DesktopAvatarRadarStreamSnapshotEvent
+  | DesktopAvatarRadarStreamUpdateEvent
+  | DesktopAvatarRadarStreamErrorEvent;
+
+export interface DesktopAvatarOperatorRadarWidget {
+  type: "operatorRadar";
+  title: string;
+  generatedAt: string;
+  summary: DesktopAvatarRadarSummary;
+  items: DesktopAvatarRadarSignal[];
+}
+
 export interface HitlDecisionQueueItem {
   decisionId: string;
   runId: string;
@@ -152,6 +297,7 @@ export type DesktopAvatarWidgetPayload =
   | DesktopAvatarAreaChartWidget
   | DesktopAvatarClarificationWidget
   | DesktopAvatarHitlApprovalWidget
+  | DesktopAvatarOperatorRadarWidget
   | DesktopAvatarErrorWidget;
 
 export interface DesktopAvatarTalkPayload {
@@ -287,6 +433,11 @@ export type HitlDecisionStreamEvent =
   | HitlDecisionStreamDecisionEvent;
 
 export interface HitlDecisionStreamLifecycleEvent {
+  phase: "closed" | "aborted" | "error";
+  reason?: string | null;
+}
+
+export interface DesktopAvatarRadarStreamLifecycleEvent {
   phase: "closed" | "aborted" | "error";
   reason?: string | null;
 }

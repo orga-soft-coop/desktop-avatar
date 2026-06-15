@@ -15,7 +15,14 @@ export type DevToolsDemoWidgetKind =
   | "text"
   | "clarification"
   | "error"
-  | "areaChart";
+  | "areaChart"
+  | "hitlApproval"
+  | "operatorRadar"
+  | "radarForecastRunning"
+  | "radarForecastCompleted"
+  | "radarHitlOpen"
+  | "radarRunFailed"
+  | "radarWarehouseReorder";
 
 type DevToolsSectionKey =
   | "interface"
@@ -36,6 +43,7 @@ interface ChatPanelProps {
   ttsEnabled: boolean;
   backendConnectionState: BackendConnectionState;
   backendConnectionLabel: string;
+  radarSignalCount?: number;
   locale?: LocaleId;
   supportedLocales?: LocaleId[];
   ttsVoices?: string[];
@@ -61,6 +69,7 @@ interface ChatPanelProps {
   onResetCameraConfig?: () => void;
   onToggleExpanded: () => void;
   onToggleTheme: () => void;
+  onOpenRadar?: () => void;
   onToggleTts: () => void;
   onSelectLocale?: (locale: LocaleId) => void;
   onSelectTtsVoice?: (voice: string | null) => void;
@@ -122,6 +131,7 @@ export function ChatPanel({
   ttsEnabled,
   backendConnectionState,
   backendConnectionLabel,
+  radarSignalCount = 0,
   locale = "de",
   supportedLocales = ["de"],
   ttsVoices,
@@ -147,6 +157,7 @@ export function ChatPanel({
   onResetCameraConfig,
   onToggleExpanded,
   onToggleTheme,
+  onOpenRadar,
   onToggleTts,
   onSelectLocale,
   onSelectTtsVoice,
@@ -342,7 +353,16 @@ export function ChatPanel({
     { kind: "text", label: t("devTools.demoText") },
     { kind: "clarification", label: t("devTools.demoClarification") },
     { kind: "areaChart", label: t("devTools.demoAreaChart") },
+    { kind: "hitlApproval", label: t("devTools.demoHitlApproval") },
+    { kind: "operatorRadar", label: t("devTools.demoOperatorRadar") },
     { kind: "error", label: t("devTools.demoError") }
+  ];
+  const radarScenarioButtons: Array<{ kind: DevToolsDemoWidgetKind; label: string }> = [
+    { kind: "radarForecastRunning", label: t("devTools.radarScenarioForecastRunning") },
+    { kind: "radarForecastCompleted", label: t("devTools.radarScenarioForecastCompleted") },
+    { kind: "radarHitlOpen", label: t("devTools.radarScenarioHitlOpen") },
+    { kind: "radarRunFailed", label: t("devTools.radarScenarioRunFailed") },
+    { kind: "radarWarehouseReorder", label: t("devTools.radarScenarioWarehouseReorder") }
   ];
 
   return (
@@ -379,23 +399,50 @@ export function ChatPanel({
             </div>
           ) : null}
 
-          {hasConversation ? (
-            <div className="chat-panel__transcript" aria-label={t("chat.transcript")}>
-              <div className="chat-panel__transcript-header">
-                <span>{t("chat.transcript")}</span>
-                {onClearConversation ? (
-                  <button
-                    className="chat-panel__clear"
-                    type="button"
-                    onClick={onClearConversation}
-                    title={t("chat.newChat")}
-                  >
-                    {t("chat.newChat")}
-                  </button>
-                ) : null}
-              </div>
-              <div className="chat-panel__messages" ref={messagesListRef}>
-                {visibleMessages.map((message) => {
+          <div className="chat-panel__composer">
+            <textarea
+              ref={draftTextareaRef}
+              value={draft}
+              onChange={(event) => onDraftChange(event.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={t("chat.placeholder")}
+              rows={1}
+              autoFocus
+            />
+            <button className="chat-panel__send" type="button" onClick={onSubmit} title={t("chat.send")}>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="chat-panel__transcript" aria-label={t("chat.transcript")}>
+            <div className="chat-panel__transcript-header">
+              <span>{t("chat.transcript")}</span>
+              {hasConversation && onClearConversation ? (
+                <button
+                  className="chat-panel__clear"
+                  type="button"
+                  onClick={onClearConversation}
+                  title={t("chat.newChat")}
+                >
+                  {t("chat.newChat")}
+                </button>
+              ) : null}
+            </div>
+            <div className="chat-panel__messages" ref={messagesListRef}>
+              {hasConversation ? (
+                visibleMessages.map((message) => {
                   const hasFollowUps = (message.followUpQuestions?.length ?? 0) > 0;
                   const assistantText =
                     message.text.trim() ||
@@ -439,36 +486,13 @@ export function ChatPanel({
                       </div>
                     </article>
                   );
-                })}
-              </div>
+                })
+              ) : (
+                <div className="chat-panel__empty-transcript">
+                  {t("chat.emptyTranscript")}
+                </div>
+              )}
             </div>
-          ) : null}
-
-          <div className="chat-panel__composer">
-            <textarea
-              ref={draftTextareaRef}
-              value={draft}
-              onChange={(event) => onDraftChange(event.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={t("chat.placeholder")}
-              rows={1}
-              autoFocus
-            />
-            <button className="chat-panel__send" type="button" onClick={onSubmit} title={t("chat.send")}>
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
-              </svg>
-            </button>
           </div>
 
           <div className="chat-panel__bar">
@@ -485,6 +509,38 @@ export function ChatPanel({
                 <span className="chat-panel__backend-status-dot" aria-hidden="true" />
                 <span>{backendConnectionLabel}</span>
               </span>
+              {onOpenRadar ? (
+                <button
+                  type="button"
+                  onClick={onOpenRadar}
+                  title={t("chat.openRadar")}
+                  aria-label={
+                    radarSignalCount > 0
+                      ? `${t("chat.openRadar")} (${radarSignalCount})`
+                      : t("chat.openRadar")
+                  }
+                  className={radarSignalCount > 0 ? "is-active" : undefined}
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M19.1 4.9A10 10 0 0 1 4.9 19.1" />
+                    <path d="M4.9 4.9A10 10 0 0 0 19.1 19.1" />
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M12 12h8" />
+                  </svg>
+                  {radarSignalCount > 0 ? (
+                    <span className="chat-panel__action-badge" aria-hidden="true" />
+                  ) : null}
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={onToggleRecording}
@@ -802,6 +858,25 @@ export function ChatPanel({
                             {entry.label}
                           </button>
                         ))}
+                      </div>
+                      <div className="chat-panel__devtools-subgroup">
+                        <span className="chat-panel__devtools-subtitle">
+                          {t("devTools.radarScenarios")}
+                        </span>
+                        <div className="chat-panel__devtools-demo-grid">
+                          {radarScenarioButtons.map((entry) => (
+                            <button
+                              key={entry.kind}
+                              className={`chat-panel__devtools-btn chat-panel__devtools-btn--demo ${
+                                activeDemoWidgets.includes(entry.kind) ? "is-active" : ""
+                              }`}
+                              type="button"
+                              onClick={() => onToggleDemoWidget?.(entry.kind)}
+                            >
+                              {entry.label}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                       {selectedDemoCount > 0 ? (
                         <button

@@ -1,6 +1,9 @@
 import type {
   CreateDesktopAvatarRequestInput,
   CreateDesktopAvatarRequestResult,
+  DesktopAvatarRadarResponse,
+  DesktopAvatarRadarStreamEvent,
+  DesktopAvatarRadarStreamLifecycleEvent,
   DesktopAvatarRequestDocument,
   DesktopAvatarStreamEvent,
   DesktopAvatarStreamLifecycleEvent,
@@ -12,15 +15,20 @@ import type {
 import {
   approveHitlDecision,
   createDesktopAvatarRequest,
+  getDesktopAvatarRadar,
   getDesktopAvatarRequest,
+  onDesktopAvatarRadarStreamEvent,
+  onDesktopAvatarRadarStreamLifecycle,
   onHitlDecisionStreamEvent,
   onHitlDecisionStreamLifecycle,
   onDesktopAvatarStreamEvent,
   onDesktopAvatarStreamLifecycle,
   rejectHitlDecision,
   requestMoreInfoForHitl,
+  startDesktopAvatarRadarStream,
   startDesktopAvatarStream,
   startHitlDecisionStream,
+  stopDesktopAvatarRadarStream,
   stopHitlDecisionStream,
   stopDesktopAvatarStream
 } from "./tauri";
@@ -33,6 +41,10 @@ export interface HitlDecisionStreamConnection {
   close: () => Promise<void>;
 }
 
+export interface DesktopAvatarRadarStreamConnection {
+  close: () => Promise<void>;
+}
+
 export interface DesktopAvatarApiClient {
   createRequest: (
     input: CreateDesktopAvatarRequestInput
@@ -41,6 +53,7 @@ export interface DesktopAvatarApiClient {
     avatarRequestId?: string;
     pollUrl?: string;
   }) => Promise<DesktopAvatarRequestDocument>;
+  getRadar: () => Promise<DesktopAvatarRadarResponse>;
   connectStream: (args: {
     avatarRequestId: string;
     streamUrl?: string;
@@ -51,6 +64,10 @@ export interface DesktopAvatarApiClient {
     onEvent: (event: HitlDecisionStreamEvent) => void;
     onDisconnect: (event: HitlDecisionStreamLifecycleEvent) => void;
   }) => Promise<HitlDecisionStreamConnection>;
+  connectRadarStream: (args: {
+    onEvent: (event: DesktopAvatarRadarStreamEvent) => void;
+    onDisconnect: (event: DesktopAvatarRadarStreamLifecycleEvent) => void;
+  }) => Promise<DesktopAvatarRadarStreamConnection>;
   approveHitlDecision: (input: HitlDecisionInput) => Promise<void>;
   rejectHitlDecision: (input: HitlDecisionInput) => Promise<void>;
   requestMoreInfoForHitl: (input: HitlRequestMoreInfoInput) => Promise<void>;
@@ -59,6 +76,7 @@ export interface DesktopAvatarApiClient {
 export const desktopAvatarApiClient: DesktopAvatarApiClient = {
   createRequest: createDesktopAvatarRequest,
   getRequest: getDesktopAvatarRequest,
+  getRadar: getDesktopAvatarRadar,
   async connectStream({ avatarRequestId, streamUrl, onEvent, onDisconnect }) {
     let unlistenEvents: (() => void) | null = null;
     let unlistenLifecycle: (() => void) | null = null;
@@ -118,6 +136,33 @@ export const desktopAvatarApiClient: DesktopAvatarApiClient = {
         unlistenEvents?.();
         unlistenLifecycle?.();
         await stopHitlDecisionStream();
+      }
+    };
+  },
+  async connectRadarStream({ onEvent, onDisconnect }) {
+    let unlistenEvents: (() => void) | null = null;
+    let unlistenLifecycle: (() => void) | null = null;
+    let closed = false;
+
+    try {
+      unlistenEvents = await onDesktopAvatarRadarStreamEvent(onEvent);
+      unlistenLifecycle = await onDesktopAvatarRadarStreamLifecycle(onDisconnect);
+      await startDesktopAvatarRadarStream();
+    } catch (error) {
+      unlistenEvents?.();
+      unlistenLifecycle?.();
+      throw error;
+    }
+
+    return {
+      close: async () => {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        unlistenEvents?.();
+        unlistenLifecycle?.();
+        await stopDesktopAvatarRadarStream();
       }
     };
   },

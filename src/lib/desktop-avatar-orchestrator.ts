@@ -13,9 +13,17 @@ import { t } from "./i18n";
 export interface DesktopAvatarOrchestratorState {
   clientRequestId: string | null;
   avatarRequestId: string | null;
+  conversationId: string | null;
   streamUrl: string | null;
   pollUrl: string | null;
-  phase: "idle" | "creating" | "streaming" | "polling" | "completed" | "failed";
+  phase:
+    | "idle"
+    | "creating"
+    | "streaming"
+    | "polling"
+    | "awaiting-clarification"
+    | "completed"
+    | "failed";
   status: DesktopAvatarRequestStatus | null;
   statusMessage: string | null;
   talkText: string;
@@ -41,6 +49,7 @@ export type DesktopAvatarOrchestratorAction =
 export const desktopAvatarInitialState: DesktopAvatarOrchestratorState = {
   clientRequestId: null,
   avatarRequestId: null,
+  conversationId: null,
   streamUrl: null,
   pollUrl: null,
   phase: "idle",
@@ -58,8 +67,11 @@ export const desktopAvatarInitialState: DesktopAvatarOrchestratorState = {
 
 export function isDesktopAvatarTerminalStatus(
   status: DesktopAvatarRequestStatus | null | undefined
-): status is Extract<DesktopAvatarRequestStatus, "COMPLETED" | "FAILED"> {
-  return status === "COMPLETED" || status === "FAILED";
+): status is Extract<
+  DesktopAvatarRequestStatus,
+  "COMPLETED" | "NEEDS_CLARIFICATION" | "CANCELLED" | "FAILED"
+> {
+  return status === "COMPLETED" || status === "NEEDS_CLARIFICATION" || status === "CANCELLED" || status === "FAILED";
 }
 
 export function isDesktopAvatarThinkingStatus(
@@ -73,14 +85,16 @@ export function isDesktopAvatarThinkingStatus(
   );
 }
 
-function isTerminalPollingSnapshot(document: DesktopAvatarRequestDocument): boolean {
-  if (isDesktopAvatarTerminalStatus(document.status)) {
+export function isTerminalDesktopAvatarDocument(
+  document: DesktopAvatarRequestDocument
+): boolean {
+  if (document.status === "COMPLETED" || document.status === "FAILED" || document.status === "CANCELLED") {
     return true;
   }
 
   return (
     document.status === "NEEDS_CLARIFICATION" &&
-    (document.response?.widget?.type === "clarification" || !!document.response)
+    document.response?.widget?.type === "clarification"
   );
 }
 
@@ -121,6 +135,7 @@ export function animationForStatus(
     case "FORMATTING_RESPONSE":
       return "thinking";
     case "COMPLETED":
+    case "CANCELLED":
       return "idle";
     default:
       return "thinking";
@@ -172,6 +187,7 @@ export function reduceDesktopAvatarState(
       return {
         ...state,
         avatarRequestId: action.result.avatarRequestId,
+        conversationId: action.result.conversationId ?? state.conversationId,
         streamUrl: action.result.streamUrl,
         pollUrl: action.result.pollUrl,
         status: action.result.status,
@@ -203,12 +219,16 @@ export function reduceDesktopAvatarState(
           const animation = animationForStatus(action.event.status);
           const failed = action.event.status === "FAILED";
           const statusMessage = action.event.message ?? state.statusMessage;
-          const isTerminal = isDesktopAvatarTerminalStatus(action.event.status);
+          const isTerminal =
+            action.event.status === "COMPLETED" || action.event.status === "FAILED";
+          const awaitingClarification = action.event.status === "NEEDS_CLARIFICATION";
           return {
             ...state,
             status: action.event.status,
             statusMessage,
-            phase: isTerminal
+            phase: awaitingClarification
+              ? "awaiting-clarification"
+              : isTerminal
               ? failed
                 ? "failed"
                 : "completed"
@@ -254,7 +274,12 @@ export function reduceDesktopAvatarState(
             status: action.event.status,
             statusMessage: null,
             isDone: true,
-            phase: action.event.status === "FAILED" ? "failed" : "completed",
+            phase:
+              action.event.status === "FAILED"
+                ? "failed"
+                : action.event.status === "NEEDS_CLARIFICATION"
+                  ? "awaiting-clarification"
+                  : "completed",
             animation,
             companionState: animationToCompanionState(animation, action.event.status === "FAILED")
           };
@@ -282,10 +307,16 @@ export function reduceDesktopAvatarState(
       };
 
     case "pollingSnapshot": {
+      if (
+        state.avatarRequestId &&
+        action.document.avatarRequestId !== state.avatarRequestId
+      ) {
+        return state;
+      }
       let nextState = applyResponse(state, action.document.response);
       const status = action.document.status;
       const failed = status === "FAILED";
-      const isTerminal = isTerminalPollingSnapshot(action.document);
+      const isTerminal = isTerminalDesktopAvatarDocument(action.document);
       const animation = nextState.hasTalkEvent && status === "COMPLETED"
         ? "idle"
         : action.document.response?.talk?.text
@@ -298,13 +329,17 @@ export function reduceDesktopAvatarState(
         ...nextState,
         avatarRequestId: nextState.avatarRequestId ?? action.document.avatarRequestId,
         clientRequestId: nextState.clientRequestId ?? action.document.clientRequestId,
+        conversationId:
+          action.document.conversationId ?? nextState.conversationId,
         status,
         error: action.document.error ?? (failed ? nextState.error ?? t("status.requestFailed") : null),
         isDone: isTerminal,
         phase: isTerminal
           ? failed
             ? "failed"
-            : "completed"
+            : status === "NEEDS_CLARIFICATION"
+              ? "awaiting-clarification"
+              : "completed"
           : "polling",
         animation,
         companionState: action.document.response?.talk?.text

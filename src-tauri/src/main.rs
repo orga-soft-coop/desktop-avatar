@@ -311,6 +311,44 @@ struct CreateDesktopAvatarRequestResult {
     stream_url: String,
     poll_url: String,
     idempotent: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conversation_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ReplyDesktopAvatarClarificationInput {
+    client_request_id: String,
+    answer: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopAvatarDatasetColumn {
+    key: String,
+    label: String,
+    data_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lookup: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopAvatarDatasetPage {
+    result_id: String,
+    columns: Vec<DesktopAvatarDatasetColumn>,
+    rows: Vec<Value>,
+    next_cursor: Option<String>,
+    total_row_count: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopAvatarConversationCancelResult {
+    conversation_id: String,
+    status: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -331,6 +369,8 @@ struct DesktopAvatarRequestDocument {
     error: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
+    #[serde(default)]
+    conversation_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1561,6 +1601,58 @@ fn absolute_comm_officer_url(base_url: &str, path_or_url: &str) -> String {
     )
 }
 
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn trusted_comm_officer_url(base_url: &str, path_or_url: &str) -> Result<String, String> {
+    let base = Url::parse(base_url)
+        .map_err(|error| format!("COMM_OFFICER_BASE_URL is invalid: {error}"))?;
+    if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
+        return Err("COMM_OFFICER_BASE_URL must be an HTTP(S) origin.".to_string());
+    }
+
+    let target = Url::parse(absolute_comm_officer_url(base_url, path_or_url).as_str())
+        .map_err(|error| format!("Desktop Avatar response URL is invalid: {error}"))?;
+    if !same_origin(&base, &target) {
+        return Err(
+            "Desktop Avatar response URL must use the configured backend origin.".to_string(),
+        );
+    }
+
+    Ok(target.to_string())
+}
+
+fn comm_officer_resource_url(
+    base_url: &str,
+    path_segments: &[&str],
+    query: &[(&str, &str)],
+) -> Result<String, String> {
+    let mut url = Url::parse(base_url)
+        .map_err(|error| format!("COMM_OFFICER_BASE_URL is invalid: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err("COMM_OFFICER_BASE_URL must be an HTTP(S) origin.".to_string());
+    }
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| "COMM_OFFICER_BASE_URL cannot contain opaque paths.".to_string())?;
+        segments.pop_if_empty();
+        for segment in path_segments {
+            segments.push(segment);
+        }
+    }
+    if !query.is_empty() {
+        let mut pairs = url.query_pairs_mut();
+        for (key, value) in query {
+            pairs.append_pair(key, value);
+        }
+    }
+    Ok(url.to_string())
+}
+
 fn with_auth(request: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
     request.header(AUTHORIZATION, format!("Bearer {token}"))
 }
@@ -1568,9 +1660,10 @@ fn with_auth(request: reqwest::RequestBuilder, token: &str) -> reqwest::RequestB
 fn normalize_desktop_avatar_result_urls(
     base_url: &str,
     result: &mut CreateDesktopAvatarRequestResult,
-) {
-    result.stream_url = absolute_comm_officer_url(base_url, &result.stream_url);
-    result.poll_url = absolute_comm_officer_url(base_url, &result.poll_url);
+) -> Result<(), String> {
+    result.stream_url = trusted_comm_officer_url(base_url, &result.stream_url)?;
+    result.poll_url = trusted_comm_officer_url(base_url, &result.poll_url)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1606,7 +1699,7 @@ async fn desktop_avatar_request_create(
         .json::<CreateDesktopAvatarRequestResult>()
         .await
         .map_err(|error| error.to_string())?;
-    normalize_desktop_avatar_result_urls(&base_url, &mut result);
+    normalize_desktop_avatar_result_urls(&base_url, &mut result)?;
     Ok(result)
 }
 
@@ -1618,11 +1711,12 @@ async fn desktop_avatar_request_get(
 ) -> Result<DesktopAvatarRequestDocument, String> {
     let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
     let url = match (avatar_request_id, poll_url) {
-        (_, Some(url)) => absolute_comm_officer_url(&base_url, &url),
-        (Some(request_id), None) => absolute_comm_officer_url(
+        (_, Some(url)) => trusted_comm_officer_url(&base_url, &url)?,
+        (Some(request_id), None) => comm_officer_resource_url(
             &base_url,
-            &format!("/v1/desktop-avatar/requests/{request_id}"),
-        ),
+            &["v1", "desktop-avatar", "requests", request_id.as_str()],
+            &[],
+        )?,
         (None, None) => {
             return Err(
                 "desktop_avatar_request_get requires avatarRequestId or pollUrl.".to_string(),
@@ -1646,6 +1740,173 @@ async fn desktop_avatar_request_get(
 
     response
         .json::<DesktopAvatarRequestDocument>()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn desktop_avatar_clarification_reply(
+    state: State<'_, AppState>,
+    avatar_request_id: String,
+    clarification_id: String,
+    request: ReplyDesktopAvatarClarificationInput,
+) -> Result<CreateDesktopAvatarRequestResult, String> {
+    let avatar_request_id = avatar_request_id.trim();
+    let clarification_id = clarification_id.trim();
+    if avatar_request_id.is_empty() || clarification_id.is_empty() {
+        return Err("avatarRequestId and clarificationId are required.".to_string());
+    }
+    if request.client_request_id.trim().is_empty() || request.answer.trim().is_empty() {
+        return Err("clientRequestId and answer are required.".to_string());
+    }
+
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let url = comm_officer_resource_url(
+        &base_url,
+        &[
+            "v1",
+            "desktop-avatar",
+            "requests",
+            avatar_request_id,
+            "clarifications",
+            clarification_id,
+            "replies",
+        ],
+        &[],
+    )?;
+    let response = with_auth(
+        state
+            .client
+            .post(url)
+            .header(CONTENT_TYPE, "application/json")
+            .json(&request),
+        &token,
+    )
+    .send()
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!(
+            "SYNTRA Assistant clarification reply returned {status}: {text}"
+        ));
+    }
+
+    let mut result = response
+        .json::<CreateDesktopAvatarRequestResult>()
+        .await
+        .map_err(|error| error.to_string())?;
+    normalize_desktop_avatar_result_urls(&base_url, &mut result)?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn desktop_avatar_dataset_page_get(
+    state: State<'_, AppState>,
+    avatar_request_id: String,
+    result_id: String,
+    cursor: Option<String>,
+) -> Result<DesktopAvatarDatasetPage, String> {
+    let avatar_request_id = avatar_request_id.trim();
+    let result_id = result_id.trim();
+    if avatar_request_id.is_empty() || result_id.is_empty() {
+        return Err("avatarRequestId and resultId are required.".to_string());
+    }
+
+    let cursor = cursor
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let query = cursor
+        .map(|value| vec![("cursor", value)])
+        .unwrap_or_default();
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let url = comm_officer_resource_url(
+        &base_url,
+        &[
+            "v1",
+            "desktop-avatar",
+            "requests",
+            avatar_request_id,
+            "results",
+            result_id,
+            "pages",
+        ],
+        query.as_slice(),
+    )?;
+    let response = with_auth(state.client.get(url), &token)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!(
+            "SYNTRA Assistant dataset page returned {status}: {text}"
+        ));
+    }
+
+    response
+        .json::<DesktopAvatarDatasetPage>()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn desktop_avatar_conversation_cancel(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<DesktopAvatarConversationCancelResult, String> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err("conversationId is required.".to_string());
+    }
+
+    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let url = comm_officer_resource_url(
+        &base_url,
+        &[
+            "v1",
+            "desktop-avatar",
+            "conversations",
+            conversation_id,
+            "cancel",
+        ],
+        &[],
+    )?;
+    let response = with_auth(
+        state
+            .client
+            .post(url)
+            .header(CONTENT_TYPE, "application/json"),
+        &token,
+    )
+    .send()
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!(
+            "SYNTRA Assistant conversation cancel returned {status}: {text}"
+        ));
+    }
+
+    response
+        .json::<DesktopAvatarConversationCancelResult>()
         .await
         .map_err(|error| error.to_string())
 }
@@ -1760,11 +2021,18 @@ async fn desktop_avatar_request_stream(
                 .to_string()
         })?;
     let url = match stream_url {
-        Some(url) => absolute_comm_officer_url(&base_url, &url),
-        None => absolute_comm_officer_url(
+        Some(url) => trusted_comm_officer_url(&base_url, &url)?,
+        None => comm_officer_resource_url(
             &base_url,
-            &format!("/v1/desktop-avatar/requests/{request_id}/stream"),
-        ),
+            &[
+                "v1",
+                "desktop-avatar",
+                "requests",
+                request_id.as_str(),
+                "stream",
+            ],
+            &[],
+        )?,
     };
 
     if let Some(existing) = state
@@ -4123,6 +4391,9 @@ pub fn run() {
             window_start_drag,
             desktop_avatar_request_create,
             desktop_avatar_request_get,
+            desktop_avatar_clarification_reply,
+            desktop_avatar_dataset_page_get,
+            desktop_avatar_conversation_cancel,
             desktop_avatar_radar_get,
             desktop_avatar_radar_stream_start,
             desktop_avatar_radar_stream_stop,
@@ -4570,6 +4841,60 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_avatar_response_urls_must_use_the_configured_origin() {
+        let base = "https://ops.example.test:8443/api";
+
+        assert_eq!(
+            trusted_comm_officer_url(base, "/v1/desktop-avatar/requests/1/stream")
+                .expect("relative URL to be accepted"),
+            "https://ops.example.test:8443/api/v1/desktop-avatar/requests/1/stream"
+        );
+        assert!(trusted_comm_officer_url(
+            base,
+            "https://ops.example.test:8443/v1/desktop-avatar/requests/1"
+        )
+        .is_ok());
+        assert!(trusted_comm_officer_url(
+            base,
+            "https://attacker.example/v1/desktop-avatar/requests/1"
+        )
+        .is_err());
+        assert!(trusted_comm_officer_url(
+            base,
+            "http://ops.example.test:8443/v1/desktop-avatar/requests/1"
+        )
+        .is_err());
+        assert!(trusted_comm_officer_url(
+            base,
+            "https://ops.example.test:9443/v1/desktop-avatar/requests/1"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn desktop_avatar_resource_urls_encode_ids_and_cursors() {
+        let url = comm_officer_resource_url(
+            "https://ops.example.test/api/",
+            &[
+                "v1",
+                "desktop-avatar",
+                "requests",
+                "request/with spaces",
+                "results",
+                "result?1",
+                "pages",
+            ],
+            &[("cursor", "next page&tenant=other")],
+        )
+        .expect("resource URL to be built");
+
+        assert_eq!(
+            url,
+            "https://ops.example.test/api/v1/desktop-avatar/requests/request%2Fwith%20spaces/results/result%3F1/pages?cursor=next+page%26tenant%3Dother"
+        );
+    }
 
     #[test]
     fn sse_parser_collects_multiline_data() {

@@ -4,6 +4,8 @@ import type {
   BootstrapState,
   CreateDesktopAvatarRequestInput,
   CreateDesktopAvatarRequestResult,
+  DesktopAvatarConversationCancelResult,
+  DesktopAvatarDatasetPage,
   DesktopAvatarRadarResponse,
   DesktopAvatarRadarStreamEvent,
   DesktopAvatarRadarStreamLifecycleEvent,
@@ -14,6 +16,7 @@ import type {
   HitlDecisionStreamEvent,
   HitlDecisionStreamLifecycleEvent,
   HitlRequestMoreInfoInput,
+  ReplyDesktopAvatarClarificationInput,
   TranscriptionProviderChangedEvent,
   TranscriptionProviderId,
   TranscriptionSessionAppendAudioRequest,
@@ -190,6 +193,33 @@ export async function getDesktopAvatarRequest(args: {
 }): Promise<DesktopAvatarRequestDocument> {
   requireTauriRuntime("SYNTRA Assistant Polling");
   return invoke<DesktopAvatarRequestDocument>("desktop_avatar_request_get", args);
+}
+
+export async function replyDesktopAvatarClarification(args: {
+  avatarRequestId: string;
+  clarificationId: string;
+  request: ReplyDesktopAvatarClarificationInput;
+}): Promise<CreateDesktopAvatarRequestResult> {
+  requireTauriRuntime("SYNTRA Assistant Rückfrage");
+  return invoke<CreateDesktopAvatarRequestResult>("desktop_avatar_clarification_reply", args);
+}
+
+export async function getDesktopAvatarDatasetPage(args: {
+  avatarRequestId: string;
+  resultId: string;
+  cursor?: string;
+}): Promise<DesktopAvatarDatasetPage> {
+  requireTauriRuntime("SYNTRA Assistant Datensatz");
+  return invoke<DesktopAvatarDatasetPage>("desktop_avatar_dataset_page_get", args);
+}
+
+export async function cancelDesktopAvatarConversation(
+  conversationId: string
+): Promise<DesktopAvatarConversationCancelResult> {
+  requireTauriRuntime("SYNTRA Assistant Konversation");
+  return invoke<DesktopAvatarConversationCancelResult>("desktop_avatar_conversation_cancel", {
+    conversationId
+  });
 }
 
 export async function getDesktopAvatarRadar(): Promise<DesktopAvatarRadarResponse> {

@@ -14,6 +14,12 @@ describe("routePrompt", () => {
     );
   });
 
+  it("does not let a greeting downgrade a business request to local chat", () => {
+    expect(routePrompt("Hallo, zeig mir bitte den aktuellen Bestand")).toBe(
+      "backendBusiness"
+    );
+  });
+
   it("routes casual prompts locally", () => {
     expect(routePrompt("Tell me a joke about coffee")).toBe("localChat");
   });

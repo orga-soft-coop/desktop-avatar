@@ -128,6 +128,108 @@ describe("desktop avatar orchestrator", () => {
     expect(state.widget?.type).toBe("text");
   });
 
+  it("keeps a streamed clarification in an explicit awaiting phase", () => {
+    let state = reduceDesktopAvatarState(desktopAvatarInitialState, {
+      type: "createAccepted",
+      result: {
+        accepted: true,
+        avatarRequestId: "req-clarification",
+        conversationId: "conversation-1",
+        status: "RECEIVED",
+        streamUrl: "/stream",
+        pollUrl: "/poll",
+        idempotent: false
+      }
+    });
+
+    state = reduceDesktopAvatarState(state, {
+      type: "streamEvent",
+      event: {
+        type: "status",
+        avatarRequestId: "req-clarification",
+        status: "NEEDS_CLARIFICATION",
+        emittedAt: "2026-08-14T10:00:00.000Z"
+      }
+    });
+    expect(state.phase).toBe("awaiting-clarification");
+    expect(state.isDone).toBe(false);
+
+    state = reduceDesktopAvatarState(state, {
+      type: "streamEvent",
+      event: {
+        type: "widget",
+        avatarRequestId: "req-clarification",
+        widget: {
+          type: "clarification",
+          title: "Rückfrage",
+          question: "Welcher Zeitraum?",
+          suggestions: ["Heute"],
+          clarificationId: "clarification-1",
+          conversationId: "conversation-1"
+        },
+        emittedAt: "2026-08-14T10:00:01.000Z"
+      }
+    });
+    state = reduceDesktopAvatarState(state, {
+      type: "streamEvent",
+      event: {
+        type: "done",
+        avatarRequestId: "req-clarification",
+        status: "NEEDS_CLARIFICATION",
+        emittedAt: "2026-08-14T10:00:02.000Z"
+      }
+    });
+
+    expect(state.conversationId).toBe("conversation-1");
+    expect(state.widget?.type).toBe("clarification");
+    expect(state.phase).toBe("awaiting-clarification");
+    expect(state.isDone).toBe(true);
+  });
+
+  it("waits for a clarification payload before treating a polled turn as terminal", () => {
+    let state = reduceDesktopAvatarState(desktopAvatarInitialState, {
+      type: "pollingSnapshot",
+      document: {
+        avatarRequestId: "req-polled-clarification",
+        clientRequestId: "client-1",
+        conversationId: "conversation-1",
+        status: "NEEDS_CLARIFICATION",
+        response: {
+          talk: { text: "Ich brauche noch einen Zeitraum." },
+          followUpQuestions: []
+        }
+      }
+    });
+
+    expect(state.phase).toBe("polling");
+    expect(state.isDone).toBe(false);
+
+    state = reduceDesktopAvatarState(state, {
+      type: "pollingSnapshot",
+      document: {
+        avatarRequestId: "req-polled-clarification",
+        clientRequestId: "client-1",
+        conversationId: "conversation-1",
+        status: "NEEDS_CLARIFICATION",
+        response: {
+          talk: { text: "Ich brauche noch einen Zeitraum." },
+          widget: {
+            type: "clarification",
+            title: "Rückfrage",
+            question: "Welcher Zeitraum?",
+            suggestions: [],
+            clarificationId: "clarification-1",
+            conversationId: "conversation-1"
+          },
+          followUpQuestions: []
+        }
+      }
+    });
+
+    expect(state.phase).toBe("awaiting-clarification");
+    expect(state.isDone).toBe(true);
+  });
+
   it("surfaces failed states as visible errors", () => {
     const state = reduceDesktopAvatarState(desktopAvatarInitialState, {
       type: "streamEvent",

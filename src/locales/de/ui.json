@@ -212,6 +212,20 @@
       "nextPage": "Weiter",
       "pageXofY": "Seite {{current}} / {{total}}",
       "rowsRange": "{{from}}-{{to}} von {{total}}"
+    },
+    "clarification": {
+      "pending": "Antwort ausstehend",
+      "submitting": "Antwort wird gesendet…",
+      "answered": "Beantwortet",
+      "expired": "Rückfrage abgelaufen",
+      "unavailable": "Antwort kann mit diesem Serverstand nicht fortgesetzt werden"
+    },
+    "dataset": {
+      "loadedRows": "{{loaded}} von {{total}} Zeilen geladen",
+      "loadMore": "Weitere laden",
+      "loading": "Wird geladen…",
+      "loadFailed": "Weitere Daten konnten nicht geladen werden.",
+      "unexpectedResult": "Die geladene Seite gehört zu einem anderen Ergebnis."
     }
   },
   "connection": {
@@ -233,6 +247,10 @@
   },
   "status": {
     "sendingRequest": "Anfrage wird gesendet…",
+    "sendingClarification": "Antwort auf Rückfrage wird gesendet…",
+    "awaitingClarification": "Ich benötige noch eine Angabe.",
+    "clarificationExpired": "Diese Rückfrage ist abgelaufen. Bitte starte die Anfrage erneut.",
+    "clarificationUnavailable": "Diese ältere Rückfrage kann nicht fortgesetzt werden. Bitte starte eine neue Anfrage.",
     "waitingForUpdates": "Warte auf Live-Aktualisierungen…",
     "connectedProcessing": "Verbunden. Anfrage wird verarbeitet…",
     "requestFailed": "Anfrage fehlgeschlagen.",

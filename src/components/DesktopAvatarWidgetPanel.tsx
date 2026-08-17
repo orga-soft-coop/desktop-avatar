@@ -1,4 +1,8 @@
 import type {
+  ChatMessage,
+  DesktopAvatarDatasetColumn,
+  DesktopAvatarDatasetPage,
+  DesktopAvatarDatasetWidget,
   DesktopAvatarRadarSignal,
   DesktopAvatarWidgetPayload
 } from "../lib/contracts";
@@ -6,12 +10,17 @@ import { t } from "../lib/i18n";
 import { DataTable } from "./DataTable";
 import { WidgetAreaChart } from "./WidgetAreaChart";
 import { WidgetHeader } from "./WidgetHeader";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface DesktopAvatarWidgetPanelProps {
   widget: DesktopAvatarWidgetPayload;
   followUpQuestions?: string[];
+  clarificationState?: ChatMessage["clarificationState"];
   onSuggestionSelect?: (suggestion: string) => void;
+  onDatasetPageRequest?: (
+    resultId: string,
+    cursor?: string
+  ) => Promise<DesktopAvatarDatasetPage>;
   onDismiss?: () => void;
   onHitlApprove?: (decisionId: string, reason?: string) => void;
   onHitlReject?: (decisionId: string, reason: string) => void;
@@ -30,6 +39,41 @@ function formatScalar(value: string | number | boolean | null): string {
     return "-";
   }
   return String(value);
+}
+
+function formatDatasetScalar(
+  value: string | number | boolean | null,
+  column: DesktopAvatarDatasetColumn,
+  locale: string
+): string {
+  const lookupLabel = column.lookup?.labels[String(value)];
+  if (lookupLabel !== undefined) {
+    return lookupLabel;
+  }
+
+  try {
+    if (column.dataType === "number" && typeof value === "number") {
+      return new Intl.NumberFormat(locale).format(value);
+    }
+    if (
+      (column.dataType === "date" || column.dataType === "datetime") &&
+      typeof value === "string"
+    ) {
+      const parsed = new Date(value);
+      if (!Number.isNaN(parsed.getTime())) {
+        return new Intl.DateTimeFormat(
+          locale,
+          column.dataType === "datetime"
+            ? { dateStyle: "medium", timeStyle: "short" }
+            : { dateStyle: "medium" }
+        ).format(parsed);
+      }
+    }
+  } catch {
+    // Invalid server locale/type metadata must not make the result unreadable.
+  }
+
+  return formatScalar(value);
 }
 
 function formatRadarTimestamp(value: string): string {
@@ -60,7 +104,9 @@ function radarSourceDetailRows(item: DesktopAvatarRadarSignal): Array<[string, s
 export function DesktopAvatarWidgetPanel({
   widget,
   followUpQuestions = [],
+  clarificationState,
   onSuggestionSelect,
+  onDatasetPageRequest,
   onDismiss,
   onHitlApprove,
   onHitlReject,
@@ -100,6 +146,16 @@ export function DesktopAvatarWidgetPanel({
     );
   }
 
+  if (widget.type === "dataset") {
+    return (
+      <DatasetCard
+        widget={widget}
+        onClose={onDismiss}
+        onPageRequest={onDatasetPageRequest}
+      />
+    );
+  }
+
   if (widget.type === "text") {
     return (
       <section className="widget-card widget-card--text backdrop-blur">
@@ -124,6 +180,11 @@ export function DesktopAvatarWidgetPanel({
   }
 
   if (widget.type === "clarification") {
+    const clarificationDisabled =
+      clarificationState === "submitting" ||
+      clarificationState === "answered" ||
+      clarificationState === "expired" ||
+      clarificationState === "unavailable";
     return (
       <section className="widget-card widget-card--clarification backdrop-blur">
         <WidgetHeader title={widget.title} onClose={onDismiss} />
@@ -134,12 +195,18 @@ export function DesktopAvatarWidgetPanel({
               key={suggestion}
               type="button"
               className="widget-card__chip"
+              disabled={clarificationDisabled}
               onClick={() => onSuggestionSelect?.(suggestion)}
             >
               {suggestion}
             </button>
           ))}
         </div>
+        {clarificationState ? (
+          <p className="widget-card__clarification-status" role="status">
+            {t(`widgets.clarification.${clarificationState}`)}
+          </p>
+        ) : null}
       </section>
     );
   }
@@ -179,6 +246,108 @@ export function DesktopAvatarWidgetPanel({
       <WidgetHeader title={widget.title} onClose={onDismiss} />
       <p className="widget-card__body-text">{widget.message}</p>
     </section>
+  );
+}
+
+function DatasetCard({
+  widget,
+  onClose,
+  onPageRequest
+}: {
+  widget: DesktopAvatarDatasetWidget;
+  onClose?: () => void;
+  onPageRequest?: (
+    resultId: string,
+    cursor?: string
+  ) => Promise<DesktopAvatarDatasetPage>;
+}) {
+  const [columns, setColumns] = useState(widget.columns);
+  const [rows, setRows] = useState(widget.rows);
+  const [nextCursor, setNextCursor] = useState<string | null>(widget.cursor ?? null);
+  const [totalRowCount, setTotalRowCount] = useState(widget.rowCount);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setColumns(widget.columns);
+    setRows(widget.rows);
+    setNextCursor(widget.cursor ?? null);
+    setTotalRowCount(widget.rowCount);
+    setLoadError(null);
+  }, [widget.columns, widget.cursor, widget.resultId, widget.rowCount, widget.rows]);
+
+  const loadMore = async () => {
+    if (!onPageRequest || !nextCursor || loading) {
+      return;
+    }
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const page = await onPageRequest(widget.resultId, nextCursor);
+      if (page.resultId !== widget.resultId) {
+        throw new Error(t("widgets.dataset.unexpectedResult"));
+      }
+      setColumns(page.columns);
+      setRows((current) => [...current, ...page.rows]);
+      setNextCursor(page.nextCursor);
+      setTotalRowCount(page.totalRowCount);
+    } catch (caughtError) {
+      setLoadError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : t("widgets.dataset.loadFailed")
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="dataset-widget">
+      <DataTable
+        title={widget.title}
+        columns={columns.map((column) => ({
+          key: column.key,
+          label: column.label,
+          align: column.dataType === "number" ? "right" as const : "left" as const,
+          render: (value: unknown) => {
+            const scalar =
+              typeof value === "string" ||
+              typeof value === "number" ||
+              typeof value === "boolean" ||
+              value === null
+                ? value
+                : value === undefined
+                  ? null
+                  : String(value);
+            return formatDatasetScalar(scalar, column, widget.locale);
+          }
+        }))}
+        rows={rows}
+        onClose={onClose}
+      />
+      <footer className="dataset-widget__paging">
+        <span>
+          {t("widgets.dataset.loadedRows", {
+            loaded: rows.length,
+            total: totalRowCount
+          })}
+        </span>
+        {nextCursor ? (
+          <button
+            type="button"
+            className="data-table__pager-btn"
+            disabled={loading || !onPageRequest}
+            onClick={() => void loadMore()}
+          >
+            {loading ? t("widgets.dataset.loading") : t("widgets.dataset.loadMore")}
+          </button>
+        ) : null}
+      </footer>
+      {loadError ? (
+        <p className="dataset-widget__error" role="alert">{loadError}</p>
+      ) : null}
+    </div>
   );
 }
 

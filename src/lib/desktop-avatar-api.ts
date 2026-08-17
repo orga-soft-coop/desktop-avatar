@@ -1,6 +1,8 @@
 import type {
   CreateDesktopAvatarRequestInput,
   CreateDesktopAvatarRequestResult,
+  DesktopAvatarConversationCancelResult,
+  DesktopAvatarDatasetPage,
   DesktopAvatarRadarResponse,
   DesktopAvatarRadarStreamEvent,
   DesktopAvatarRadarStreamLifecycleEvent,
@@ -10,11 +12,14 @@ import type {
   HitlDecisionInput,
   HitlDecisionStreamEvent,
   HitlDecisionStreamLifecycleEvent,
-  HitlRequestMoreInfoInput
+  HitlRequestMoreInfoInput,
+  ReplyDesktopAvatarClarificationInput
 } from "./contracts";
 import {
   approveHitlDecision,
+  cancelDesktopAvatarConversation,
   createDesktopAvatarRequest,
+  getDesktopAvatarDatasetPage,
   getDesktopAvatarRadar,
   getDesktopAvatarRequest,
   onDesktopAvatarRadarStreamEvent,
@@ -25,6 +30,7 @@ import {
   onDesktopAvatarStreamLifecycle,
   rejectHitlDecision,
   requestMoreInfoForHitl,
+  replyDesktopAvatarClarification,
   startDesktopAvatarRadarStream,
   startDesktopAvatarStream,
   startHitlDecisionStream,
@@ -53,6 +59,19 @@ export interface DesktopAvatarApiClient {
     avatarRequestId?: string;
     pollUrl?: string;
   }) => Promise<DesktopAvatarRequestDocument>;
+  replyClarification: (args: {
+    avatarRequestId: string;
+    clarificationId: string;
+    request: ReplyDesktopAvatarClarificationInput;
+  }) => Promise<CreateDesktopAvatarRequestResult>;
+  getDatasetPage: (args: {
+    avatarRequestId: string;
+    resultId: string;
+    cursor?: string;
+  }) => Promise<DesktopAvatarDatasetPage>;
+  cancelConversation: (
+    conversationId: string
+  ) => Promise<DesktopAvatarConversationCancelResult>;
   getRadar: () => Promise<DesktopAvatarRadarResponse>;
   connectStream: (args: {
     avatarRequestId: string;
@@ -76,6 +95,9 @@ export interface DesktopAvatarApiClient {
 export const desktopAvatarApiClient: DesktopAvatarApiClient = {
   createRequest: createDesktopAvatarRequest,
   getRequest: getDesktopAvatarRequest,
+  replyClarification: replyDesktopAvatarClarification,
+  getDatasetPage: getDesktopAvatarDatasetPage,
+  cancelConversation: cancelDesktopAvatarConversation,
   getRadar: getDesktopAvatarRadar,
   async connectStream({ avatarRequestId, streamUrl, onEvent, onDisconnect }) {
     let unlistenEvents: (() => void) | null = null;

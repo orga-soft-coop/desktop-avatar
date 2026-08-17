@@ -212,6 +212,20 @@
       "nextPage": "Next",
       "pageXofY": "Page {{current}} / {{total}}",
       "rowsRange": "{{from}}-{{to}} of {{total}}"
+    },
+    "clarification": {
+      "pending": "Waiting for answer",
+      "submitting": "Sending answer...",
+      "answered": "Answered",
+      "expired": "Clarification expired",
+      "unavailable": "The answer cannot be resumed with this server version"
+    },
+    "dataset": {
+      "loadedRows": "{{loaded}} of {{total}} rows loaded",
+      "loadMore": "Load more",
+      "loading": "Loading...",
+      "loadFailed": "More data could not be loaded.",
+      "unexpectedResult": "The loaded page belongs to a different result."
     }
   },
   "connection": {
@@ -233,6 +247,10 @@
   },
   "status": {
     "sendingRequest": "Sending request...",
+    "sendingClarification": "Sending clarification answer...",
+    "awaitingClarification": "I need one more detail.",
+    "clarificationExpired": "This clarification has expired. Please start the request again.",
+    "clarificationUnavailable": "This legacy clarification cannot be resumed. Please start a new request.",
     "waitingForUpdates": "Waiting for live updates...",
     "connectedProcessing": "Connected. Processing request...",
     "requestFailed": "Request failed.",

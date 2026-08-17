@@ -86,6 +86,8 @@ routePrompt(text)  ──→  API-first classifier
     │
     ├─ clear smalltalk      → LM Studio (local LLM, SSE streaming)
     └─ non-casual prompts   → SYNTRA Assistant backend API (create + SSE stream)
+                                  ├─ clarification → reply endpoint → child-turn stream
+                                  └─ dataset       → cursor page endpoint
     │
     ▼
 SSE stream events → Tauri emits to frontend
@@ -102,8 +104,10 @@ TTS (macOS `say` command) → speaking animation
 
 - Default behavior is API-first: non-casual prompts are sent to the SYNTRA Assistant backend API.
 - Local LM Studio chat is reserved for clear smalltalk/greeting prompts.
-- If backend request creation returns an explicit unsupported/no-match routing error (for example no capable active agent), the client falls back once to local chat and reuses the existing placeholder message.
-- Technical backend failures (timeout/network/5xx) do not auto-fallback; the error is shown to the user.
+- Business intent wins over greeting keywords in mixed prompts.
+- Business denials, unsupported/no-match results, authorization failures, and technical backend failures never auto-fallback to the local LLM; the backend error is shown to the user.
+- `NEEDS_CLARIFICATION` waits for a chip, text, or voice answer and resumes via the dedicated reply endpoint as an immutable child turn.
+- `dataset` widgets load additional rows with an opaque server cursor.
 
 ### Directory Structure
 
@@ -339,6 +343,8 @@ Details: `tools/avatar-build/README.md`.
 | `LOCAL_LLM_API_KEY` | No | — | API key for local LLM |
 | `VITE_DEV_TOOLS` | No | `false` | Show dev tools in chat panel |
 
+`COMM_OFFICER_TOKEN` and `requestedBy: "desktop-avatar"` are transitional development configuration. Per-user identity, token refresh, and OS-keychain storage remain deferred until the backend publishes a trusted authentication contract. Poll/stream URLs returned by the backend are accepted only when they have the same scheme, host, and effective port as `COMM_OFFICER_BASE_URL`.
+
 ## Design
 
 - Glassmorphic dark theme with `backdrop-filter: blur` and semi-transparent backgrounds
@@ -356,6 +362,9 @@ pnpm test
 | Test file | Coverage |
 |-----------|----------|
 | `router.test.ts` | Prompt routing for German/English business, casual, and review keywords |
-| `contracts.test.ts` | BusinessCardPayload type structure validation |
-| `tauri.test.ts` | IPC mocking and fallback behavior outside Tauri runtime |
+| `contracts.test.ts` | Clarification, dataset, response, Radar, and HITL contract shapes |
+| `desktop-avatar-widget-panel.test.tsx` | Clarification chip lifecycle and dataset cursor paging UI |
+| `desktop-avatar-orchestrator.test.ts` | Stream/poll lifecycle including `awaiting-clarification` |
+| `tauri.test.ts` | IPC command mapping and runtime guards outside Tauri |
+| `use-desktop-companion.test.tsx` | Request/reply child turns, paging, cancellation, streaming, and fallback safety |
 | `window-presets.test.ts` | Preset dimensions, validation, and defaults |

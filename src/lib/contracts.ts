@@ -29,6 +29,7 @@ export type DesktopAvatarRequestStatus =
   | "WIDGET_READY"
   | "COMPLETED"
   | "NEEDS_CLARIFICATION"
+  | "CANCELLED"
   | "FAILED";
 export type DesktopAvatarWidgetScalar = string | number | boolean | null;
 export type DesktopAvatarAnimationKey = "idle" | "attention" | "thinking" | "talking";
@@ -88,6 +89,42 @@ export interface DesktopAvatarClarificationWidget {
   title: string;
   question: string;
   suggestions: string[];
+  /** Present for reply-capable clarification turns. Optional for legacy responses. */
+  clarificationId?: string;
+  /** Stable conversation that owns this append-only clarification turn. */
+  conversationId?: string;
+  expiresAt?: string;
+}
+
+export type DesktopAvatarDatasetDataType =
+  | "string"
+  | "number"
+  | "boolean"
+  | "date"
+  | "datetime"
+  | "unknown";
+
+export interface DesktopAvatarDatasetColumn {
+  key: string;
+  label: string;
+  dataType: DesktopAvatarDatasetDataType;
+  format?: string;
+  lookup?: {
+    locale: string;
+    labels: Record<string, string>;
+  };
+}
+
+export interface DesktopAvatarDatasetWidget {
+  type: "dataset";
+  resultId: string;
+  title: string;
+  locale: string;
+  rowCount: number;
+  columns: DesktopAvatarDatasetColumn[];
+  rows: Array<Record<string, DesktopAvatarWidgetScalar>>;
+  /** Opaque cursor for the next page. Missing means the initial page is complete. */
+  cursor?: string;
 }
 
 export interface DesktopAvatarErrorWidget {
@@ -292,6 +329,7 @@ export interface HitlDecisionQueueItem {
 
 export type DesktopAvatarWidgetPayload =
   | DesktopAvatarTableWidget
+  | DesktopAvatarDatasetWidget
   | DesktopAvatarKeyValueWidget
   | DesktopAvatarTextWidget
   | DesktopAvatarAreaChartWidget
@@ -331,6 +369,26 @@ export interface CreateDesktopAvatarRequestResult {
   streamUrl: string;
   pollUrl: string;
   idempotent: boolean;
+  /** Optional while older Agent Studio deployments are still supported. */
+  conversationId?: string;
+}
+
+export interface ReplyDesktopAvatarClarificationInput {
+  clientRequestId: string;
+  answer: string;
+}
+
+export interface DesktopAvatarDatasetPage {
+  resultId: string;
+  columns: DesktopAvatarDatasetColumn[];
+  rows: Array<Record<string, DesktopAvatarWidgetScalar>>;
+  nextCursor: string | null;
+  totalRowCount: number;
+}
+
+export interface DesktopAvatarConversationCancelResult {
+  conversationId: string;
+  status: "CANCELLED";
 }
 
 export interface DesktopAvatarRequestDocument {
@@ -348,6 +406,7 @@ export interface DesktopAvatarRequestDocument {
   error?: string | null;
   createdAt?: string;
   updatedAt?: string;
+  conversationId?: string;
 }
 
 export interface DesktopAvatarStreamReadyEvent {
@@ -627,6 +686,12 @@ export interface ChatMessage {
   requestStatus?: DesktopAvatarRequestStatus | null;
   clientRequestId?: string | null;
   avatarRequestId?: string | null;
+  clarificationState?:
+    | "pending"
+    | "submitting"
+    | "answered"
+    | "expired"
+    | "unavailable";
 }
 
 export interface DevToolsLatencySnapshot {

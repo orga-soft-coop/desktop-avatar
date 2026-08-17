@@ -109,6 +109,9 @@ const mocks = vi.hoisted(() => {
     stopSpeakingMock: vi.fn(),
     transcribeAudioMock: vi.fn(),
     createRequestMock: vi.fn(),
+    replyClarificationMock: vi.fn(),
+    getDatasetPageMock: vi.fn(),
+    cancelConversationMock: vi.fn(),
     getRequestMock: vi.fn(),
     getRadarMock: vi.fn(),
     connectStreamMock: vi.fn(async (args: {
@@ -161,6 +164,9 @@ const mocks = vi.hoisted(() => {
 vi.mock("../lib/desktop-avatar-api", () => ({
   desktopAvatarApiClient: {
     createRequest: mocks.createRequestMock,
+    replyClarification: mocks.replyClarificationMock,
+    getDatasetPage: mocks.getDatasetPageMock,
+    cancelConversation: mocks.cancelConversationMock,
     getRequest: mocks.getRequestMock,
     getRadar: mocks.getRadarMock,
     connectStream: mocks.connectStreamMock,
@@ -351,6 +357,12 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     mocks.stopSpeakingMock.mockReset().mockResolvedValue(undefined);
     mocks.transcribeAudioMock.mockReset();
     mocks.createRequestMock.mockReset();
+    mocks.replyClarificationMock.mockReset();
+    mocks.getDatasetPageMock.mockReset();
+    mocks.cancelConversationMock.mockReset().mockResolvedValue({
+      conversationId: "conversation-1",
+      status: "CANCELLED"
+    });
     mocks.getRequestMock.mockReset();
     mocks.getRadarMock.mockReset().mockResolvedValue({
       generatedAt: "2026-06-14T09:00:00.000Z",
@@ -1125,10 +1137,122 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
   });
 
+  it("continues clarification chips as immutable child turns", async () => {
+    mocks.createRequestMock.mockResolvedValue({
+      accepted: true,
+      avatarRequestId: "req-parent",
+      conversationId: "conversation-1",
+      status: "RECEIVED",
+      streamUrl: "/stream/req-parent",
+      pollUrl: "/poll/req-parent",
+      idempotent: false
+    });
+    mocks.replyClarificationMock.mockResolvedValue({
+      accepted: true,
+      avatarRequestId: "req-child",
+      conversationId: "conversation-1",
+      status: "RECEIVED",
+      streamUrl: "/stream/req-child",
+      pollUrl: "/poll/req-child",
+      idempotent: false
+    });
+
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    act(() => {
+      result.current.setDraft("Zeig mir die Bestellungen");
+    });
+    await act(async () => {
+      await result.current.submitCurrentDraft();
+    });
+    act(() => {
+      mocks.streamHandlers.onEvent?.({
+        type: "status",
+        avatarRequestId: "req-parent",
+        status: "NEEDS_CLARIFICATION",
+        emittedAt: "2026-08-14T10:00:00.000Z"
+      });
+      mocks.streamHandlers.onEvent?.({
+        type: "widget",
+        avatarRequestId: "req-parent",
+        widget: {
+          type: "clarification",
+          title: "Rückfrage",
+          question: "Welcher Zeitraum?",
+          suggestions: ["Heute", "Gestern"],
+          clarificationId: "clarification-1",
+          conversationId: "conversation-1",
+          expiresAt: "2099-08-14T11:00:00.000Z"
+        },
+        emittedAt: "2026-08-14T10:00:01.000Z"
+      });
+      mocks.streamHandlers.onEvent?.({
+        type: "done",
+        avatarRequestId: "req-parent",
+        status: "NEEDS_CLARIFICATION",
+        emittedAt: "2026-08-14T10:00:02.000Z"
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.pendingClarification?.clarificationId).toBe(
+        "clarification-1"
+      );
+      expect(result.current.messages[1]?.clarificationState).toBe("pending");
+      expect(result.current.status).toBe("Ich benötige noch eine Angabe.");
+    });
+
+    await act(async () => {
+      await result.current.submitSuggestion("Heute");
+    });
+
+    expect(mocks.createRequestMock).toHaveBeenCalledTimes(1);
+    expect(mocks.replyClarificationMock).toHaveBeenCalledWith({
+      avatarRequestId: "req-parent",
+      clarificationId: "clarification-1",
+      request: {
+        clientRequestId: expect.stringMatching(/^desktop-avatar-client:/),
+        answer: "Heute"
+      }
+    });
+    expect(result.current.messages).toHaveLength(4);
+    expect(result.current.messages[1]?.clarificationState).toBe("answered");
+    expect(result.current.messages[2]?.text).toBe("Heute");
+    expect(result.current.messages[3]?.avatarRequestId).toBe("req-child");
+    expect(result.current.pendingClarification).toBeNull();
+  });
+
+  it("loads the next dataset page through the active request contract", async () => {
+    mocks.getDatasetPageMock.mockResolvedValue({
+      resultId: "result-1",
+      columns: [{ key: "id", label: "ID", dataType: "string" }],
+      rows: [{ id: "B-2" }],
+      nextCursor: null,
+      totalRowCount: 2
+    });
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    const page = await result.current.loadDatasetPage({
+      avatarRequestId: "req-dataset",
+      resultId: "result-1",
+      cursor: "next-page"
+    });
+
+    expect(mocks.getDatasetPageMock).toHaveBeenCalledWith({
+      avatarRequestId: "req-dataset",
+      resultId: "result-1",
+      cursor: "next-page"
+    });
+    expect(page.totalRowCount).toBe(2);
+  });
+
   it("clears the local conversation without deleting HITL state", async () => {
     mocks.createRequestMock.mockResolvedValue({
       accepted: true,
       avatarRequestId: "req-clear",
+      conversationId: "conversation-1",
       status: "RECEIVED",
       streamUrl: "/stream/req-clear",
       pollUrl: "/poll/req-clear",
@@ -1170,6 +1294,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     expect(result.current.error).toBeNull();
     expect(result.current.latencyDebug).toBeNull();
     expect(result.current.hitlWidgets).toHaveLength(1);
+    expect(mocks.cancelConversationMock).toHaveBeenCalledWith("conversation-1");
   });
 
   it("ignores a desktop-avatar create response that resolves after the conversation was cleared", async () => {
@@ -1362,7 +1487,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
   });
 
-  it("falls back to local chat on unsupported/no-match backend errors", async () => {
+  it("surfaces unsupported/no-match business denials without local fallback", async () => {
     mocks.createRequestMock.mockRejectedValueOnce(
       "SYNTRA Assistant create returned 409 Conflict: No active studio agents support READ_SQL_SERVER_QUERY."
     );
@@ -1378,8 +1503,8 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
 
     await waitFor(() => {
-      expect(mocks.sendLocalChatMock).toHaveBeenCalledTimes(1);
-      expect(result.current.error).toBeNull();
+      expect(mocks.sendLocalChatMock).not.toHaveBeenCalled();
+      expect(result.current.error).toContain("No active studio agents support");
       expect(result.current.messages.filter((message) => message.role === "assistant")).toHaveLength(1);
       expect(result.current.messages.filter((message) => message.role === "user")).toHaveLength(1);
     });

@@ -12,12 +12,15 @@ tauri-build = { version = "2", features = [] }
 base64 = "0.22"
 dotenvy = "0.15"
 futures-util = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "multipart", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["charset", "cookies", "http2", "json", "multipart", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+time = { version = "0.3", features = ["parsing"] }
+uuid = { version = "1", features = ["v4"] }
+directories = "6.0.0"
 
 [features]
 default = ["custom-protocol"]

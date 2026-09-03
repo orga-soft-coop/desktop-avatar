@@ -47,37 +47,41 @@ export interface DesktopAvatarRadarStreamConnection {
 
 export interface DesktopAvatarApiClient {
   createRequest: (
-    input: CreateDesktopAvatarRequestInput
+    input: CreateDesktopAvatarRequestInput,
+    expectedContextId: string
   ) => Promise<CreateDesktopAvatarRequestResult>;
   getRequest: (args: {
     avatarRequestId?: string;
     pollUrl?: string;
-  }) => Promise<DesktopAvatarRequestDocument>;
-  getRadar: () => Promise<DesktopAvatarRadarResponse>;
+  }, expectedContextId: string) => Promise<DesktopAvatarRequestDocument>;
+  getRadar: (expectedContextId: string) => Promise<DesktopAvatarRadarResponse>;
   connectStream: (args: {
     avatarRequestId: string;
     streamUrl?: string;
     onEvent: (event: DesktopAvatarStreamEvent) => void;
     onDisconnect: (event: DesktopAvatarStreamLifecycleEvent) => void;
+    expectedContextId: string;
   }) => Promise<DesktopAvatarStreamConnection>;
   connectHitlDecisionStream: (args: {
     onEvent: (event: HitlDecisionStreamEvent) => void;
     onDisconnect: (event: HitlDecisionStreamLifecycleEvent) => void;
+    expectedContextId: string;
   }) => Promise<HitlDecisionStreamConnection>;
   connectRadarStream: (args: {
     onEvent: (event: DesktopAvatarRadarStreamEvent) => void;
     onDisconnect: (event: DesktopAvatarRadarStreamLifecycleEvent) => void;
+    expectedContextId: string;
   }) => Promise<DesktopAvatarRadarStreamConnection>;
-  approveHitlDecision: (input: HitlDecisionInput) => Promise<void>;
-  rejectHitlDecision: (input: HitlDecisionInput) => Promise<void>;
-  requestMoreInfoForHitl: (input: HitlRequestMoreInfoInput) => Promise<void>;
+  approveHitlDecision: (input: HitlDecisionInput, expectedContextId: string) => Promise<void>;
+  rejectHitlDecision: (input: HitlDecisionInput, expectedContextId: string) => Promise<void>;
+  requestMoreInfoForHitl: (input: HitlRequestMoreInfoInput, expectedContextId: string) => Promise<void>;
 }
 
 export const desktopAvatarApiClient: DesktopAvatarApiClient = {
   createRequest: createDesktopAvatarRequest,
   getRequest: getDesktopAvatarRequest,
   getRadar: getDesktopAvatarRadar,
-  async connectStream({ avatarRequestId, streamUrl, onEvent, onDisconnect }) {
+  async connectStream({ avatarRequestId, streamUrl, onEvent, onDisconnect, expectedContextId }) {
     let unlistenEvents: (() => void) | null = null;
     let unlistenLifecycle: (() => void) | null = null;
     let closed = false;
@@ -93,7 +97,7 @@ export const desktopAvatarApiClient: DesktopAvatarApiClient = {
           onDisconnect(event);
         }
       });
-      await startDesktopAvatarStream({ avatarRequestId, streamUrl });
+      await startDesktopAvatarStream({ avatarRequestId, streamUrl }, expectedContextId);
     } catch (error) {
       unlistenEvents?.();
       unlistenLifecycle?.();
@@ -108,11 +112,11 @@ export const desktopAvatarApiClient: DesktopAvatarApiClient = {
         closed = true;
         unlistenEvents?.();
         unlistenLifecycle?.();
-        await stopDesktopAvatarStream(avatarRequestId);
+        await stopDesktopAvatarStream(avatarRequestId, expectedContextId);
       }
     };
   },
-  async connectHitlDecisionStream({ onEvent, onDisconnect }) {
+  async connectHitlDecisionStream({ onEvent, onDisconnect, expectedContextId }) {
     let unlistenEvents: (() => void) | null = null;
     let unlistenLifecycle: (() => void) | null = null;
     let closed = false;
@@ -120,7 +124,7 @@ export const desktopAvatarApiClient: DesktopAvatarApiClient = {
     try {
       unlistenEvents = await onHitlDecisionStreamEvent(onEvent);
       unlistenLifecycle = await onHitlDecisionStreamLifecycle(onDisconnect);
-      await startHitlDecisionStream();
+      await startHitlDecisionStream(expectedContextId);
     } catch (error) {
       unlistenEvents?.();
       unlistenLifecycle?.();
@@ -135,11 +139,11 @@ export const desktopAvatarApiClient: DesktopAvatarApiClient = {
         closed = true;
         unlistenEvents?.();
         unlistenLifecycle?.();
-        await stopHitlDecisionStream();
+        await stopHitlDecisionStream(expectedContextId);
       }
     };
   },
-  async connectRadarStream({ onEvent, onDisconnect }) {
+  async connectRadarStream({ onEvent, onDisconnect, expectedContextId }) {
     let unlistenEvents: (() => void) | null = null;
     let unlistenLifecycle: (() => void) | null = null;
     let closed = false;
@@ -147,7 +151,7 @@ export const desktopAvatarApiClient: DesktopAvatarApiClient = {
     try {
       unlistenEvents = await onDesktopAvatarRadarStreamEvent(onEvent);
       unlistenLifecycle = await onDesktopAvatarRadarStreamLifecycle(onDisconnect);
-      await startDesktopAvatarRadarStream();
+      await startDesktopAvatarRadarStream(expectedContextId);
     } catch (error) {
       unlistenEvents?.();
       unlistenLifecycle?.();
@@ -162,7 +166,7 @@ export const desktopAvatarApiClient: DesktopAvatarApiClient = {
         closed = true;
         unlistenEvents?.();
         unlistenLifecycle?.();
-        await stopDesktopAvatarRadarStream();
+        await stopDesktopAvatarRadarStream(expectedContextId);
       }
     };
   },

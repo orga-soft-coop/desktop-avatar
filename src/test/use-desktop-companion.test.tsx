@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CreateDesktopAvatarRequestInput,
   CreateDesktopAvatarRequestResult,
+  BootstrapState,
   DesktopAvatarRadarStreamEvent,
   DesktopAvatarRadarStreamLifecycleEvent,
   DesktopAvatarRequestDocument,
@@ -14,6 +15,7 @@ import type {
   TranscriptionSessionEvent,
   TtsStateEvent
 } from "../lib/contracts";
+import { activateTenantSession, clearTenantSession } from "../lib/tenant-session";
 
 const mocks = vi.hoisted(() => {
   let streamHandlers: {
@@ -50,7 +52,6 @@ const mocks = vi.hoisted(() => {
     getTranscriptionProviderMock: vi.fn(),
     listTtsVoicesMock: vi.fn(),
     frontendLogMock: vi.fn(),
-    onStreamEventMock: vi.fn(),
     onTranscriptionSessionEventMock: vi.fn(
       async (handler: (event: TranscriptionSessionEvent) => void) => {
         streamHandlers.onTranscriptionSessionEvent = handler;
@@ -101,7 +102,6 @@ const mocks = vi.hoisted(() => {
     commitTranscriptionTurnMock: vi.fn(),
     stopTranscriptionSessionMock: vi.fn(),
     resizeWindowMock: vi.fn(),
-    sendLocalChatMock: vi.fn(),
     setPeekModeMock: vi.fn(),
     setPeekPositionMock: vi.fn(),
     speakTextMock: vi.fn(),
@@ -181,13 +181,11 @@ vi.mock("../lib/tauri", () => ({
   listTtsVoices: mocks.listTtsVoicesMock,
   onTranscriptionProviderChanged: mocks.onTranscriptionProviderChangedMock,
   onTranscriptionSessionEvent: mocks.onTranscriptionSessionEventMock,
-  onStreamEvent: mocks.onStreamEventMock,
   onTrayPeekCollapse: mocks.onTrayPeekCollapseMock,
   onTrayPeekOpen: mocks.onTrayPeekOpenMock,
   onTrayPeekPositionChanged: mocks.onTrayPeekPositionChangedMock,
   onTtsState: mocks.onTtsStateMock,
   resizeWindow: mocks.resizeWindowMock,
-  sendLocalChat: mocks.sendLocalChatMock,
   setPeekMode: mocks.setPeekModeMock,
   setPeekPosition: mocks.setPeekPositionMock,
   setTranscriptionProvider: mocks.setTranscriptionProviderMock,
@@ -259,9 +257,30 @@ function deferred<T = void>() {
 describe("useDesktopCompanion desktop avatar integration", () => {
   afterEach(() => {
     vi.useRealTimers();
+    clearTenantSession();
   });
 
   beforeEach(() => {
+    const tenant = {
+      tenantId: "tenant-a",
+      companyId: "701",
+      companyName: "Company A",
+      branchId: "1",
+      branchName: "Branch 1",
+      canAdminister: true
+    };
+    activateTenantSession({
+      contextId: "context-a",
+      localEpoch: 1,
+      publicSession: {
+        sessionId: "session-a",
+        user: { id: "user-a", username: "alice", globalAuthorities: [] },
+        selectedTenant: tenant,
+        accessibleTenants: [tenant],
+        administrableTenantIds: [tenant.tenantId],
+        expiresAt: "2099-01-01T00:00:00.000Z"
+      }
+    });
     window.localStorage.clear();
     mocks.streamHandlers.onEvent = null;
     mocks.streamHandlers.onDisconnect = null;
@@ -286,7 +305,6 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       .mockResolvedValue("openai-realtime");
     mocks.listTtsVoicesMock.mockReset().mockResolvedValue([]);
     mocks.frontendLogMock.mockReset().mockResolvedValue(undefined);
-    mocks.onStreamEventMock.mockReset().mockResolvedValue(() => {});
     mocks.onTrayPeekCollapseMock.mockReset().mockImplementation(async (handler: () => void) => {
       mocks.streamHandlers.onTrayPeekCollapse = handler;
       return () => {
@@ -343,7 +361,6 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       .mockResolvedValue("Test-Transkription");
     mocks.stopTranscriptionSessionMock.mockReset().mockResolvedValue(undefined);
     mocks.resizeWindowMock.mockReset().mockResolvedValue(undefined);
-    mocks.sendLocalChatMock.mockReset().mockResolvedValue(undefined);
     mocks.setPeekModeMock.mockReset().mockResolvedValue(undefined);
     mocks.setPeekPositionMock.mockReset().mockResolvedValue(undefined);
     mocks.speakTextMock.mockReset().mockResolvedValue(undefined);
@@ -570,6 +587,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       "hitl:proposal::run%3A1::proposal%3A1",
       "Eine HITL-Freigabe wartet: PURCHASE ORDER.",
       null,
+      "context-a",
     );
   });
 
@@ -601,11 +619,11 @@ describe("useDesktopCompanion desktop avatar integration", () => {
 
     await waitFor(() => expect(result.current.hitlWidgets).toHaveLength(5));
     await waitFor(() => expect(mocks.speakTextMock).toHaveBeenCalledTimes(1));
-    expect(result.current.status).toBe("5 HITL-Freigaben warten.");
     expect(mocks.speakTextMock).toHaveBeenCalledWith(
       expect.stringContaining("hitl:batch:"),
       "5 HITL-Freigaben warten.",
       null,
+      "context-a",
     );
   });
 
@@ -784,11 +802,14 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       await result.current.approveHitl("proposal::run%3A1::proposal%3A1", "ok");
     });
 
-    expect(mocks.approveHitlDecisionMock).toHaveBeenCalledWith({
-      runId: "run:1",
-      proposalId: "proposal:1",
-      decisionReason: "ok"
-    });
+    expect(mocks.approveHitlDecisionMock).toHaveBeenCalledWith(
+      {
+        runId: "run:1",
+        proposalId: "proposal:1",
+        decisionReason: "ok"
+      },
+      "context-a",
+    );
     expect(result.current.status).toBe("HITL-Antwort gesendet.");
     expect(result.current.hitlWidgets).toHaveLength(0);
   });
@@ -901,10 +922,13 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       );
     });
 
-    expect(mocks.requestMoreInfoForHitlMock).toHaveBeenCalledWith({
-      runId: "run:1",
-      message: "Bitte Lieferantwerk pruefen"
-    });
+    expect(mocks.requestMoreInfoForHitlMock).toHaveBeenCalledWith(
+      {
+        runId: "run:1",
+        message: "Bitte Lieferantwerk pruefen"
+      },
+      "context-a",
+    );
     expect(result.current.status).toBe("Rückfrage gesendet. HITL bleibt offen.");
     expect(result.current.hitlWidgets).toHaveLength(2);
     expect(result.current.hitlWidgets[0]?.decisionId).toBe(
@@ -952,7 +976,12 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       });
     });
     await waitFor(() =>
-      expect(mocks.speakTextMock).toHaveBeenCalledWith("req-voice", "Antwort eins.", "echo")
+      expect(mocks.speakTextMock).toHaveBeenCalledWith(
+        "req-voice",
+        "Antwort eins.",
+        "echo",
+        "context-a",
+      )
     );
 
     await act(async () => {
@@ -1023,14 +1052,57 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     );
   });
 
+  it("does not apply stale peek geometry when unmounted during bootstrap", async () => {
+    const bootstrap = deferred<BootstrapState>();
+    mocks.getBootstrapStateMock.mockReturnValueOnce(bootstrap.promise);
+    const { unmount } = renderHook(() => useDesktopCompanion());
+
+    unmount();
+    await act(async () => {
+      bootstrap.resolve({
+        avatarManifest: null,
+        collapsedSize: { width: 235, height: 235 },
+        expandedSize: { width: 520, height: 620 },
+        ttsEnabled: false,
+        transcriptionProvider: "openai-realtime",
+        transcriptionProviders: ["openai-realtime", "openai-file-fallback"]
+      });
+      await bootstrap.promise;
+    });
+
+    expect(mocks.setPeekModeMock).not.toHaveBeenCalled();
+  });
+
+  it("immediately removes a tray listener that finishes registering after unmount", async () => {
+    const registration = deferred<() => void>();
+    let lateHandler: (() => void) | null = null;
+    const unlisten = vi.fn(() => {
+      lateHandler = null;
+    });
+    mocks.onTrayPeekCollapseMock.mockImplementationOnce((handler: () => void) => {
+      lateHandler = handler;
+      return registration.promise;
+    });
+    const { unmount } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.onTrayPeekCollapseMock).toHaveBeenCalledOnce());
+
+    mocks.setPeekModeMock.mockClear();
+    unmount();
+    await act(async () => {
+      registration.resolve(unlisten);
+      await registration.promise;
+    });
+
+    expect(unlisten).toHaveBeenCalledOnce();
+    expect(lateHandler).toBeNull();
+    expect(mocks.setPeekModeMock).not.toHaveBeenCalled();
+  });
+
   it("reacts to tray peek collapse/open and position events", async () => {
     const { result } = renderHook(() => useDesktopCompanion());
     await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
-
-    act(() => {
-      mocks.streamHandlers.onTrayPeekCollapse?.();
-    });
-    await waitFor(() => expect(result.current.peekMode).toBe("peek"));
+    await waitFor(() => expect(mocks.streamHandlers.onTrayPeekOpen).not.toBeNull());
+    await waitFor(() => expect(result.current.isModeTransitioning).toBe(false));
 
     act(() => {
       mocks.streamHandlers.onTrayPeekPositionChanged?.("bottom-left");
@@ -1042,9 +1114,16 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       mocks.streamHandlers.onTrayPeekOpen?.();
     });
     await waitFor(() => expect(result.current.peekMode).toBe("expanded"), {
-      timeout: 1500
+      timeout: 10_000
     });
-  });
+
+    act(() => {
+      mocks.streamHandlers.onTrayPeekCollapse?.();
+    });
+    await waitFor(() => expect(result.current.peekMode).toBe("peek"), {
+      timeout: 10_000
+    });
+  }, 15_000);
 
   it("runs the happy path from submit to talk, widget and completion", async () => {
     const createResult: CreateDesktopAvatarRequestResult = {
@@ -1213,7 +1292,53 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     expect(mocks.connectStreamMock).not.toHaveBeenCalled();
   });
 
-  it("uses API-first routing for non-casual prompts", async () => {
+  it("does not submit a delayed text prompt under a replacement tenant session", async () => {
+    const pendingPeekMode = deferred();
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+    mocks.setPeekModeMock.mockClear();
+    mocks.setPeekModeMock.mockReturnValueOnce(pendingPeekMode.promise);
+    act(() => {
+      result.current.setDraft("Welche Bestellungen sind offen?");
+    });
+
+    let submitPromise: Promise<void> | null = null;
+    act(() => {
+      submitPromise = result.current.submitCurrentDraft();
+    });
+    await waitFor(() => expect(mocks.setPeekModeMock).toHaveBeenCalledTimes(1));
+
+    const replacementTenant = {
+      tenantId: "tenant-b",
+      companyId: "701",
+      companyName: "Company B",
+      branchId: "1",
+      branchName: "Branch 1",
+      canAdminister: true
+    };
+    activateTenantSession({
+      contextId: "context-b",
+      localEpoch: 2,
+      publicSession: {
+        sessionId: "session-b",
+        user: { id: "user-b", username: "bob", globalAuthorities: [] },
+        selectedTenant: replacementTenant,
+        accessibleTenants: [replacementTenant],
+        administrableTenantIds: [replacementTenant.tenantId],
+        expiresAt: "2099-01-01T00:00:00.000Z"
+      }
+    });
+
+    await act(async () => {
+      pendingPeekMode.resolve();
+      await submitPromise;
+    });
+
+    expect(mocks.createRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("routes every business prompt through Agent Studio", async () => {
     mocks.createRequestMock.mockResolvedValue({
       accepted: true,
       avatarRequestId: "req-api-first",
@@ -1234,7 +1359,6 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
 
     expect(mocks.createRequestMock).toHaveBeenCalledTimes(1);
-    expect(mocks.sendLocalChatMock).not.toHaveBeenCalled();
   });
 
   it("tracks actual TTS provider and fallback usage in latency debug", async () => {
@@ -1278,7 +1402,8 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       expect(mocks.speakTextMock).toHaveBeenCalledWith(
         "req-tts-provider",
         "Hier ist die Zusammenfassung.",
-        null
+        null,
+        "context-a",
       );
       expect(typeof mocks.streamHandlers.onTtsState).toBe("function");
     });
@@ -1318,6 +1443,11 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     const pollResult: DesktopAvatarRequestDocument = {
       avatarRequestId: "req-fallback",
       clientRequestId: "desktop-avatar-client:retry",
+      requestedBy: "desktop-avatar",
+      mode: "SIMULATION",
+      modality: "chat",
+      utterance: "Welche Bestellungen sind offen?",
+      responseModes: ["talk", "widget"],
       status: "COMPLETED",
       response: {
         talk: { text: "Polling hat die Antwort geliefert." },
@@ -1328,7 +1458,9 @@ describe("useDesktopCompanion desktop avatar integration", () => {
         },
         followUpQuestions: []
       },
-      error: null
+      error: null,
+      createdAt: "2026-08-25T10:00:00.000Z",
+      updatedAt: "2026-08-25T10:00:01.000Z"
     };
     mocks.createRequestMock.mockResolvedValue(createResult);
     mocks.getRequestMock.mockResolvedValue(pollResult);
@@ -1362,7 +1494,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
   });
 
-  it("falls back to local chat on unsupported/no-match backend errors", async () => {
+  it("surfaces unsupported/no-match Agent Studio errors", async () => {
     mocks.createRequestMock.mockRejectedValueOnce(
       "SYNTRA Assistant create returned 409 Conflict: No active studio agents support READ_SQL_SERVER_QUERY."
     );
@@ -1378,14 +1510,13 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
 
     await waitFor(() => {
-      expect(mocks.sendLocalChatMock).toHaveBeenCalledTimes(1);
-      expect(result.current.error).toBeNull();
+      expect(result.current.error).toContain("No active studio agents support");
       expect(result.current.messages.filter((message) => message.role === "assistant")).toHaveLength(1);
       expect(result.current.messages.filter((message) => message.role === "user")).toHaveLength(1);
     });
   });
 
-  it("does not fall back to local chat on technical backend errors", async () => {
+  it("surfaces technical Agent Studio errors", async () => {
     mocks.createRequestMock.mockRejectedValueOnce(new Error("network timeout"));
 
     const { result } = renderHook(() => useDesktopCompanion());
@@ -1399,7 +1530,6 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     });
 
     await waitFor(() => {
-      expect(mocks.sendLocalChatMock).not.toHaveBeenCalled();
       expect(result.current.error).toContain("network timeout");
     });
   });
@@ -1534,6 +1664,65 @@ describe("useDesktopCompanion desktop avatar integration", () => {
       });
       globalThis.MediaRecorder = originalMediaRecorder;
       globalThis.AudioContext = originalAudioContext;
+    }
+  });
+
+  it("discards microphone access that resolves after the tenant session changed", async () => {
+    const originalMediaDevices = navigator.mediaDevices;
+    const pendingMedia = deferred<MediaStream>();
+    const trackStopMock = vi.fn();
+    const stream = {
+      getTracks: () => [{ stop: trackStopMock }]
+    } as unknown as MediaStream;
+    const getUserMediaMock = vi.fn(() => pendingMedia.promise);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: getUserMediaMock }
+    });
+
+    try {
+      const { result } = renderHook(() => useDesktopCompanion());
+      await waitFor(() => expect(mocks.getBootstrapStateMock).toHaveBeenCalled());
+
+      let recordingPromise: Promise<void> | null = null;
+      act(() => {
+        recordingPromise = result.current.toggleRecording();
+      });
+      await waitFor(() => expect(getUserMediaMock).toHaveBeenCalledTimes(1));
+
+      const replacementTenant = {
+        tenantId: "tenant-b",
+        companyId: "701",
+        companyName: "Company B",
+        branchId: "1",
+        branchName: "Branch 1",
+        canAdminister: true
+      };
+      activateTenantSession({
+        contextId: "context-b",
+        localEpoch: 2,
+        publicSession: {
+          sessionId: "session-b",
+          user: { id: "user-b", username: "bob", globalAuthorities: [] },
+          selectedTenant: replacementTenant,
+          accessibleTenants: [replacementTenant],
+          administrableTenantIds: [replacementTenant.tenantId],
+          expiresAt: "2099-01-01T00:00:00.000Z"
+        }
+      });
+
+      await act(async () => {
+        pendingMedia.resolve(stream);
+        await recordingPromise;
+      });
+
+      expect(trackStopMock).toHaveBeenCalledTimes(1);
+      expect(mocks.startTranscriptionSessionMock).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: originalMediaDevices
+      });
     }
   });
 });

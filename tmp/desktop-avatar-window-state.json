@@ -1,19 +1,19 @@
 {
   "peekPosition": "top-left",
   "peekSize": {
-    "width": 300.0,
-    "height": 300.0
+    "width": 170.0,
+    "height": 170.0
   },
   "lastPeekRect": {
-    "x": 1859.0,
-    "y": 54.0,
-    "width": 300.0,
-    "height": 300.0
+    "x": 2260.0,
+    "y": 197.0,
+    "width": 170.0,
+    "height": 170.0
   },
   "lastExpandedRect": {
-    "x": 1729.0,
-    "y": 146.0,
-    "width": 600.0,
-    "height": 713.0
+    "x": 1109.0,
+    "y": 30.0,
+    "width": 440.0,
+    "height": 805.0
   }
 }

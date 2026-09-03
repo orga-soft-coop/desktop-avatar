@@ -1,4 +1,4 @@
-export type PromptRoute = "localChat" | "backendBusiness" | "backendReview";
+export type PromptRoute = "agentStudioGeneral" | "backendBusiness" | "backendReview";
 export type TranscriptionProviderId =
   | "openai-realtime"
   | "openai-file-fallback";
@@ -307,12 +307,18 @@ export interface DesktopAvatarTalkPayload {
 export interface DesktopAvatarResponse {
   talk: DesktopAvatarTalkPayload;
   widget?: DesktopAvatarWidgetPayload | null;
+  resultMeta?: {
+    kind: "sql" | "forecast" | "forecast-table" | "iws" | "fallback" | "clarification";
+    rowCount?: number;
+    truncated?: boolean;
+    horizon?: number;
+    lastExpectedValue?: number;
+  };
   followUpQuestions: string[];
 }
 
 export interface CreateDesktopAvatarRequestInput {
   clientRequestId: string;
-  requestedBy?: string;
   mode?: DesktopAvatarMode;
   modality?: DesktopAvatarModality;
   locale?: string;
@@ -336,18 +342,24 @@ export interface CreateDesktopAvatarRequestResult {
 export interface DesktopAvatarRequestDocument {
   avatarRequestId: string;
   clientRequestId: string;
-  requestedBy?: string;
-  mode?: DesktopAvatarMode;
-  modality?: DesktopAvatarModality;
+  requestedBy: string;
+  mode: DesktopAvatarMode;
+  modality: DesktopAvatarModality;
   locale?: string;
   timezone?: string;
-  utterance?: string;
-  responseModes?: DesktopAvatarResponseMode[];
+  utterance: string;
+  responseModes: DesktopAvatarResponseMode[];
   status: DesktopAvatarRequestStatus;
+  statusMessage?: string;
+  targetStudioAgentId?: string;
+  runtimeSessionId?: string;
+  runId?: string;
+  iwsQueryRequest?: Record<string, unknown>;
   response?: DesktopAvatarResponse | null;
   error?: string | null;
-  createdAt?: string;
-  updatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
 }
 
 export interface DesktopAvatarStreamReadyEvent {
@@ -481,17 +493,6 @@ export interface BootstrapState {
   transcriptionProviders: TranscriptionProviderId[];
 }
 
-export interface LocalChatMessageInput {
-  role: Exclude<MessageRole, "system"> | "system";
-  content: string;
-}
-
-export interface LocalChatRequest {
-  requestId: string;
-  prompt: string;
-  messages: LocalChatMessageInput[];
-}
-
 export interface SpeechTranscriptionRequest {
   audioBase64: string;
   mimeType: string;
@@ -574,40 +575,6 @@ export type TranscriptionSessionEvent =
   | TranscriptionSessionSpeechStoppedEvent
   | TranscriptionSessionErrorEvent;
 
-export interface StreamEnvelope<T = unknown> {
-  requestId: string;
-  source: "local" | "business";
-  kind:
-    | "acknowledged"
-    | "researching"
-    | "tool_progress"
-    | "handoff_local"
-    | "delta"
-    | "final"
-    | "error";
-  payload: T;
-}
-
-export interface StreamTextPayload {
-  text?: string | null;
-}
-
-export interface StreamDeltaPayload {
-  delta: string;
-  accumulated: string;
-}
-
-export interface StreamFinalPayload {
-  type: "generic_text" | "error";
-  speechText: string;
-  displayText: string;
-}
-
-export interface StreamErrorPayload {
-  message: string;
-  retryHint?: string | null;
-}
-
 export interface TtsStateEvent {
   requestId: string;
   speaking: boolean;
@@ -631,7 +598,7 @@ export interface ChatMessage {
 
 export interface DevToolsLatencySnapshot {
   requestKey: string;
-  requestKind: "desktop-avatar" | "local-chat";
+  requestKind: "desktop-avatar";
   route: PromptRoute;
   source: MessageSource;
   status: string | null;

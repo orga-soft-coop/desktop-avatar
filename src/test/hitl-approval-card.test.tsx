@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DesktopAvatarWidgetPanel } from "../components/DesktopAvatarWidgetPanel";
@@ -176,7 +176,9 @@ describe("HITL approval card", () => {
 
     expect(screen.getByText("Operator-Radar")).toBeInTheDocument();
     expect(screen.getByText("2 gesamt")).toBeInTheDocument();
-    expect(screen.getAllByText("Bestellung freigeben")).toHaveLength(2);
+    expect(screen.getAllByText("Bestellung freigeben")).toHaveLength(1);
+    expect(screen.getByText("Jetzt wichtig · Kritisch")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Weitere Signale" })).toBeInTheDocument();
     expect(screen.getByText("Warehouse Agent")).toBeInTheDocument();
 
     await userEvent.click(screen.getAllByRole("button", { name: "Details" })[0]!);
@@ -199,5 +201,20 @@ describe("HITL approval card", () => {
     expect(onRadarSnooze).toHaveBeenCalledWith("radar:runtime:warehouse:running");
     expect(onRadarFollowToggle).toHaveBeenCalledWith("radar:runtime:warehouse:running");
     expect(onRadarCompletionOnly).toHaveBeenCalledWith("radar:runtime:warehouse:running");
+  });
+
+  it("uses the declared top signal and keeps the remaining signals in the queue", () => {
+    const declaredTopWidget = radarWidget();
+    declaredTopWidget.summary.topSignalId = "radar:runtime:warehouse:running";
+
+    const { container } = render(<DesktopAvatarWidgetPanel widget={declaredTopWidget} />);
+    const focusCard = container.querySelector('[data-radar-priority="top"]');
+    const queuedRegion = screen.getByRole("region", { name: "Weitere Signale" });
+
+    expect(focusCard).not.toBeNull();
+    expect(within(focusCard as HTMLElement).getByText("Warehouse Agent")).toBeInTheDocument();
+    expect(within(focusCard as HTMLElement).getByText("Agent arbeitet")).toBeInTheDocument();
+    expect(within(queuedRegion).getByText("Purchase Agent")).toBeInTheDocument();
+    expect(within(queuedRegion).queryByText("Warehouse Agent")).not.toBeInTheDocument();
   });
 });

@@ -14,6 +14,7 @@ interface WindowPresetConfig {
 
 export const DEFAULT_SIZE_PRESET: SizePreset = "medium";
 export const SIZE_PRESET_STORAGE_KEY = "desktop-avatar:size-preset";
+export const LOGIN_WINDOW_SIZE: WindowDimensions = { width: 520, height: 600 };
 
 export const SIZE_PRESET_OPTIONS: WindowPresetConfig[] = [
   {

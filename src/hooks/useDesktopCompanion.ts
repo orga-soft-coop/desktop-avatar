@@ -23,18 +23,11 @@ import type {
   DevToolsLatencySnapshot,
   HitlDecisionQueueItem,
   HitlDecisionStreamEvent,
-  LocalChatMessageInput,
-  LocalChatRequest,
   MessageSource,
   PeekMode,
   PeekPosition,
   PromptRoute,
   TranscriptionProviderId,
-  StreamDeltaPayload,
-  StreamEnvelope,
-  StreamErrorPayload,
-  StreamFinalPayload,
-  StreamTextPayload,
 } from "../lib/contracts";
 import {
   desktopAvatarApiClient,
@@ -68,10 +61,8 @@ import {
   onTrayPeekCollapse,
   onTrayPeekOpen,
   onTrayPeekPositionChanged,
-  onStreamEvent,
   onTtsState,
   resizeWindow,
-  sendLocalChat,
   setPeekMode,
   setPeekPosition,
   startWindowDragForMode,
@@ -89,6 +80,10 @@ import {
   readStoredSizePreset,
   storeSizePreset,
 } from "../lib/window-presets";
+import {
+  getRequiredTenantContextId,
+  isCurrentTenantContext,
+} from "../lib/tenant-session";
 
 const TTS_VOICE_STORAGE_KEY = "desktop-avatar.ttsVoice";
 const TTS_ENABLED_STORAGE_KEY = "desktop-avatar.ttsEnabled";
@@ -146,7 +141,7 @@ interface ActiveDesktopAvatarRequest extends SubmissionContext {
 
 interface LatencyTimeline {
   requestKey: string;
-  requestKind: "desktop-avatar" | "local-chat";
+  requestKind: "desktop-avatar";
   route: PromptRoute;
   source: MessageSource;
   status: string | null;
@@ -200,51 +195,6 @@ function buildUserMessage(text: string, source: MessageSource): ChatMessage {
     createdAt: new Date().toISOString(),
     source,
   };
-}
-
-function buildLocalHistory(messages: ChatMessage[]): LocalChatMessageInput[] {
-  const systemPrompt = t("localChat.systemPrompt");
-  const history = messages
-    .filter((message) => message.role !== "system" && message.text.trim())
-    .map<LocalChatMessageInput>((message) => ({
-      role: message.role,
-      content: message.text,
-    }));
-
-  return [
-    {
-      role: "system",
-      content: systemPrompt,
-    },
-    ...history,
-  ];
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function sanitizeLocalAssistantText(value: string | null | undefined): string {
-  if (!value) {
-    return "";
-  }
-
-  let sanitized = value.trim();
-  if (!sanitized) {
-    return "";
-  }
-
-  const fullPromptPattern = new RegExp(
-    escapeRegExp(t("localChat.systemPrompt")),
-    "gi",
-  );
-  sanitized = sanitized.replace(fullPromptPattern, "").trim();
-
-  const prefixPattern =
-    /^you are milk,\s*a concise desktop companion\.[\s\S]{0,260}?(?:instructions?\.?|facts\.?)/i;
-  sanitized = sanitized.replace(prefixPattern, "").trim();
-
-  return sanitized;
 }
 
 function toHitlWidget(item: HitlDecisionQueueItem): DesktopAvatarHitlApprovalWidget {
@@ -474,7 +424,6 @@ function buildDesktopAvatarRequestInput(
 ): CreateDesktopAvatarRequestInput {
   return {
     clientRequestId,
-    requestedBy: "desktop-avatar",
     mode: "SIMULATION",
     modality: source === "voice" ? "voice" : "chat",
     locale: navigator.language,
@@ -502,28 +451,6 @@ function errorMessage(error: unknown, fallback: string): string {
     }
   }
   return fallback;
-}
-
-function isUnsupportedNoMatchErrorMessage(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes("unsupported") ||
-    normalized.includes("no-match") ||
-    normalized.includes("no match") ||
-    normalized.includes("no active studio agents support") ||
-    normalized.includes("does not support required actions") ||
-    normalized.includes(
-      "ops routing found no active domain target supporting",
-    ) ||
-    normalized.includes(
-      "no active studio agents available for desktop avatar routing",
-    ) ||
-    normalized.includes(
-      "no active studio agents available for syntra assistant routing",
-    ) ||
-    normalized.includes("studio agent is not active and cannot be routed") ||
-    normalized.includes("studio agent not found")
-  );
 }
 
 function nextPollDelay(attempt: number): number {
@@ -811,6 +738,7 @@ function toLatencySnapshot(timeline: LatencyTimeline): DevToolsLatencySnapshot {
 }
 
 export function useDesktopCompanion() {
+  const [tenantContextId] = useState(() => getRequiredTenantContextId());
   const [avatarManifest, setAvatarManifest] = useState<AvatarManifest | null>(
     null,
   );
@@ -889,7 +817,6 @@ export function useDesktopCompanion() {
   >(null);
   const lastSubmissionRef = useRef<SubmissionContext | null>(null);
   const conversationEpochRef = useRef(0);
-  const activeLocalRequestIdRef = useRef<string | null>(null);
   const activeDesktopAvatarRequestRef =
     useRef<ActiveDesktopAvatarRequest | null>(null);
   const desktopAvatarStateRef = useRef<DesktopAvatarOrchestratorState>(
@@ -957,7 +884,12 @@ export function useDesktopCompanion() {
             : `hitl:batch:${widgets
                 .map((widget) => widget.decisionId)
                 .join("|")}`;
-        void speakText(speechId, announcement, selectedTtsVoiceRef.current);
+        void speakText(
+          speechId,
+          announcement,
+          selectedTtsVoiceRef.current,
+          tenantContextId,
+        );
       }
     }
 
@@ -1067,6 +999,7 @@ export function useDesktopCompanion() {
         });
         const connection =
           await desktopAvatarApiClient.connectHitlDecisionStream({
+            expectedContextId: tenantContextId,
             onEvent: handleHitlEvent,
             onDisconnect: (event) => {
               if (!active) {
@@ -1358,32 +1291,6 @@ export function useDesktopCompanion() {
     [patchLatencyByRequestKey],
   );
 
-  const markLocalStreamEvent = useCallback(
-    (event: StreamEnvelope) => {
-      const now = Date.now();
-      patchLatencyByRequestKey(event.requestId, (current) => {
-        const next: LatencyTimeline = {
-          ...current,
-          firstEventAtMs: current.firstEventAtMs ?? now,
-          status: event.kind,
-        };
-
-        if (event.kind === "final") {
-          next.firstResponseAtMs = current.firstResponseAtMs ?? now;
-          next.talkAtMs = current.talkAtMs ?? now;
-          next.completedAtMs = current.completedAtMs ?? now;
-        } else if (event.kind === "error") {
-          const payload = event.payload as StreamErrorPayload;
-          next.failedAtMs = current.failedAtMs ?? now;
-          next.lastError = payload.message;
-        }
-
-        return next;
-      });
-    },
-    [patchLatencyByRequestKey],
-  );
-
   const syncDesktopAvatarMessage = useCallback(
     (state: DesktopAvatarOrchestratorState) => {
       const activeRequest = activeDesktopAvatarRequestRef.current;
@@ -1452,7 +1359,7 @@ export function useDesktopCompanion() {
           const document = await desktopAvatarApiClient.getRequest({
             avatarRequestId,
             pollUrl,
-          });
+          }, tenantContextId);
           desktopAvatarPollErrorCountRef.current = 0;
           markDesktopPollingSnapshot(activeRequest.clientRequestId, document);
           desktopAvatarDispatch({ type: "pollingSnapshot", document });
@@ -1516,6 +1423,7 @@ export function useDesktopCompanion() {
         await desktopAvatarApiClient.connectStream({
           avatarRequestId,
           streamUrl,
+          expectedContextId: tenantContextId,
           onEvent: (event) => {
             const activeRequest = activeDesktopAvatarRequestRef.current;
             if (
@@ -1564,7 +1472,7 @@ export function useDesktopCompanion() {
   );
 
   useEffect(() => {
-    let unlistenStream: (() => void) | undefined;
+    let active = true;
     let unlistenTts: (() => void) | undefined;
     let unlistenTranscription: (() => void) | undefined;
     let unlistenTranscriptionProvider: (() => void) | undefined;
@@ -1574,6 +1482,7 @@ export function useDesktopCompanion() {
 
     void (async () => {
       const bootstrap = await getBootstrapState();
+      if (!active) return;
       setAvatarManifest(bootstrap.avatarManifest);
       setTtsEnabled(() => {
         const stored = readStoredTtsEnabled();
@@ -1586,7 +1495,7 @@ export function useDesktopCompanion() {
 
       void getTranscriptionProvider()
         .then((provider) => {
-          setTranscriptionProviderState(provider);
+          if (active) setTranscriptionProviderState(provider);
         })
         .catch(() => undefined);
       const presetSizes = getWindowSizesForPreset(sizePreset);
@@ -1598,6 +1507,7 @@ export function useDesktopCompanion() {
         width: presetSizes.expanded.width,
         height: expandedHeight,
       });
+      if (!active) return;
       await setPeekMode(
         peekMode,
         presetSizes.expanded.width,
@@ -1607,6 +1517,7 @@ export function useDesktopCompanion() {
         false,
         true,
       );
+      if (!active) return;
       setBootstrapReady(true);
 
       try {
@@ -1614,6 +1525,7 @@ export function useDesktopCompanion() {
         const normalized = [
           ...new Set(voices.map((voice) => voice.trim()).filter(Boolean)),
         ];
+        if (!active) return;
         setTtsVoices(normalized);
         setSelectedTtsVoiceState((current) => {
           const nextVoice = resolvePreferredTtsVoice(current, normalized);
@@ -1621,17 +1533,12 @@ export function useDesktopCompanion() {
           return nextVoice;
         });
       } catch {
-        setTtsVoices([]);
+        if (active) setTtsVoices([]);
       }
     })();
 
-    void onStreamEvent((event) => {
-      void handleLocalStreamEvent(event);
-    }).then((unlisten) => {
-      unlistenStream = unlisten;
-    });
-
     void onTtsState((event) => {
+      if (!active) return;
       setLatencyTimeline((current) => {
         if (!current || current.ttsRequestId !== event.requestId) {
           return current;
@@ -1666,15 +1573,20 @@ export function useDesktopCompanion() {
 
       if (activeDesktopAvatarRequestRef.current) {
         setCompanionState(desktopAvatarStateRef.current.companionState);
-      } else if (!activeLocalRequestIdRef.current) {
+      } else {
         setCompanionState("idle");
         setStatus(null);
       }
     }).then((unlisten) => {
+      if (!active) {
+        unlisten();
+        return;
+      }
       unlistenTts = unlisten;
     });
 
     void onTranscriptionSessionEvent((event) => {
+      if (!active) return;
       if (event.type === "partial") {
         setStatus(
           t("status.transcribingPartial", {
@@ -1691,39 +1603,63 @@ export function useDesktopCompanion() {
         );
       }
     }).then((unlisten) => {
+      if (!active) {
+        unlisten();
+        return;
+      }
       unlistenTranscription = unlisten;
     });
 
     void onTranscriptionProviderChanged((event) => {
+      if (!active) return;
       setTranscriptionProviderState(event.provider);
     }).then((unlisten) => {
+      if (!active) {
+        unlisten();
+        return;
+      }
       unlistenTranscriptionProvider = unlisten;
     });
 
     void onTrayPeekOpen(() => {
+      if (!active) return;
       void applyPeekModeRef.current("expanded");
     }).then((unlisten) => {
+      if (!active) {
+        unlisten();
+        return;
+      }
       unlistenTrayPeekOpen = unlisten;
     });
 
     void onTrayPeekCollapse(() => {
+      if (!active) return;
       void applyPeekModeRef.current("peek");
     }).then((unlisten) => {
+      if (!active) {
+        unlisten();
+        return;
+      }
       unlistenTrayPeekCollapse = unlisten;
     });
 
     void onTrayPeekPositionChanged((position) => {
+      if (!active) return;
       setPeekPositionState(position);
       storePeekPosition(position);
       if (peekModeRef.current === "peek") {
         void setPeekPosition(position);
       }
     }).then((unlisten) => {
+      if (!active) {
+        unlisten();
+        return;
+      }
       unlistenTrayPeekPositionChanged = unlisten;
     });
 
     return () => {
-      unlistenStream?.();
+      active = false;
       unlistenTts?.();
       unlistenTranscription?.();
       unlistenTranscriptionProvider?.();
@@ -1789,6 +1725,7 @@ export function useDesktopCompanion() {
         activeRequest.avatarRequestId,
         desktopAvatarState.talkText,
         selectedTtsVoice,
+        tenantContextId,
       );
     }
   }, [
@@ -1818,232 +1755,16 @@ export function useDesktopCompanion() {
     ttsEnabled,
   ]);
 
-  async function handleLocalStreamEvent(event: StreamEnvelope) {
-    if (
-      event.requestId !== activeLocalRequestIdRef.current &&
-      !requestContextsRef.current.has(event.requestId)
-    ) {
-      return;
-    }
-    activeLocalRequestIdRef.current = event.requestId;
-    markLocalStreamEvent(event);
-
-    if (event.kind === "handoff_local") {
-      const context = requestContextsRef.current.get(event.requestId);
-      if (!context) {
-        return;
-      }
-
-      setStatus(t("status.continuingLocally"));
-      void sendLocalChat({
-        requestId: event.requestId,
-        prompt: context.prompt,
-        messages: buildLocalHistory(messagesRef.current),
-      });
-      return;
-    }
-
-    if (event.kind === "delta") {
-      const payload = event.payload as StreamDeltaPayload;
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === event.requestId
-            ? { ...message, text: payload.accumulated, isStreaming: true }
-            : message,
-        ),
-      );
-      setCompanionState("thinking");
-      return;
-    }
-
-    if (event.kind === "final") {
-      const payload = event.payload as StreamFinalPayload;
-      const cleanedDisplay = sanitizeLocalAssistantText(payload.displayText);
-      const cleanedSpeech = sanitizeLocalAssistantText(payload.speechText);
-      const fallbackUsed = !cleanedDisplay && !cleanedSpeech;
-      const displayText =
-        cleanedDisplay || cleanedSpeech || t("status.localFallback");
-      const speechText = cleanedSpeech || cleanedDisplay || displayText;
-      if (fallbackUsed) {
-        void frontendLog(
-          "info",
-          `local chat produced empty final payload; using fallback text for requestId=${event.requestId}`,
-        );
-      }
-      requestContextsRef.current.delete(event.requestId);
-      activeLocalRequestIdRef.current = null;
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === event.requestId
-            ? {
-                ...message,
-                text: displayText,
-                isStreaming: false,
-                widget: null,
-                followUpQuestions: [],
-              }
-            : message,
-        ),
-      );
-      setStatus(null);
-      if (ttsEnabled && !fallbackUsed) {
-        patchLatencyByRequestKey(event.requestId, (current) => ({
-          ...current,
-          ttsRequestId: event.requestId,
-          ttsRequestedAtMs: current.ttsRequestedAtMs ?? Date.now(),
-        }));
-        await speakText(event.requestId, speechText, selectedTtsVoice);
-      } else {
-        setCompanionState("idle");
-      }
-      return;
-    }
-
-    if (event.kind === "error") {
-      const payload = event.payload as StreamErrorPayload;
-      requestContextsRef.current.delete(event.requestId);
-      activeLocalRequestIdRef.current = null;
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === event.requestId
-            ? {
-                ...message,
-                text: payload.message,
-                isStreaming: false,
-              }
-            : message,
-        ),
-      );
-      setError(payload.message);
-      setCompanionState("error");
-      setStatus(payload.message);
-      return;
-    }
-
-    const payload = event.payload as StreamTextPayload;
-    const nextStatus = payload.text ?? null;
-    if (event.kind === "acknowledged") {
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === event.requestId
-            ? { ...message, text: nextStatus ?? "", isStreaming: true }
-            : message,
-        ),
-      );
-    }
-
-    setStatus(nextStatus);
-    setCompanionState("thinking");
-  }
-
-  async function startLocalChatRequest(input: {
-    prompt: string;
-    source: MessageSource;
-    route: PromptRoute;
-    existingAssistantMessageId?: string;
-    statusText?: string;
-  }) {
-    const startedAtMs = Date.now();
-    const requestEpoch = conversationEpochRef.current;
-    await stopSpeaking();
-    await cleanupDesktopAvatarRuntime();
-
-    let requestId: string;
-    let nextMessages: ChatMessage[];
-    if (input.existingAssistantMessageId) {
-      requestId = input.existingAssistantMessageId;
-      nextMessages = messagesRef.current.map((message) =>
-        message.id === requestId
-          ? {
-              ...message,
-              text: "",
-              isStreaming: true,
-              widget: null,
-              followUpQuestions: [],
-              requestStatus: null,
-              avatarRequestId: null,
-              clientRequestId: null,
-            }
-          : message,
-      );
-    } else {
-      const userMessage = buildUserMessage(input.prompt, input.source);
-      const assistantMessage = buildAssistantPlaceholder(input.source);
-      requestId = assistantMessage.id;
-      nextMessages = [...messagesRef.current, userMessage, assistantMessage];
-    }
-
-    messagesRef.current = nextMessages;
-    setMessages(nextMessages);
-    setDraft("");
-    requestContextsRef.current.set(requestId, {
-      prompt: input.prompt,
-      source: input.source,
-      route: "localChat",
-    });
-    activeLocalRequestIdRef.current = requestId;
-    activeDesktopAvatarRequestRef.current = null;
-    desktopAvatarDispatch({ type: "reset" });
-    setLatencyTimeline({
-      requestKey: requestId,
-      requestKind: "local-chat",
-      route: input.route,
-      source: input.source,
-      status: "starting",
-      startedAtMs,
-      startedAt: new Date(startedAtMs).toISOString(),
-      usedPolling: false,
-      ttsProvider: null,
-      ttsFallbackUsed: null,
-      lastError: null,
-      clientRequestId: null,
-      avatarRequestId: null,
-      ttsRequestId: null,
-    });
-
-    if (peekMode === "peek") {
-      await applyPeekMode("expanded");
-    }
-
-    setCompanionState("thinking");
-    setStatus(input.statusText ?? t("status.thinkingLocally"));
-
-    try {
-      const request: LocalChatRequest = {
-        requestId,
-        prompt: input.prompt,
-        messages: buildLocalHistory(nextMessages),
-      };
-      await sendLocalChat(request);
-    } catch (caughtError) {
-      if (requestEpoch !== conversationEpochRef.current) {
-        return;
-      }
-      const message = errorMessage(
-        caughtError,
-        t("status.requestCouldNotStart"),
-      );
-      patchLatencyByRequestKey(requestId, (current) => ({
-        ...current,
-        status: "error",
-        failedAtMs: current.failedAtMs ?? Date.now(),
-        lastError: message,
-      }));
-      await handleLocalStreamEvent({
-        requestId,
-        source: "local",
-        kind: "error",
-        payload: { message },
-      });
-    }
-  }
-
   async function submitDesktopAvatarPrompt(
     prompt: string,
     source: MessageSource,
     route: PromptRoute,
     clientRequestId?: string,
+    capturedContextId = tenantContextId,
   ) {
+    if (!isCurrentTenantContext(capturedContextId)) {
+      throw new Error("DESKTOP_SESSION_CHANGED");
+    }
     const requestEpoch = conversationEpochRef.current;
     const requestId =
       clientRequestId ?? `desktop-avatar-client:${crypto.randomUUID()}`;
@@ -2070,7 +1791,6 @@ export function useDesktopCompanion() {
       route,
       clientRequestId: requestId,
     };
-    activeLocalRequestIdRef.current = null;
     activeDesktopAvatarRequestRef.current = {
       assistantMessageId: assistantMessage.id,
       avatarRequestId: null,
@@ -2098,16 +1818,23 @@ export function useDesktopCompanion() {
 
     if (peekMode === "peek") {
       await applyPeekMode("expanded");
+      if (!isCurrentTenantContext(capturedContextId)) return;
     }
 
-    await stopSpeaking();
+    await stopSpeaking(capturedContextId);
+    if (!isCurrentTenantContext(capturedContextId)) return;
     await cleanupDesktopAvatarRuntime();
+    if (!isCurrentTenantContext(capturedContextId)) return;
 
     try {
       const result = await desktopAvatarApiClient.createRequest(
         buildDesktopAvatarRequestInput(prompt, source, requestId),
+        capturedContextId,
       );
-      if (requestEpoch !== conversationEpochRef.current) {
+      if (
+        requestEpoch !== conversationEpochRef.current ||
+        !isCurrentTenantContext(capturedContextId)
+      ) {
         return;
       }
       activeDesktopAvatarRequestRef.current = {
@@ -2140,22 +1867,6 @@ export function useDesktopCompanion() {
         caughtError,
         t("status.requestCouldNotStart"),
       );
-      if (isUnsupportedNoMatchErrorMessage(message)) {
-        void frontendLog(
-          "info",
-          `desktop-avatar fallback to local chat (unsupported/no-match): ${message}`,
-        );
-        await startLocalChatRequest({
-          prompt,
-          source,
-          route,
-          existingAssistantMessageId:
-            activeDesktopAvatarRequestRef.current?.assistantMessageId ??
-            assistantMessage.id,
-          statusText: t("status.continuingLocally"),
-        });
-        return;
-      }
       patchLatencyByRequestKey(requestId, (current) => ({
         ...current,
         status: "FAILED",
@@ -2170,7 +1881,11 @@ export function useDesktopCompanion() {
     rawPrompt: string,
     source: MessageSource,
     retryClientRequestId?: string,
+    capturedContextId = tenantContextId,
   ) {
+    if (!isCurrentTenantContext(capturedContextId)) {
+      return;
+    }
     const prompt = rawPrompt.trim();
     if (!prompt) {
       return;
@@ -2191,16 +1906,12 @@ export function useDesktopCompanion() {
     };
     setError(null);
 
-    if (route === "localChat") {
-      await startLocalChatRequest({ prompt, source, route });
-      return;
-    }
-
     await submitDesktopAvatarPrompt(
       prompt,
       source,
       route,
       retryClientRequestId,
+      capturedContextId,
     );
   }
 
@@ -2247,7 +1958,7 @@ export function useDesktopCompanion() {
   const fetchOperatorRadar = useCallback(
     async (options?: { showWidget?: boolean; showEmpty?: boolean }) => {
       try {
-        const response = await desktopAvatarApiClient.getRadar();
+        const response = await desktopAvatarApiClient.getRadar(tenantContextId);
         applyOperatorRadarResponse(response, options);
       } catch (error) {
         const message = errorMessage(error, t("widgets.radar.errorMessage"));
@@ -2325,6 +2036,7 @@ export function useDesktopCompanion() {
           );
         });
         const connection = await desktopAvatarApiClient.connectRadarStream({
+          expectedContextId: tenantContextId,
           onEvent: handleRadarStreamEvent,
           onDisconnect: (event) => {
             if (!active) {
@@ -2408,8 +2120,7 @@ export function useDesktopCompanion() {
 
     const { prompt, source, route, clientRequestId } =
       lastSubmissionRef.current;
-    const retryId = route === "localChat" ? undefined : clientRequestId;
-    await submitPrompt(prompt, source, retryId);
+    await submitPrompt(prompt, source, clientRequestId);
   }
 
   async function clearConversation() {
@@ -2417,7 +2128,6 @@ export function useDesktopCompanion() {
     messagesRef.current = [];
     requestContextsRef.current.clear();
     lastSubmissionRef.current = null;
-    activeLocalRequestIdRef.current = null;
     activeDesktopAvatarRequestRef.current = null;
     lastSpokenDesktopAvatarKeyRef.current = null;
     setMessages([]);
@@ -2427,7 +2137,7 @@ export function useDesktopCompanion() {
     setLatencyTimeline(null);
     setCompanionState("idle");
     desktopAvatarDispatch({ type: "reset" });
-    await stopSpeaking();
+    await stopSpeaking(tenantContextId);
     await cleanupDesktopAvatarRuntime();
   }
 
@@ -2437,7 +2147,9 @@ export function useDesktopCompanion() {
     }
 
     try {
-      await stopSpeaking().catch(() => {
+      const transcriptionContextId = tenantContextId;
+      if (!isCurrentTenantContext(transcriptionContextId)) return;
+      await stopSpeaking(transcriptionContextId).catch(() => {
         // Recording should still start even if stopping TTS fails.
       });
 
@@ -2449,6 +2161,10 @@ export function useDesktopCompanion() {
           channelCount: 1,
         },
       });
+      if (!isCurrentTenantContext(transcriptionContextId)) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       const mimeType = preferredMimeType();
       const recorder = new MediaRecorder(
         stream,
@@ -2458,7 +2174,11 @@ export function useDesktopCompanion() {
       await startTranscriptionSession({
         sessionId: transcriptionSessionId,
         locale: navigator.language,
-      });
+      }, transcriptionContextId);
+      if (!isCurrentTenantContext(transcriptionContextId)) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       activeTranscriptionSessionIdRef.current = transcriptionSessionId;
       streamRef.current = stream;
       mediaRecorderRef.current = recorder;
@@ -2597,12 +2317,18 @@ export function useDesktopCompanion() {
               sessionId: activeSessionId,
               audioBase64: chunk,
               mimeType: upload.mimeType,
-            });
+            }, transcriptionContextId);
+            if (!isCurrentTenantContext(transcriptionContextId)) {
+              throw new Error("DESKTOP_SESSION_CHANGED");
+            }
           }
           const transcript = await commitTranscriptionTurn({
             sessionId: activeSessionId,
-          });
-          await stopTranscriptionSession({ sessionId: activeSessionId }).catch(
+          }, transcriptionContextId);
+          if (!isCurrentTenantContext(transcriptionContextId)) {
+            throw new Error("DESKTOP_SESSION_CHANGED");
+          }
+          await stopTranscriptionSession({ sessionId: activeSessionId }, transcriptionContextId).catch(
             () => undefined,
           );
           activeTranscriptionSessionIdRef.current = null;
@@ -2614,7 +2340,15 @@ export function useDesktopCompanion() {
               }),
             );
             await waitMs(VOICE_TRANSCRIPT_PREVIEW_MS);
-            await submitPrompt(cleanedTranscript, "voice");
+            if (!isCurrentTenantContext(transcriptionContextId)) {
+              throw new Error("DESKTOP_SESSION_CHANGED");
+            }
+            await submitPrompt(
+              cleanedTranscript,
+              "voice",
+              undefined,
+              transcriptionContextId,
+            );
           } else {
             setStatus(null);
             if (autoStopReason === "silence") {
@@ -2647,7 +2381,7 @@ export function useDesktopCompanion() {
           if (activeTranscriptionSessionIdRef.current) {
             await stopTranscriptionSession({
               sessionId: activeTranscriptionSessionIdRef.current,
-            }).catch(() => undefined);
+            }, transcriptionContextId).catch(() => undefined);
             activeTranscriptionSessionIdRef.current = null;
           }
           chunksRef.current = [];
@@ -2743,7 +2477,7 @@ export function useDesktopCompanion() {
           ...(decisionReason?.trim()
             ? { decisionReason: decisionReason.trim() }
             : {}),
-        });
+        }, tenantContextId);
         markHitlActionSent(decisionId);
       } catch {
         restoreHitlAction(widget);
@@ -2765,7 +2499,7 @@ export function useDesktopCompanion() {
           runId: widget.runId,
           proposalId: widget.proposalId,
           decisionReason: reason,
-        });
+        }, tenantContextId);
         markHitlActionSent(decisionId);
       } catch {
         restoreHitlAction(widget);
@@ -2787,7 +2521,7 @@ export function useDesktopCompanion() {
         await desktopAvatarApiClient.requestMoreInfoForHitl({
           runId: widget.runId,
           message: trimmed,
-        });
+        }, tenantContextId);
         markHitlMoreInfoSent();
       } catch {
         restoreHitlAction(widget);
@@ -2961,7 +2695,7 @@ export function useDesktopCompanion() {
     },
     toggleTts: async () => {
       if (ttsEnabled) {
-        await stopSpeaking();
+        await stopSpeaking(tenantContextId);
       }
       setTtsEnabled((current) => {
         const next = !current;

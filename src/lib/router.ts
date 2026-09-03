@@ -65,7 +65,7 @@ export function routePrompt(prompt: string): PromptRoute {
   const normalized = prompt.toLowerCase();
 
   if (casualKeywords.some((keyword) => normalized.includes(keyword))) {
-    return "localChat";
+    return "agentStudioGeneral";
   }
 
   if (businessKeywords.some((keyword) => normalized.includes(keyword))) {

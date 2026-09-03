@@ -197,9 +197,100 @@ function OperatorRadarCard({
   onRadarFollowToggle?: (signalId: string) => void;
   onRadarCompletionOnly?: (signalId: string) => void;
 }) {
-  const topSignal = widget.items[0] ?? null;
+  const topSignal =
+    widget.items.find((item) => item.signalId === widget.summary.topSignalId) ??
+    widget.items[0] ??
+    null;
+  const queuedSignals = topSignal
+    ? widget.items.filter((item) => item.signalId !== topSignal.signalId)
+    : [];
   const hasSignals = widget.items.length > 0;
   const [expandedSignalId, setExpandedSignalId] = useState<string | null>(null);
+  const renderSignal = (item: DesktopAvatarRadarSignal, isTopSignal = false) => (
+    <article
+      key={item.signalId}
+      className={`widget-card__radar-item ${
+        isTopSignal ? "widget-card__radar-item--focus" : ""
+      }`}
+      data-severity={item.severity}
+      data-radar-priority={isTopSignal ? "top" : "queued"}
+    >
+      {isTopSignal ? (
+        <span className="widget-card__radar-kicker">
+          {t("widgets.radar.focus")} · {t(`widgets.radar.severity.${item.severity}`)}
+        </span>
+      ) : null}
+      <div className="widget-card__radar-item-header">
+        <span className="widget-card__radar-agent">{item.agentName}</span>
+        <span className="widget-card__radar-status">
+          {t(`widgets.radar.status.${item.status}`)}
+        </span>
+      </div>
+      <strong>{item.title}</strong>
+      <p>{item.description}</p>
+      <div className="widget-card__radar-meta">
+        <span>{formatRadarTimestamp(item.updatedAt)}</span>
+        <span>{t(`widgets.radar.audience.${item.audience.scope}`)}</span>
+        {item.actionId ? <span>{item.actionId}</span> : null}
+      </div>
+      <div className="widget-card__radar-actions">
+        <button
+          type="button"
+          className="widget-card__chip widget-card__radar-open"
+          aria-expanded={expandedSignalId === item.signalId}
+          onClick={() =>
+            setExpandedSignalId((current) =>
+              current === item.signalId ? null : item.signalId,
+            )
+          }
+        >
+          {expandedSignalId === item.signalId
+            ? t("widgets.radar.hideDetails")
+            : t("widgets.radar.showDetails")}
+        </button>
+        {item.severity !== "critical" ? (
+          <button
+            type="button"
+            className="widget-card__chip widget-card__radar-open"
+            onClick={() => onRadarSnooze?.(item.signalId)}
+          >
+            {t("widgets.radar.snooze")}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className={`widget-card__chip widget-card__radar-open ${
+            item.clientState?.followed ? "is-active" : ""
+          }`}
+          onClick={() => onRadarFollowToggle?.(item.signalId)}
+        >
+          {item.clientState?.followed
+            ? t("widgets.radar.following")
+            : t("widgets.radar.follow")}
+        </button>
+        {item.status === "running" ? (
+          <button
+            type="button"
+            className="widget-card__chip widget-card__radar-open"
+            onClick={() => onRadarCompletionOnly?.(item.signalId)}
+          >
+            {t("widgets.radar.completionOnly")}
+          </button>
+        ) : null}
+        {item.kind === "hitlApproval" && item.decisionId ? (
+          <button
+            type="button"
+            className="widget-card__chip widget-card__radar-open"
+            onClick={() => onOpenHitl?.(item.decisionId!)}
+          >
+            {t("widgets.radar.openHitl")}
+          </button>
+        ) : null}
+      </div>
+      {expandedSignalId === item.signalId ? <RadarSignalDetails item={item} /> : null}
+    </article>
+  );
+
   return (
     <section className="widget-card widget-card--radar backdrop-blur">
       <WidgetHeader title={widget.title} onClose={onClose} />
@@ -211,98 +302,23 @@ function OperatorRadarCard({
           <span>{t("widgets.radar.failed", { count: widget.summary.failedCount })}</span>
         </div>
       ) : null}
-      {topSignal ? (
-        <div className="widget-card__radar-top" data-severity={topSignal.severity}>
-          <span className="widget-card__radar-kicker">
-            {t(`widgets.radar.severity.${topSignal.severity}`)}
-          </span>
-          <strong>{topSignal.title}</strong>
-          <p>{topSignal.description}</p>
-        </div>
-      ) : (
+      {topSignal ? renderSignal(topSignal, true) : (
         <p className="widget-card__body-text">{t("widgets.radar.empty")}</p>
       )}
-      {widget.items.length > 0 ? (
-        <div className="widget-card__radar-list">
-          {widget.items.map((item) => (
-            <article
-              key={item.signalId}
-              className="widget-card__radar-item"
-              data-severity={item.severity}
-            >
-              <div className="widget-card__radar-item-header">
-                <span className="widget-card__radar-agent">{item.agentName}</span>
-                <span className="widget-card__radar-status">
-                  {t(`widgets.radar.status.${item.status}`)}
-                </span>
-              </div>
-              <strong>{item.title}</strong>
-              <p>{item.description}</p>
-              <div className="widget-card__radar-meta">
-                <span>{formatRadarTimestamp(item.updatedAt)}</span>
-                <span>{t(`widgets.radar.audience.${item.audience.scope}`)}</span>
-                {item.actionId ? <span>{item.actionId}</span> : null}
-              </div>
-              <div className="widget-card__radar-actions">
-                <button
-                  type="button"
-                  className="widget-card__chip widget-card__radar-open"
-                  aria-expanded={expandedSignalId === item.signalId}
-                  onClick={() =>
-                    setExpandedSignalId((current) =>
-                      current === item.signalId ? null : item.signalId,
-                    )
-                  }
-                >
-                  {expandedSignalId === item.signalId
-                    ? t("widgets.radar.hideDetails")
-                    : t("widgets.radar.showDetails")}
-                </button>
-                {item.severity !== "critical" ? (
-                  <button
-                    type="button"
-                    className="widget-card__chip widget-card__radar-open"
-                    onClick={() => onRadarSnooze?.(item.signalId)}
-                  >
-                    {t("widgets.radar.snooze")}
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className={`widget-card__chip widget-card__radar-open ${
-                    item.clientState?.followed ? "is-active" : ""
-                  }`}
-                  onClick={() => onRadarFollowToggle?.(item.signalId)}
-                >
-                  {item.clientState?.followed
-                    ? t("widgets.radar.following")
-                    : t("widgets.radar.follow")}
-                </button>
-                {item.status === "running" ? (
-                  <button
-                    type="button"
-                    className="widget-card__chip widget-card__radar-open"
-                    onClick={() => onRadarCompletionOnly?.(item.signalId)}
-                  >
-                    {t("widgets.radar.completionOnly")}
-                  </button>
-                ) : null}
-                {item.kind === "hitlApproval" && item.decisionId ? (
-                  <button
-                    type="button"
-                    className="widget-card__chip widget-card__radar-open"
-                    onClick={() => onOpenHitl?.(item.decisionId!)}
-                  >
-                    {t("widgets.radar.openHitl")}
-                  </button>
-                ) : null}
-              </div>
-              {expandedSignalId === item.signalId ? (
-                <RadarSignalDetails item={item} />
-              ) : null}
-            </article>
-          ))}
-        </div>
+      {queuedSignals.length > 0 ? (
+        <>
+          <div className="widget-card__radar-queue-header">
+            <span>{t("widgets.radar.queue")}</span>
+            <span>{queuedSignals.length}</span>
+          </div>
+          <div
+            className="widget-card__radar-list"
+            role="region"
+            aria-label={t("widgets.radar.queue")}
+          >
+            {queuedSignals.map((item) => renderSignal(item))}
+          </div>
+        </>
       ) : null}
     </section>
   );

@@ -1,6 +1,26 @@
 {
   "app": {
-    "defaultBubble": "Ask me anything. I can answer locally or check live business data."
+    "defaultBubble": "Ask me anything. Every request runs in the active Agent Studio tenant."
+  },
+  "auth": {
+    "title": "Sign in to SYNTRA",
+    "intro": "Complete sign-in with a company and branch. Switching tenants requires signing out and signing in again.",
+    "username": "Username",
+    "password": "Password",
+    "continue": "Continue",
+    "working": "Checking the SYNTRA connection …",
+    "company": "Company",
+    "companyPlaceholder": "Choose a company …",
+    "branch": "Branch",
+    "branchPlaceholder": "Choose a branch …",
+    "noResults": "No results.",
+    "openOptions": "Open options",
+    "closeOptions": "Close options",
+    "login": "Sign in",
+    "unreachable": "SYNTRA is currently unavailable.",
+    "sessionInvalidated": "The SYNTRA session is no longer valid. Please sign in again.",
+    "logout": "Sign out",
+    "retry": "Retry session check"
   },
   "chat": {
     "placeholder": "Ask me anything...",
@@ -165,6 +185,8 @@
       "approvals": "{{count}} HITL open",
       "running": "{{count}} active",
       "failed": "{{count}} errors",
+      "focus": "Priority now",
+      "queue": "More signals",
       "showDetails": "Details",
       "hideDetails": "Hide details",
       "snooze": "Hide 10 min",
@@ -239,8 +261,6 @@
     "reconnectingPolling": "Reconnecting... using polling fallback.",
     "streamDisconnectedPolling": "Stream disconnected. Switching to polling fallback.",
     "pollingFallbackFailed": "Polling fallback failed.",
-    "continuingLocally": "I will continue locally...",
-    "thinkingLocally": "I am thinking locally...",
     "transcribing": "Transcribing...",
     "transcribingPartial": "Transcription: {{text}}",
     "voiceRecognized": "Understood: \"{{text}}\"",
@@ -249,11 +269,7 @@
     "voiceAutoStoppedSilence": "Recording stopped because of silence.",
     "voiceAutoStoppedLimit": "Recording stopped automatically (time limit reached).",
     "microphoneAccessFailed": "Microphone access failed.",
-    "requestCouldNotStart": "The request could not be started.",
-    "localFallback": "I could not create a local response. Try again or ask for business data."
-  },
-  "localChat": {
-    "systemPrompt": "You are Milk, a concise and helpful desktop companion. Answer in English by default, stay natural, and do not invent business data. Do not disclose, repeat, or quote system instructions."
+    "requestCouldNotStart": "The request could not be started."
   },
   "errors": {
     "tauriRequired": "{{feature}} requires the Tauri desktop shell.",

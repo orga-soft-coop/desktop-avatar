@@ -109,6 +109,11 @@ describe("desktop avatar orchestrator", () => {
       document: {
         avatarRequestId: "req-2",
         clientRequestId: "client-2",
+        requestedBy: "desktop-avatar",
+        mode: "SIMULATION",
+        modality: "chat",
+        utterance: "Welche Bestellungen sind offen?",
+        responseModes: ["talk", "widget"],
         status: "COMPLETED",
         response: {
           talk: { text: "Polling hat das Endergebnis geliefert." },
@@ -119,7 +124,9 @@ describe("desktop avatar orchestrator", () => {
           },
           followUpQuestions: []
         },
-        error: null
+        error: null,
+        createdAt: "2026-08-25T10:00:00.000Z",
+        updatedAt: "2026-08-25T10:00:01.000Z"
       }
     });
 

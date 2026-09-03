@@ -1,17 +1,29 @@
+mod agent_studio;
+
+use agent_studio::{
+    AgentStudioApiClient, AgentStudioApiError, AgentStudioSessionBroker, AuthBranchSummary,
+    AuthCompanySummary, AuthPreauthenticateResult, DesktopAvatarTenantSession,
+};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
     fs::OpenOptions,
+    hash::{DefaultHasher, Hash, Hasher},
     io::Write,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{
-    header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE},
+    header::{AUTHORIZATION, CONTENT_TYPE},
     multipart::{Form, Part},
     Client, Url,
 };
@@ -22,26 +34,28 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, RunEvent, Size, State,
     WebviewWindow, WindowEvent,
 };
-use tokio::{process::Command, sync::Mutex};
+use tokio::{
+    process::Command,
+    sync::{oneshot, Mutex},
+};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{client::IntoClientRequest, protocol::Message as WsMessage},
 };
 
-const CHAT_STREAM_EVENT: &str = "chat-stream-event";
 const DESKTOP_AVATAR_STREAM_EVENT: &str = "desktop-avatar-stream-event";
 const DESKTOP_AVATAR_STREAM_LIFECYCLE_EVENT: &str = "desktop-avatar-stream-lifecycle";
 const DESKTOP_AVATAR_RADAR_STREAM_EVENT: &str = "desktop-avatar-radar-stream-event";
-const DESKTOP_AVATAR_RADAR_STREAM_LIFECYCLE_EVENT: &str =
-    "desktop-avatar-radar-stream-lifecycle";
+const DESKTOP_AVATAR_RADAR_STREAM_LIFECYCLE_EVENT: &str = "desktop-avatar-radar-stream-lifecycle";
 const HITL_DECISION_STREAM_EVENT: &str = "hitl-decision-stream-event";
 const HITL_DECISION_STREAM_LIFECYCLE_EVENT: &str = "hitl-decision-stream-lifecycle";
 const TTS_STATE_EVENT: &str = "tts-state";
 const TRANSCRIPTION_STREAM_EVENT: &str = "transcription-stream-event";
 const TRANSCRIPTION_PROVIDER_CHANGED_EVENT: &str = "transcription-provider-changed";
+const MAIN_TRAY_ID: &str = "desktop-avatar-main-tray";
 const DEFAULT_PEEK_WIDTH: f64 = 235.0;
 const DEFAULT_PEEK_HEIGHT: f64 = 235.0;
 const MAX_PEEK_WIDTH: f64 = 360.0;
@@ -61,10 +75,14 @@ const TRANSCRIPTION_READ_TIMEOUT_SECS: u64 = 20;
 struct AppState {
     client: Client,
     config: Arc<AppConfig>,
-    desktop_avatar_streams: Arc<Mutex<HashMap<String, async_runtime::JoinHandle<()>>>>,
-    desktop_avatar_radar_stream: Arc<Mutex<Option<async_runtime::JoinHandle<()>>>>,
-    hitl_decision_stream: Arc<Mutex<Option<async_runtime::JoinHandle<()>>>>,
-    last_tts_text_by_request: Arc<Mutex<HashMap<String, String>>>,
+    agent_studio: Result<Arc<AgentStudioSessionBroker>, AgentStudioApiError>,
+    desktop_avatar_streams: Arc<Mutex<HashMap<String, OwnedStreamHandle>>>,
+    desktop_avatar_radar_stream: Arc<Mutex<Option<OwnedStreamHandle>>>,
+    hitl_decision_stream: Arc<Mutex<Option<OwnedStreamHandle>>>,
+    last_tts_text_by_request: Arc<Mutex<HashMap<String, u64>>>,
+    tts_generation: Arc<AtomicU64>,
+    tts_processes: Arc<Mutex<HashMap<String, TtsProcessHandle>>>,
+    shutdown_started: Arc<AtomicBool>,
     peek_position: Arc<Mutex<PeekPosition>>,
     current_window_mode: Arc<Mutex<WindowMode>>,
     last_peek_rect: Arc<Mutex<Option<WindowRect>>>,
@@ -75,6 +93,46 @@ struct AppState {
     peek_size: Arc<Mutex<WindowSize>>,
     transcription_provider: Arc<Mutex<TranscriptionProviderId>>,
     transcription_sessions: Arc<Mutex<HashMap<String, TranscriptionSession>>>,
+}
+
+struct TtsProcessHandle {
+    cancel: oneshot::Sender<()>,
+    stopped: oneshot::Receiver<()>,
+}
+
+struct OwnedStreamHandle {
+    owner_id: String,
+    context_id: String,
+    handle: async_runtime::JoinHandle<()>,
+}
+
+fn take_stream_if_owner(
+    slot: &mut Option<OwnedStreamHandle>,
+    owner_id: &str,
+) -> Option<OwnedStreamHandle> {
+    if slot
+        .as_ref()
+        .is_some_and(|owned| owned.owner_id == owner_id)
+    {
+        slot.take()
+    } else {
+        None
+    }
+}
+
+fn remove_stream_if_owner(
+    streams: &mut HashMap<String, OwnedStreamHandle>,
+    key: &str,
+    owner_id: &str,
+) -> Option<OwnedStreamHandle> {
+    if streams
+        .get(key)
+        .is_some_and(|owned| owned.owner_id == owner_id)
+    {
+        streams.remove(key)
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -135,16 +193,30 @@ fn transcription_provider_label(provider: TranscriptionProviderId) -> &'static s
 #[derive(Debug, Clone)]
 struct TranscriptionSession {
     session_id: String,
+    context_id: String,
+    local_epoch: u64,
     provider: TranscriptionProviderId,
     locale: Option<String>,
     mime_type: String,
     audio_bytes: Vec<u8>,
 }
 
+#[derive(Clone)]
+struct TenantExecutionGuard {
+    broker: Arc<AgentStudioSessionBroker>,
+    session: DesktopAvatarTenantSession,
+}
+
+impl TenantExecutionGuard {
+    async fn ensure_current(&self) -> Result<(), String> {
+        ensure_stream_current(&self.broker, &self.session).await
+    }
+}
+
 #[derive(Clone, Debug)]
 struct AppConfig {
     comm_officer_base_url: Option<String>,
-    comm_officer_token: Option<String>,
+    comm_officer_csrf_cookie_name: Option<String>,
     openai_api_key: Option<String>,
     openai_stt_model: String,
     transcription_provider_default: TranscriptionProviderId,
@@ -167,9 +239,6 @@ struct AppConfig {
     log_file_path: PathBuf,
     window_state_path: PathBuf,
     enable_tts: bool,
-    local_llm_base_url: String,
-    local_llm_model: String,
-    local_llm_api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -251,38 +320,9 @@ struct AssetPayload {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct LocalChatMessageInput {
-    role: String,
-    content: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct LocalChatRequest {
-    request_id: String,
-    #[serde(rename = "prompt")]
-    _prompt: String,
-    messages: Vec<LocalChatMessageInput>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct BusinessChatRequest {
-    request_id: String,
-    conversation_id: String,
-    utterance: String,
-    source: String,
-    locale: String,
-    route: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreateDesktopAvatarRequestInput {
     client_request_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    requested_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,38 +343,80 @@ struct CreateDesktopAvatarRequestInput {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum DesktopAvatarRequestStatus {
+    Received,
+    Routing,
+    Thinking,
+    FetchingData,
+    FormattingResponse,
+    TalkReady,
+    WidgetReady,
+    Completed,
+    NeedsClarification,
+    Failed,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum DesktopAvatarMode {
+    Simulation,
+    Execution,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "lowercase")]
+enum DesktopAvatarModality {
+    Chat,
+    Voice,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "lowercase")]
+enum DesktopAvatarResponseMode {
+    Talk,
+    Widget,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreateDesktopAvatarRequestResult {
     accepted: bool,
     avatar_request_id: String,
-    status: String,
+    status: DesktopAvatarRequestStatus,
     stream_url: String,
     poll_url: String,
     idempotent: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DesktopAvatarRequestDocument {
     #[serde(alias = "id")]
     avatar_request_id: String,
     client_request_id: String,
-    requested_by: Option<String>,
-    mode: Option<String>,
-    modality: Option<String>,
+    requested_by: String,
+    mode: DesktopAvatarMode,
+    modality: DesktopAvatarModality,
     locale: Option<String>,
     timezone: Option<String>,
-    utterance: Option<String>,
-    response_modes: Option<Vec<String>>,
-    status: String,
+    utterance: String,
+    response_modes: Vec<DesktopAvatarResponseMode>,
+    status: DesktopAvatarRequestStatus,
+    status_message: Option<String>,
+    target_studio_agent_id: Option<String>,
+    runtime_session_id: Option<String>,
+    run_id: Option<String>,
+    iws_query_request: Option<Value>,
     response: Option<Value>,
     error: Option<String>,
-    created_at: Option<String>,
-    updated_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+    completed_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct HitlDecisionInput {
     run_id: String,
     proposal_id: String,
@@ -343,15 +425,30 @@ struct HitlDecisionInput {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct HitlRequestMoreInfoInput {
     run_id: String,
     message: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AuthCredentialsInput {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AuthCompleteInput {
+    company_id: String,
+    branch_id: String,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct DesktopAvatarStreamLifecycleEvent {
+    context_id: String,
     avatar_request_id: String,
     phase: String,
     reason: Option<String>,
@@ -360,6 +457,7 @@ struct DesktopAvatarStreamLifecycleEvent {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct HitlDecisionStreamLifecycleEvent {
+    context_id: String,
     phase: String,
     reason: Option<String>,
 }
@@ -367,12 +465,13 @@ struct HitlDecisionStreamLifecycleEvent {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct DesktopAvatarRadarStreamLifecycleEvent {
+    context_id: String,
     phase: String,
     reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SpeechTranscriptionRequest {
     audio_base64: String,
     mime_type: String,
@@ -380,14 +479,14 @@ struct SpeechTranscriptionRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TranscriptionSessionStartRequest {
     session_id: String,
     locale: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TranscriptionSessionAppendAudioRequest {
     session_id: String,
     audio_base64: String,
@@ -395,13 +494,13 @@ struct TranscriptionSessionAppendAudioRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TranscriptionSessionCommitTurnRequest {
     session_id: String,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TranscriptionSessionStopRequest {
     session_id: String,
 }
@@ -455,21 +554,13 @@ struct TranscriptionProviderChangedEvent {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct TtsStateEvent {
+    context_id: String,
     request_id: String,
     speaking: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fallback: Option<bool>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct StreamEnvelope<T: Serialize + Clone> {
-    request_id: String,
-    source: &'static str,
-    kind: &'static str,
-    payload: T,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -573,7 +664,8 @@ fn tts_provider_name(provider: TtsProviderMode) -> &'static str {
 }
 
 fn ui_text(key: &str) -> String {
-    let Ok(value) = serde_json::from_str::<Value>(include_str!("../../src/locales/de/ui.json")) else {
+    let Ok(value) = serde_json::from_str::<Value>(include_str!("../../src/locales/de/ui.json"))
+    else {
         return key.to_string();
     };
     let mut current = &value;
@@ -624,18 +716,6 @@ fn local_tts_endpoint_candidates(raw_endpoint: &str) -> Vec<String> {
     candidates
 }
 
-fn top_level_json_keys(value: &Value) -> String {
-    value
-        .as_object()
-        .map(|object| {
-            let mut keys = object.keys().cloned().collect::<Vec<String>>();
-            keys.sort_unstable();
-            keys.join(",")
-        })
-        .filter(|keys| !keys.is_empty())
-        .unwrap_or_else(|| "<non-object>".to_string())
-}
-
 fn truncate_for_log(value: &str, max_len: usize) -> String {
     if value.chars().count() <= max_len {
         return value.to_string();
@@ -645,8 +725,8 @@ fn truncate_for_log(value: &str, max_len: usize) -> String {
 }
 
 fn should_skip_duplicate_tts_entry(
-    cache: &mut HashMap<String, String>,
-    request_id: &str,
+    cache: &mut HashMap<String, u64>,
+    scoped_request_id: &str,
     normalized_text: &str,
 ) -> bool {
     if normalized_text.trim().is_empty() {
@@ -658,14 +738,14 @@ fn should_skip_duplicate_tts_entry(
         cache.clear();
     }
 
-    if cache
-        .get(request_id)
-        .is_some_and(|previous| previous == normalized_text)
-    {
+    let mut hasher = DefaultHasher::new();
+    normalized_text.hash(&mut hasher);
+    let fingerprint = hasher.finish();
+    if cache.get(scoped_request_id) == Some(&fingerprint) {
         return true;
     }
 
-    cache.insert(request_id.to_string(), normalized_text.to_string());
+    cache.insert(scoped_request_id.to_string(), fingerprint);
     false
 }
 
@@ -707,11 +787,17 @@ impl AppConfig {
             .or(default_manifest
                 .exists()
                 .then_some(default_manifest.clone()));
-        let log_file_path = workspace_root.join("tmp").join("desktop-avatar.log");
-        let window_state_path = workspace_root.join("tmp").join("desktop-avatar-window-state.json");
+        let runtime_data_dir =
+            directories::ProjectDirs::from("com", "Polygonrausch", "SYNTRA Assistant")
+                .map(|directories| directories.data_local_dir().to_path_buf())
+                .unwrap_or_else(|| env::temp_dir().join("com.polygonrausch.desktop-avatar"));
+        let _ = fs::create_dir_all(&runtime_data_dir);
+        #[cfg(unix)]
+        let _ = fs::set_permissions(&runtime_data_dir, fs::Permissions::from_mode(0o700));
+        let log_file_path = runtime_data_dir.join("desktop-avatar.log");
+        let window_state_path = runtime_data_dir.join("desktop-avatar-window-state.json");
 
-        let _ = fs::create_dir_all(log_file_path.parent().unwrap_or_else(|| Path::new(".")));
-        let _ = fs::write(&log_file_path, "");
+        reset_log_file(&log_file_path);
 
         let tts_provider = env::var("TTS_PROVIDER")
             .map(|value| TtsProviderMode::parse(&value))
@@ -787,7 +873,10 @@ impl AppConfig {
 
         Self {
             comm_officer_base_url: env::var("COMM_OFFICER_BASE_URL").ok(),
-            comm_officer_token: env::var("COMM_OFFICER_TOKEN").ok(),
+            comm_officer_csrf_cookie_name: env::var("COMM_OFFICER_CSRF_COOKIE_NAME")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             openai_api_key: env::var("OPENAI_API_KEY").ok(),
             openai_stt_model: env::var("OPENAI_STT_MODEL")
                 .unwrap_or_else(|_| "gpt-4o-mini-transcribe".to_string()),
@@ -817,11 +906,6 @@ impl AppConfig {
             enable_tts: env::var("ENABLE_TTS")
                 .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
                 .unwrap_or(true),
-            local_llm_base_url: env::var("LOCAL_LLM_BASE_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:1234/v1".to_string()),
-            local_llm_model: env::var("LOCAL_LLM_MODEL")
-                .unwrap_or_else(|_| "qwen/qwen3.5-35b-a3b".to_string()),
-            local_llm_api_key: env::var("LOCAL_LLM_API_KEY").ok(),
         }
     }
 
@@ -964,15 +1048,7 @@ fn decode_json_tts_audio(
 async fn load_bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapState, String> {
     append_log(
         &state.config.log_file_path,
-        format!(
-            "bootstrap: avatar manifest path = {}",
-            state
-                .config
-                .avatar_asset_manifest
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string())
-        ),
+        "bootstrap: avatar manifest resolution started",
     );
 
     let avatar_manifest = match &state.config.avatar_asset_manifest {
@@ -986,21 +1062,18 @@ async fn load_bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapSta
             append_log(
                 &state.config.log_file_path,
                 format!(
-                    "bootstrap: resolved model = {} vrm = {} idle clips = {}",
-                    manifest
-                        .model_url
-                        .as_deref()
-                        .unwrap_or("<none>"),
-                    manifest.vrm_url.as_deref().unwrap_or("<none>"),
-                    manifest.idle_animation_urls.join(", ")
+                    "bootstrap: avatar manifest loaded model={} vrm={} idleClipCount={}",
+                    manifest.model_url.is_some(),
+                    manifest.vrm_url.is_some(),
+                    manifest.idle_animation_urls.len()
                 ),
             );
             Some(manifest)
         }
-        Some(path) => {
+        Some(_path) => {
             append_log(
                 &state.config.log_file_path,
-                format!("bootstrap: manifest missing on disk: {}", path.display()),
+                "bootstrap: avatar manifest missing",
             );
             None
         }
@@ -1037,10 +1110,6 @@ async fn load_bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapSta
 
 #[tauri::command]
 async fn load_avatar_asset(path: String) -> Result<AssetPayload, String> {
-    append_log(
-        &workspace_root().join("tmp").join("desktop-avatar.log"),
-        format!("asset: loading {path}"),
-    );
     if is_remote_url(&path) {
         return load_remote_avatar_asset(path).await;
     }
@@ -1058,9 +1127,17 @@ async fn frontend_log(
     level: String,
     message: String,
 ) -> Result<(), String> {
+    drop(message);
+    let safe_level = match level.trim().to_ascii_lowercase().as_str() {
+        "debug" => "debug",
+        "info" => "info",
+        "warn" => "warn",
+        "error" => "error",
+        _ => "unknown",
+    };
     append_log(
         &state.config.log_file_path,
-        format!("frontend:{level}: {message}"),
+        format!("frontend:{safe_level}: redacted-event"),
     );
     Ok(())
 }
@@ -1263,14 +1340,19 @@ fn monitor_logical_size(window: &WebviewWindow) -> Result<(f64, f64), String> {
 }
 
 fn normalize_peek_size(width: f64, height: f64) -> WindowSize {
-    let diameter = width.min(height).clamp(150.0, MAX_PEEK_WIDTH.min(MAX_PEEK_HEIGHT));
+    let diameter = width
+        .min(height)
+        .clamp(150.0, MAX_PEEK_WIDTH.min(MAX_PEEK_HEIGHT));
     WindowSize {
         width: diameter,
         height: diameter,
     }
 }
 
-fn clamp_window_rect_to_monitor(window: &WebviewWindow, rect: WindowRect) -> Result<WindowRect, String> {
+fn clamp_window_rect_to_monitor(
+    window: &WebviewWindow,
+    rect: WindowRect,
+) -> Result<WindowRect, String> {
     let (screen_width, screen_height) = monitor_logical_size(window)?;
     Ok(WindowRect {
         x: rect.x.clamp(0.0, (screen_width - rect.width).max(0.0)),
@@ -1491,14 +1573,19 @@ async fn window_set_peek_mode(
             WindowMode::Peek => {
                 peek_rect_for_origin(&window, current.x, current.y, requested_peek_size)?
             }
-            WindowMode::Expanded => {
-                expanded_rect_for_origin(&window, current.x, current.y, target.width, target.height)?
-            }
+            WindowMode::Expanded => expanded_rect_for_origin(
+                &window,
+                current.x,
+                current.y,
+                target.width,
+                target.height,
+            )?,
         };
         if rect_origin_delta(stage_target, target) <= 1.0 {
             animate_window_rect(&window, current, target, TRANSITION_DURATION_MS).await
         } else {
-            animate_window_rect(&window, current, stage_target, TRANSITION_STAGE_DURATION_MS).await?;
+            animate_window_rect(&window, current, stage_target, TRANSITION_STAGE_DURATION_MS)
+                .await?;
             apply_window_rect(&window, target)
         }
     } else if animate {
@@ -1536,77 +1623,190 @@ async fn window_set_peek_mode(
     Ok(())
 }
 
-fn comm_officer_credentials(config: &AppConfig) -> Result<(String, String), String> {
-    let base_url = config
-        .comm_officer_base_url
-        .clone()
-        .ok_or_else(|| "COMM_OFFICER_BASE_URL is missing.".to_string())?;
-    let token = config
-        .comm_officer_token
-        .clone()
-        .ok_or_else(|| "COMM_OFFICER_TOKEN is missing.".to_string())?;
-
-    Ok((base_url, token))
+fn agent_studio_broker(
+    state: &AppState,
+) -> Result<Arc<AgentStudioSessionBroker>, AgentStudioApiError> {
+    state.agent_studio.clone()
 }
 
-fn absolute_comm_officer_url(base_url: &str, path_or_url: &str) -> String {
-    if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
-        return path_or_url.to_string();
+fn update_tray_tenant(app: &AppHandle, session: Option<&DesktopAvatarTenantSession>) {
+    let tooltip = session
+        .map(|value| {
+            let tenant = &value.public_session.selected_tenant;
+            format!(
+                "SYNTRA Assistant — {} · {}",
+                tenant.company_name, tenant.branch_name
+            )
+        })
+        .unwrap_or_else(|| "SYNTRA Assistant — Anmeldung erforderlich".to_string());
+    if let Some(tray) = app.tray_by_id(MAIN_TRAY_ID) {
+        let _ = tray.set_tooltip(Some(tooltip));
     }
-
-    format!(
-        "{}/{}",
-        base_url.trim_end_matches('/'),
-        path_or_url.trim_start_matches('/')
-    )
 }
 
-fn with_auth(request: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
-    request.header(AUTHORIZATION, format!("Bearer {token}"))
+async fn reset_agent_studio_activity(state: &AppState) {
+    state.tts_generation.fetch_add(1, Ordering::SeqCst);
+    let request_handles = {
+        let mut streams = state.desktop_avatar_streams.lock().await;
+        streams
+            .drain()
+            .map(|(_, owned)| owned.handle)
+            .collect::<Vec<_>>()
+    };
+    for handle in request_handles {
+        handle.abort();
+    }
+    if let Some(owned) = state.desktop_avatar_radar_stream.lock().await.take() {
+        owned.handle.abort();
+    }
+    if let Some(owned) = state.hitl_decision_stream.lock().await.take() {
+        owned.handle.abort();
+    }
+    state.last_tts_text_by_request.lock().await.clear();
+    state.transcription_sessions.lock().await.clear();
+    cancel_tts_processes(state).await;
+    cleanup_tts_temp_files();
 }
 
-fn normalize_desktop_avatar_result_urls(
-    base_url: &str,
-    result: &mut CreateDesktopAvatarRequestResult,
-) {
-    result.stream_url = absolute_comm_officer_url(base_url, &result.stream_url);
-    result.poll_url = absolute_comm_officer_url(base_url, &result.poll_url);
+async fn cancel_tts_processes(state: &AppState) {
+    let handles = {
+        let mut processes = state.tts_processes.lock().await;
+        processes
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect::<Vec<_>>()
+    };
+    cancel_tts_process_handles(handles).await;
+}
+
+async fn cancel_tts_process_handles(handles: Vec<TtsProcessHandle>) {
+    for handle in handles {
+        let _ = handle.cancel.send(());
+        let _ = handle.stopped.await;
+    }
+}
+
+fn cleanup_tts_temp_files() {
+    let Ok(entries) = fs::read_dir(env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("desktop-avatar-tts-"))
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+#[tauri::command]
+async fn auth_preauthenticate(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: AuthCredentialsInput,
+) -> Result<AuthPreauthenticateResult, AgentStudioApiError> {
+    let broker = agent_studio_broker(state.inner())?;
+    broker
+        .preauthenticate_with_invalidation(&input.username, &input.password, || async {
+            reset_agent_studio_activity(state.inner()).await;
+            update_tray_tenant(&app, None);
+        })
+        .await
+}
+
+#[tauri::command]
+async fn auth_companies(
+    state: State<'_, AppState>,
+) -> Result<Vec<AuthCompanySummary>, AgentStudioApiError> {
+    agent_studio_broker(state.inner())?.companies().await
+}
+
+#[tauri::command]
+async fn auth_branches(
+    state: State<'_, AppState>,
+    company_id: String,
+) -> Result<Vec<AuthBranchSummary>, AgentStudioApiError> {
+    agent_studio_broker(state.inner())?
+        .branches(&company_id)
+        .await
+}
+
+#[tauri::command]
+async fn auth_complete(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: AuthCompleteInput,
+) -> Result<DesktopAvatarTenantSession, AgentStudioApiError> {
+    reset_agent_studio_activity(state.inner()).await;
+    let session = agent_studio_broker(state.inner())?
+        .complete(&input.company_id, &input.branch_id)
+        .await?;
+    update_tray_tenant(&app, Some(&session));
+    Ok(session)
+}
+
+#[tauri::command]
+async fn auth_session_get(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<DesktopAvatarTenantSession, AgentStudioApiError> {
+    let broker = agent_studio_broker(state.inner())?;
+    match broker
+        .session_with_invalidation(|| async {
+            reset_agent_studio_activity(state.inner()).await;
+            update_tray_tenant(&app, None);
+        })
+        .await
+    {
+        Ok(session) => {
+            update_tray_tenant(&app, Some(&session));
+            Ok(session)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[tauri::command]
+async fn auth_logout(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), AgentStudioApiError> {
+    let broker = agent_studio_broker(state.inner())?;
+    broker
+        .logout_with_invalidation(|| async {
+            reset_agent_studio_activity(state.inner()).await;
+            update_tray_tenant(&app, None);
+        })
+        .await
+        .map(|_| ())
 }
 
 #[tauri::command]
 async fn desktop_avatar_request_create(
     state: State<'_, AppState>,
     request: CreateDesktopAvatarRequestInput,
+    expected_context_id: String,
 ) -> Result<CreateDesktopAvatarRequestResult, String> {
-    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
-    let url = absolute_comm_officer_url(&base_url, "/v1/desktop-avatar/requests");
-
-    let response = with_auth(
-        state
-            .client
-            .post(url)
-            .header(CONTENT_TYPE, "application/json")
-            .json(&request),
-        &token,
-    )
-    .send()
-    .await
-    .map_err(|error| error.to_string())?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("SYNTRA Assistant create returned {status}: {text}"));
-    }
-
-    let mut result = response
-        .json::<CreateDesktopAvatarRequestResult>()
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(&expected_context_id)
         .await
         .map_err(|error| error.to_string())?;
-    normalize_desktop_avatar_result_urls(&base_url, &mut result);
+    let session = execution.session;
+    let result = execution
+        .api
+        .post_json::<_, CreateDesktopAvatarRequestResult>("/v1/desktop-avatar/requests", &request)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !broker
+        .is_current(&session.context_id, session.local_epoch)
+        .await
+    {
+        return Err("DESKTOP_SESSION_CHANGED".to_string());
+    }
     Ok(result)
 }
 
@@ -1615,126 +1815,166 @@ async fn desktop_avatar_request_get(
     state: State<'_, AppState>,
     avatar_request_id: Option<String>,
     poll_url: Option<String>,
+    expected_context_id: String,
 ) -> Result<DesktopAvatarRequestDocument, String> {
-    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = execution.session;
     let url = match (avatar_request_id, poll_url) {
-        (_, Some(url)) => absolute_comm_officer_url(&base_url, &url),
-        (Some(request_id), None) => absolute_comm_officer_url(
-            &base_url,
-            &format!("/v1/desktop-avatar/requests/{request_id}"),
-        ),
+        (_, Some(url)) => url,
+        (Some(request_id), None) => format!("/v1/desktop-avatar/requests/{request_id}"),
         (None, None) => {
             return Err(
                 "desktop_avatar_request_get requires avatarRequestId or pollUrl.".to_string(),
             )
         }
     };
-
-    let response = with_auth(state.client.get(url), &token)
-        .send()
+    let document = execution
+        .api
+        .get_json::<DesktopAvatarRequestDocument>(&url)
         .await
         .map_err(|error| error.to_string())?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("SYNTRA Assistant poll returned {status}: {text}"));
-    }
-
-    response
-        .json::<DesktopAvatarRequestDocument>()
+    if !broker
+        .is_current(&session.context_id, session.local_epoch)
         .await
-        .map_err(|error| error.to_string())
+    {
+        return Err("DESKTOP_SESSION_CHANGED".to_string());
+    }
+    Ok(document)
 }
 
 #[tauri::command]
-async fn desktop_avatar_radar_get(state: State<'_, AppState>) -> Result<Value, String> {
-    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
-    let url = absolute_comm_officer_url(&base_url, "/v1/desktop-avatar/radar");
-
-    let response = with_auth(state.client.get(url), &token)
-        .send()
+async fn desktop_avatar_radar_get(
+    state: State<'_, AppState>,
+    expected_context_id: String,
+) -> Result<Value, String> {
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(&expected_context_id)
         .await
         .map_err(|error| error.to_string())?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("Operator-Radar returned {status}: {text}"));
-    }
-
-    response
-        .json::<Value>()
+    let session = execution.session;
+    let radar = execution
+        .api
+        .get_json::<Value>("/v1/desktop-avatar/radar")
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if !broker
+        .is_current(&session.context_id, session.local_epoch)
+        .await
+    {
+        return Err("DESKTOP_SESSION_CHANGED".to_string());
+    }
+    Ok(radar)
 }
 
 #[tauri::command]
 async fn desktop_avatar_radar_stream_start(
     window: WebviewWindow,
     state: State<'_, AppState>,
+    expected_context_id: String,
 ) -> Result<(), String> {
-    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
-    let url = absolute_comm_officer_url(&base_url, "/v1/desktop-avatar/radar/stream");
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = execution.session;
+    let api = execution.api;
+    let slot = state.desktop_avatar_radar_stream.clone();
+    let owner_id = uuid::Uuid::new_v4().to_string();
+    let task_owner_id = owner_id.clone();
+    let task_context_id = session.context_id.clone();
+    let task_broker = broker.clone();
+    broker
+        .run_if_current(&expected_context_id, || async move {
+            if let Some(existing) = slot.lock().await.take() {
+                existing.handle.abort();
+            }
+            let (registered_tx, registered_rx) = oneshot::channel();
+            let task_slot = slot.clone();
+            let handle = async_runtime::spawn(async move {
+                let _ = registered_rx.await;
+                let response = api.open_stream("/v1/desktop-avatar/radar/stream").await;
 
-    if let Some(existing) = state.desktop_avatar_radar_stream.lock().await.take() {
-        existing.abort();
-    }
-
-    let client = state.client.clone();
-    let stream_slot = state.desktop_avatar_radar_stream.clone();
-    let handle = async_runtime::spawn(async move {
-        let response = with_auth(
-            client
-                .get(url)
-                .header(ACCEPT, "text/event-stream")
-                .header(CONTENT_TYPE, "application/json"),
-            &token,
-        )
-        .send()
-        .await;
-
-        match response {
-            Ok(response) => {
-                if let Err(error) = process_desktop_avatar_radar_stream(window.clone(), response).await
-                {
-                    let _ =
-                        emit_desktop_avatar_radar_stream_lifecycle(&window, "error", Some(error));
-                } else {
-                    let _ = emit_desktop_avatar_radar_stream_lifecycle(&window, "closed", None);
+                match response {
+                    Ok(response) => {
+                        if let Err(error) = process_desktop_avatar_radar_stream(
+                            window.clone(),
+                            response,
+                            task_broker.clone(),
+                            session.clone(),
+                        )
+                        .await
+                        {
+                            let _ = emit_desktop_avatar_radar_stream_lifecycle(
+                                &window,
+                                &session.context_id,
+                                "error",
+                                Some(error),
+                            );
+                        } else {
+                            let _ = emit_desktop_avatar_radar_stream_lifecycle(
+                                &window,
+                                &session.context_id,
+                                "closed",
+                                None,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let _ = emit_desktop_avatar_radar_stream_lifecycle(
+                            &window,
+                            &session.context_id,
+                            "error",
+                            Some(error.to_string()),
+                        );
+                    }
                 }
-            }
-            Err(error) => {
-                let _ = emit_desktop_avatar_radar_stream_lifecycle(
-                    &window,
-                    "error",
-                    Some(error.to_string()),
-                );
-            }
-        }
 
-        stream_slot.lock().await.take();
-    });
-
-    *state.desktop_avatar_radar_stream.lock().await = Some(handle);
-    Ok(())
+                let mut current = task_slot.lock().await;
+                take_stream_if_owner(&mut current, &task_owner_id);
+            });
+            *slot.lock().await = Some(OwnedStreamHandle {
+                owner_id,
+                context_id: task_context_id,
+                handle,
+            });
+            let _ = registered_tx.send(());
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn desktop_avatar_radar_stream_stop(
     window: WebviewWindow,
     state: State<'_, AppState>,
+    expected_context_id: String,
 ) -> Result<(), String> {
-    if let Some(handle) = state.desktop_avatar_radar_stream.lock().await.take() {
-        handle.abort();
-    }
-    emit_desktop_avatar_radar_stream_lifecycle(&window, "aborted", None)
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let slot = state.desktop_avatar_radar_stream.clone();
+    let context_id = expected_context_id.clone();
+    broker
+        .run_if_current(&expected_context_id, || async move {
+            let mut current = slot.lock().await;
+            if current
+                .as_ref()
+                .is_some_and(|owned| owned.context_id == context_id)
+            {
+                if let Some(owned) = current.take() {
+                    owned.handle.abort();
+                }
+            }
+            emit_desktop_avatar_radar_stream_lifecycle(&window, &context_id, "aborted", None)
+                .map_err(|error| AgentStudioApiError::local("STREAM_EVENT_FAILED", error))
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1743,8 +1983,14 @@ async fn desktop_avatar_request_stream(
     state: State<'_, AppState>,
     avatar_request_id: Option<String>,
     stream_url: Option<String>,
+    expected_context_id: String,
 ) -> Result<(), String> {
-    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = execution.session;
     let request_id = avatar_request_id
         .or_else(|| {
             stream_url.as_ref().and_then(|value| {
@@ -1760,80 +2006,83 @@ async fn desktop_avatar_request_stream(
                 .to_string()
         })?;
     let url = match stream_url {
-        Some(url) => absolute_comm_officer_url(&base_url, &url),
-        None => absolute_comm_officer_url(
-            &base_url,
-            &format!("/v1/desktop-avatar/requests/{request_id}/stream"),
-        ),
+        Some(url) => url,
+        None => format!("/v1/desktop-avatar/requests/{request_id}/stream"),
     };
 
-    if let Some(existing) = state
-        .desktop_avatar_streams
-        .lock()
-        .await
-        .remove(request_id.as_str())
-    {
-        existing.abort();
-    }
-
-    let client = state.client.clone();
+    let api = execution.api;
     let streams = state.desktop_avatar_streams.clone();
+    let owner_id = uuid::Uuid::new_v4().to_string();
+    let task_owner_id = owner_id.clone();
+    let task_context_id = session.context_id.clone();
     let request_id_for_task = request_id.clone();
-    let handle = async_runtime::spawn(async move {
-        let response = with_auth(
-            client
-                .get(url)
-                .header(ACCEPT, "text/event-stream")
-                .header(CONTENT_TYPE, "application/json"),
-            &token,
-        )
-        .send()
-        .await;
+    let task_broker = broker.clone();
+    broker
+        .run_if_current(&expected_context_id, || async move {
+            if let Some(existing) = streams.lock().await.remove(request_id.as_str()) {
+                existing.handle.abort();
+            }
+            let (registered_tx, registered_rx) = oneshot::channel();
+            let task_streams = streams.clone();
+            let handle = async_runtime::spawn(async move {
+                let _ = registered_rx.await;
+                let response = api.open_stream(&url).await;
 
-        match response {
-            Ok(response) => {
-                if let Err(error) = process_desktop_avatar_stream(
-                    window.clone(),
-                    request_id_for_task.clone(),
-                    response,
-                )
-                .await
-                {
-                    let _ = emit_desktop_avatar_stream_lifecycle(
-                        &window,
-                        request_id_for_task.as_str(),
-                        "error",
-                        Some(error),
-                    );
-                } else {
-                    let _ = emit_desktop_avatar_stream_lifecycle(
-                        &window,
-                        request_id_for_task.as_str(),
-                        "closed",
-                        None,
-                    );
+                match response {
+                    Ok(response) => {
+                        if let Err(error) = process_desktop_avatar_stream(
+                            window.clone(),
+                            request_id_for_task.clone(),
+                            response,
+                            task_broker.clone(),
+                            session.clone(),
+                        )
+                        .await
+                        {
+                            let _ = emit_desktop_avatar_stream_lifecycle(
+                                &window,
+                                &session.context_id,
+                                request_id_for_task.as_str(),
+                                "error",
+                                Some(error),
+                            );
+                        } else {
+                            let _ = emit_desktop_avatar_stream_lifecycle(
+                                &window,
+                                &session.context_id,
+                                request_id_for_task.as_str(),
+                                "closed",
+                                None,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let _ = emit_desktop_avatar_stream_lifecycle(
+                            &window,
+                            &session.context_id,
+                            request_id_for_task.as_str(),
+                            "error",
+                            Some(error.to_string()),
+                        );
+                    }
                 }
-            }
-            Err(error) => {
-                let _ = emit_desktop_avatar_stream_lifecycle(
-                    &window,
-                    request_id_for_task.as_str(),
-                    "error",
-                    Some(error.to_string()),
-                );
-            }
-        }
 
-        streams.lock().await.remove(request_id_for_task.as_str());
-    });
-
-    state
-        .desktop_avatar_streams
-        .lock()
+                let mut current = task_streams.lock().await;
+                remove_stream_if_owner(&mut current, request_id_for_task.as_str(), &task_owner_id);
+            });
+            streams.lock().await.insert(
+                request_id,
+                OwnedStreamHandle {
+                    owner_id,
+                    context_id: task_context_id,
+                    handle,
+                },
+            );
+            let _ = registered_tx.send(());
+            Ok(())
+        })
         .await
-        .insert(request_id, handle);
-
-    Ok(())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1841,78 +2090,139 @@ async fn desktop_avatar_request_stream_stop(
     window: WebviewWindow,
     state: State<'_, AppState>,
     avatar_request_id: String,
+    expected_context_id: String,
 ) -> Result<(), String> {
-    if let Some(handle) = state
-        .desktop_avatar_streams
-        .lock()
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let streams = state.desktop_avatar_streams.clone();
+    let context_id = expected_context_id.clone();
+    broker
+        .run_if_current(&expected_context_id, || async move {
+            let mut current = streams.lock().await;
+            if current
+                .get(avatar_request_id.as_str())
+                .is_some_and(|owned| owned.context_id == context_id)
+            {
+                if let Some(owned) = current.remove(avatar_request_id.as_str()) {
+                    owned.handle.abort();
+                }
+            }
+            emit_desktop_avatar_stream_lifecycle(
+                &window,
+                &context_id,
+                avatar_request_id.as_str(),
+                "aborted",
+                None,
+            )
+            .map_err(|error| AgentStudioApiError::local("STREAM_EVENT_FAILED", error))
+        })
         .await
-        .remove(avatar_request_id.as_str())
-    {
-        handle.abort();
-    }
-
-    emit_desktop_avatar_stream_lifecycle(&window, avatar_request_id.as_str(), "aborted", None)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn hitl_decision_stream_start(
     window: WebviewWindow,
     state: State<'_, AppState>,
+    expected_context_id: String,
 ) -> Result<(), String> {
-    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
-    let url = absolute_comm_officer_url(&base_url, "/v1/hitl/decision-events/stream");
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = execution.session;
+    let api = execution.api;
+    let slot = state.hitl_decision_stream.clone();
+    let owner_id = uuid::Uuid::new_v4().to_string();
+    let task_owner_id = owner_id.clone();
+    let task_context_id = session.context_id.clone();
+    let task_broker = broker.clone();
+    broker
+        .run_if_current(&expected_context_id, || async move {
+            if let Some(existing) = slot.lock().await.take() {
+                existing.handle.abort();
+            }
+            let (registered_tx, registered_rx) = oneshot::channel();
+            let task_slot = slot.clone();
+            let handle = async_runtime::spawn(async move {
+                let _ = registered_rx.await;
+                let response = api.open_stream("/v1/hitl/decision-events/stream").await;
 
-    if let Some(existing) = state.hitl_decision_stream.lock().await.take() {
-        existing.abort();
-    }
-
-    let client = state.client.clone();
-    let stream_slot = state.hitl_decision_stream.clone();
-    let handle = async_runtime::spawn(async move {
-        let response = with_auth(
-            client
-                .get(url)
-                .header(ACCEPT, "text/event-stream")
-                .header(CONTENT_TYPE, "application/json"),
-            &token,
-        )
-        .send()
-        .await;
-
-        match response {
-            Ok(response) => {
-                if let Err(error) = process_hitl_decision_stream(window.clone(), response).await {
-                    let _ =
-                        emit_hitl_decision_stream_lifecycle(&window, "error", Some(error));
-                } else {
-                    let _ = emit_hitl_decision_stream_lifecycle(&window, "closed", None);
+                match response {
+                    Ok(response) => {
+                        if let Err(error) = process_hitl_decision_stream(
+                            window.clone(),
+                            response,
+                            task_broker.clone(),
+                            session.clone(),
+                        )
+                        .await
+                        {
+                            let _ = emit_hitl_decision_stream_lifecycle(
+                                &window,
+                                &session.context_id,
+                                "error",
+                                Some(error),
+                            );
+                        } else {
+                            let _ = emit_hitl_decision_stream_lifecycle(
+                                &window,
+                                &session.context_id,
+                                "closed",
+                                None,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let _ = emit_hitl_decision_stream_lifecycle(
+                            &window,
+                            &session.context_id,
+                            "error",
+                            Some(error.to_string()),
+                        );
+                    }
                 }
-            }
-            Err(error) => {
-                let _ = emit_hitl_decision_stream_lifecycle(
-                    &window,
-                    "error",
-                    Some(error.to_string()),
-                );
-            }
-        }
 
-        stream_slot.lock().await.take();
-    });
-
-    *state.hitl_decision_stream.lock().await = Some(handle);
-    Ok(())
+                let mut current = task_slot.lock().await;
+                take_stream_if_owner(&mut current, &task_owner_id);
+            });
+            *slot.lock().await = Some(OwnedStreamHandle {
+                owner_id,
+                context_id: task_context_id,
+                handle,
+            });
+            let _ = registered_tx.send(());
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn hitl_decision_stream_stop(
     window: WebviewWindow,
     state: State<'_, AppState>,
+    expected_context_id: String,
 ) -> Result<(), String> {
-    if let Some(handle) = state.hitl_decision_stream.lock().await.take() {
-        handle.abort();
-    }
-    emit_hitl_decision_stream_lifecycle(&window, "aborted", None)
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let slot = state.hitl_decision_stream.clone();
+    let context_id = expected_context_id.clone();
+    broker
+        .run_if_current(&expected_context_id, || async move {
+            let mut current = slot.lock().await;
+            if current
+                .as_ref()
+                .is_some_and(|owned| owned.context_id == context_id)
+            {
+                if let Some(owned) = current.take() {
+                    owned.handle.abort();
+                }
+            }
+            emit_hitl_decision_stream_lifecycle(&window, &context_id, "aborted", None)
+                .map_err(|error| AgentStudioApiError::local("STREAM_EVENT_FAILED", error))
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 fn hitl_idempotency_key(prefix: &str, run_id: &str, proposal_id: Option<&str>) -> String {
@@ -1930,47 +2240,37 @@ async fn post_hitl_decision(
     state: State<'_, AppState>,
     input: HitlDecisionInput,
     approved: bool,
+    expected_context_id: &str,
 ) -> Result<(), String> {
-    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
-    let url = absolute_comm_officer_url(
-        &base_url,
-        &format!(
-            "/v1/runs/{}/proposals/{}/decision",
-            input.run_id, input.proposal_id
-        ),
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = execution.session;
+    let url = format!(
+        "/v1/runs/{}/proposals/{}/decision",
+        input.run_id, input.proposal_id
     );
     let body = json!({
         "approved": approved,
-        "requestedBy": "desktop-avatar",
         "decisionReason": input.decision_reason,
     });
-    let response = with_auth(
-        state
-            .client
-            .post(url)
-            .header(CONTENT_TYPE, "application/json")
-            .header(
-                "x-idempotency-key",
-                hitl_idempotency_key(
-                    if approved { "approve" } else { "reject" },
-                    input.run_id.as_str(),
-                    Some(input.proposal_id.as_str()),
-                ),
-            )
-            .json(&body),
-        &token,
-    )
-    .send()
-    .await
-    .map_err(|error| error.to_string())?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("HITL decision returned {status}: {text}"));
+    let idempotency_key = hitl_idempotency_key(
+        if approved { "approve" } else { "reject" },
+        input.run_id.as_str(),
+        Some(input.proposal_id.as_str()),
+    );
+    let _: Value = execution
+        .api
+        .post_json_with_idempotency(&url, &body, &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !broker
+        .is_current(&session.context_id, session.local_epoch)
+        .await
+    {
+        return Err("DESKTOP_SESSION_CHANGED".to_string());
     }
     Ok(())
 }
@@ -1979,188 +2279,49 @@ async fn post_hitl_decision(
 async fn hitl_decision_approve(
     state: State<'_, AppState>,
     input: HitlDecisionInput,
+    expected_context_id: String,
 ) -> Result<(), String> {
-    post_hitl_decision(state, input, true).await
+    post_hitl_decision(state, input, true, &expected_context_id).await
 }
 
 #[tauri::command]
 async fn hitl_decision_reject(
     state: State<'_, AppState>,
     input: HitlDecisionInput,
+    expected_context_id: String,
 ) -> Result<(), String> {
-    post_hitl_decision(state, input, false).await
+    post_hitl_decision(state, input, false, &expected_context_id).await
 }
 
 #[tauri::command]
 async fn hitl_request_more_info(
     state: State<'_, AppState>,
     input: HitlRequestMoreInfoInput,
+    expected_context_id: String,
 ) -> Result<(), String> {
-    let (base_url, token) = comm_officer_credentials(state.config.as_ref())?;
-    let url = absolute_comm_officer_url(
-        &base_url,
-        &format!("/v1/runs/{}/request-more-info", input.run_id),
-    );
-    let response = with_auth(
-        state
-            .client
-            .post(url)
-            .header(CONTENT_TYPE, "application/json")
-            .header(
-                "x-idempotency-key",
-                hitl_idempotency_key("more-info", input.run_id.as_str(), None),
-            )
-            .json(&json!({
-                "message": input.message,
-                "requestedBy": "desktop-avatar",
-                "autoProcess": true,
-            })),
-        &token,
-    )
-    .send()
-    .await
-    .map_err(|error| error.to_string())?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("HITL request-more-info returned {status}: {text}"));
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = execution.session;
+    let url = format!("/v1/runs/{}/request-more-info", input.run_id);
+    let idempotency_key = hitl_idempotency_key("more-info", input.run_id.as_str(), None);
+    let _: Value = execution
+        .api
+        .post_json_with_idempotency(
+            &url,
+            &json!({ "message": input.message, "autoProcess": true }),
+            &idempotency_key,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if !broker
+        .is_current(&session.context_id, session.local_epoch)
+        .await
+    {
+        return Err("DESKTOP_SESSION_CHANGED".to_string());
     }
-    Ok(())
-}
-
-#[tauri::command]
-async fn chat_send_business(
-    window: WebviewWindow,
-    state: State<'_, AppState>,
-    request: BusinessChatRequest,
-) -> Result<(), String> {
-    let base_url = state
-        .config
-        .comm_officer_base_url
-        .clone()
-        .ok_or_else(|| "COMM_OFFICER_BASE_URL is missing.".to_string())?;
-    let token = state
-        .config
-        .comm_officer_token
-        .clone()
-        .ok_or_else(|| "COMM_OFFICER_TOKEN is missing.".to_string())?;
-
-    let client = state.client.clone();
-    async_runtime::spawn(async move {
-        let body = json!({
-            "conversationId": request.conversation_id,
-            "utterance": request.utterance,
-            "source": request.source,
-            "locale": request.locale,
-            "desktopContext": {
-                "route": request.route,
-                "localeIdentifier": request.locale
-            }
-        });
-
-        let response = client
-            .post(format!("{base_url}/avatar/query"))
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "text/event-stream")
-            .header(AUTHORIZATION, format!("Bearer {token}"))
-            .json(&body)
-            .send()
-            .await;
-
-        match response {
-            Ok(response) => {
-                if let Err(error) =
-                    process_business_stream(window.clone(), request.request_id.clone(), response)
-                        .await
-                {
-                    let _ = emit_stream_event(
-                        &window,
-                        request.request_id.as_str(),
-                        "business",
-                        "error",
-                        json!({ "message": error }),
-                    );
-                }
-            }
-            Err(error) => {
-                let _ = emit_stream_event(
-                    &window,
-                    request.request_id.as_str(),
-                    "business",
-                    "error",
-                    json!({ "message": error.to_string() }),
-                );
-            }
-        }
-    });
-
-    Ok(())
-}
-
-#[tauri::command]
-async fn chat_send_local(
-    window: WebviewWindow,
-    state: State<'_, AppState>,
-    request: LocalChatRequest,
-) -> Result<(), String> {
-    let client = state.client.clone();
-    let config = state.config.clone();
-
-    async_runtime::spawn(async move {
-        let url = format!(
-            "{}/chat/completions",
-            config.local_llm_base_url.trim_end_matches('/')
-        );
-
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-        if let Some(api_key) = &config.local_llm_api_key {
-            if !api_key.trim().is_empty() {
-                if let Ok(value) = HeaderValue::from_str(&format!("Bearer {api_key}")) {
-                    headers.insert(AUTHORIZATION, value);
-                }
-            }
-        }
-
-        let body = json!({
-            "model": config.local_llm_model,
-            "stream": true,
-            "messages": request.messages,
-            "temperature": 0.5
-        });
-
-        let response = client.post(url).headers(headers).json(&body).send().await;
-        match response {
-            Ok(response) => {
-                if let Err(error) =
-                    process_local_stream(window.clone(), request.request_id.clone(), response).await
-                {
-                    let _ = emit_stream_event(
-                        &window,
-                        request.request_id.as_str(),
-                        "local",
-                        "error",
-                        json!({ "message": error }),
-                    );
-                }
-            }
-            Err(error) => {
-                let _ = emit_stream_event(
-                    &window,
-                    request.request_id.as_str(),
-                    "local",
-                    "error",
-                    json!({ "message": error.to_string() }),
-                );
-            }
-        }
-    });
-
     Ok(())
 }
 
@@ -2168,17 +2329,25 @@ async fn chat_send_local(
 async fn speech_transcribe(
     state: State<'_, AppState>,
     request: SpeechTranscriptionRequest,
+    expected_context_id: String,
 ) -> Result<String, String> {
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let session = broker
+        .require_current(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
     let audio = BASE64
         .decode(request.audio_base64.as_bytes())
         .map_err(|error| error.to_string())?;
-    transcribe_with_openai_file_api(
+    let transcript = transcribe_with_openai_file_api(
         state.inner(),
         &audio,
         request.mime_type.as_str(),
         request.locale.as_deref(),
     )
-    .await
+    .await?;
+    ensure_stream_current(&broker, &session).await?;
+    Ok(transcript)
 }
 
 fn build_transcription_provider_chain(
@@ -2290,11 +2459,10 @@ async fn transcribe_with_openai_file_api(
         append_log(
             &state.config.log_file_path,
             format!(
-                "stt:file failed status={} mime={} bytes={} message={}",
+                "stt:file failed status={} mime={} bytes={}",
                 status.as_u16(),
                 payload_mime,
-                audio_len,
-                truncate_for_log(&message, 220)
+                audio_len
             ),
         );
         return Err(message);
@@ -2310,10 +2478,15 @@ async fn transcribe_with_openai_file_api(
 
 fn emit_transcription_stream_event(
     window: &WebviewWindow,
+    context_id: &str,
     event: TranscriptionStreamEvent,
 ) -> Result<(), String> {
+    let payload = serde_json::to_value(event).map_err(|error| error.to_string())?;
     window
-        .emit(TRANSCRIPTION_STREAM_EVENT, event)
+        .emit(
+            TRANSCRIPTION_STREAM_EVENT,
+            context_bound_payload(context_id, payload),
+        )
         .map_err(|error| error.to_string())
 }
 
@@ -2334,10 +2507,12 @@ fn emit_transcription_provider_changed(
 async fn transcribe_with_openai_realtime(
     window: &WebviewWindow,
     state: &AppState,
+    guard: &TenantExecutionGuard,
     session_id: &str,
     audio: &[u8],
     locale: Option<&str>,
 ) -> Result<String, String> {
+    guard.ensure_current().await?;
     let api_key = state
         .config
         .openai_api_key
@@ -2361,14 +2536,12 @@ async fn transcribe_with_openai_realtime(
 
     append_log(
         &state.config.log_file_path,
-        format!(
-            "stt:realtime connect sessionId={} bytes={}",
-            session_id,
-            audio.len()
-        ),
+        format!("stt:realtime connect bytes={}", audio.len()),
     );
 
-    let (mut socket, _) = connect_async(request).await.map_err(|error| error.to_string())?;
+    let (mut socket, _) = connect_async(request)
+        .await
+        .map_err(|error| error.to_string())?;
 
     let language = resolve_transcription_language(locale);
     let setup_event = json!({
@@ -2410,6 +2583,7 @@ async fn transcribe_with_openai_realtime(
     let mut transcript = String::new();
     let mut saw_completed = false;
     loop {
+        guard.ensure_current().await?;
         let next = tokio::time::timeout(
             Duration::from_secs(TRANSCRIPTION_READ_TIMEOUT_SECS),
             socket.next(),
@@ -2432,25 +2606,34 @@ async fn transcribe_with_openai_realtime(
             Ok(value) => value,
             Err(_) => continue,
         };
-        let event_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
+        let event_type = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         match event_type {
             "input_audio_buffer.speech_started" => {
                 let _ = emit_transcription_stream_event(
                     window,
+                    &guard.session.context_id,
                     TranscriptionStreamEvent::SpeechStarted {
                         session_id: session_id.to_string(),
-                        provider: transcription_provider_label(TranscriptionProviderId::OpenAiRealtime)
-                            .to_string(),
+                        provider: transcription_provider_label(
+                            TranscriptionProviderId::OpenAiRealtime,
+                        )
+                        .to_string(),
                     },
                 );
             }
             "input_audio_buffer.speech_stopped" => {
                 let _ = emit_transcription_stream_event(
                     window,
+                    &guard.session.context_id,
                     TranscriptionStreamEvent::SpeechStopped {
                         session_id: session_id.to_string(),
-                        provider: transcription_provider_label(TranscriptionProviderId::OpenAiRealtime)
-                            .to_string(),
+                        provider: transcription_provider_label(
+                            TranscriptionProviderId::OpenAiRealtime,
+                        )
+                        .to_string(),
                     },
                 );
             }
@@ -2460,12 +2643,14 @@ async fn transcribe_with_openai_realtime(
                         transcript.push_str(delta);
                         let _ = emit_transcription_stream_event(
                             window,
+                            &guard.session.context_id,
                             TranscriptionStreamEvent::Partial {
                                 session_id: session_id.to_string(),
                                 text: transcript.trim().to_string(),
-                                provider:
-                                    transcription_provider_label(TranscriptionProviderId::OpenAiRealtime)
-                                        .to_string(),
+                                provider: transcription_provider_label(
+                                    TranscriptionProviderId::OpenAiRealtime,
+                                )
+                                .to_string(),
                             },
                         );
                     }
@@ -2511,6 +2696,7 @@ async fn transcribe_with_openai_realtime(
     }
 
     let _ = socket.send(WsMessage::Close(None)).await;
+    guard.ensure_current().await?;
     Ok(transcript.trim().to_string())
 }
 
@@ -2547,50 +2733,93 @@ async fn transcription_session_start(
     window: WebviewWindow,
     state: State<'_, AppState>,
     request: TranscriptionSessionStartRequest,
+    expected_context_id: String,
 ) -> Result<TranscriptionSessionStartResult, String> {
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let tenant_session = broker
+        .require_current(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
     let session_id = request.session_id.trim().to_string();
     if session_id.is_empty() {
         return Err("sessionId is required.".to_string());
     }
-    let provider = *state.transcription_provider.lock().await;
-    {
-        let mut sessions = state.transcription_sessions.lock().await;
-        sessions.insert(
-            session_id.clone(),
-            TranscriptionSession {
-                session_id: session_id.clone(),
-                provider,
-                locale: request.locale.clone(),
-                mime_type: "audio/webm".to_string(),
-                audio_bytes: Vec::new(),
-            },
-        );
-    }
-    emit_transcription_stream_event(
-        &window,
-        TranscriptionStreamEvent::SessionReady {
-            session_id: session_id.clone(),
-            provider: transcription_provider_label(provider).to_string(),
-        },
-    )?;
-    emit_transcription_stream_event(
-        &window,
-        TranscriptionStreamEvent::SpeechStarted {
-            session_id: session_id.clone(),
-            provider: transcription_provider_label(provider).to_string(),
-        },
-    )?;
-    Ok(TranscriptionSessionStartResult {
-        session_id,
-        provider: transcription_provider_label(provider).to_string(),
-    })
+    let provider_state = state.transcription_provider.clone();
+    let sessions = state.transcription_sessions.clone();
+    let cleanup_sessions = sessions.clone();
+    let event_context_id = tenant_session.context_id.clone();
+    let event_session_id = session_id.clone();
+    let session_context_id = tenant_session.context_id.clone();
+    let session_epoch = tenant_session.local_epoch;
+    broker
+        .run_if_current(&expected_context_id, || async move {
+            let provider = *provider_state.lock().await;
+            sessions.lock().await.insert(
+                session_id.clone(),
+                TranscriptionSession {
+                    session_id: session_id.clone(),
+                    context_id: session_context_id.clone(),
+                    local_epoch: session_epoch,
+                    provider,
+                    locale: request.locale.clone(),
+                    mime_type: "audio/webm".to_string(),
+                    audio_bytes: Vec::new(),
+                },
+            );
+            let emit_result = emit_transcription_stream_event(
+                &window,
+                &event_context_id,
+                TranscriptionStreamEvent::SessionReady {
+                    session_id: event_session_id.clone(),
+                    provider: transcription_provider_label(provider).to_string(),
+                },
+            )
+            .and_then(|_| {
+                emit_transcription_stream_event(
+                    &window,
+                    &event_context_id,
+                    TranscriptionStreamEvent::SpeechStarted {
+                        session_id: event_session_id.clone(),
+                        provider: transcription_provider_label(provider).to_string(),
+                    },
+                )
+            });
+            if let Err(error) = emit_result {
+                let mut current = cleanup_sessions.lock().await;
+                if current
+                    .get(event_session_id.as_str())
+                    .is_some_and(|session| {
+                        session.context_id == event_context_id
+                            && session.local_epoch == session_epoch
+                    })
+                {
+                    current.remove(event_session_id.as_str());
+                }
+                return Err(AgentStudioApiError::local(
+                    "TRANSCRIPTION_EVENT_FAILED",
+                    error,
+                ));
+            }
+            Ok(TranscriptionSessionStartResult {
+                session_id: event_session_id,
+                provider: transcription_provider_label(provider).to_string(),
+            })
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn transcription_session_append_audio(
     state: State<'_, AppState>,
     request: TranscriptionSessionAppendAudioRequest,
+    expected_context_id: String,
 ) -> Result<(), String> {
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let tenant_session = broker
+        .require_current(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
     let chunk = BASE64
         .decode(request.audio_base64.as_bytes())
         .map_err(|error| error.to_string())?;
@@ -2599,8 +2828,15 @@ async fn transcription_session_append_audio(
     let session = sessions
         .get_mut(request.session_id.as_str())
         .ok_or_else(|| "Transcription session not found.".to_string())?;
+    if session.context_id != tenant_session.context_id
+        || session.local_epoch != tenant_session.local_epoch
+    {
+        return Err("DESKTOP_SESSION_CHANGED".to_string());
+    }
     if session.mime_type != normalized_mime && !session.audio_bytes.is_empty() {
-        return Err("All chunks in one transcription session must use the same mime type.".to_string());
+        return Err(
+            "All chunks in one transcription session must use the same mime type.".to_string(),
+        );
     }
     session.mime_type = normalized_mime;
     if session.audio_bytes.len() + chunk.len() > TRANSCRIPTION_MAX_AUDIO_BYTES {
@@ -2618,13 +2854,28 @@ async fn transcription_session_commit_turn(
     window: WebviewWindow,
     state: State<'_, AppState>,
     request: TranscriptionSessionCommitTurnRequest,
+    expected_context_id: String,
 ) -> Result<String, String> {
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let tenant_session = broker
+        .require_current(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let execution_guard = TenantExecutionGuard {
+        broker,
+        session: tenant_session.clone(),
+    };
     let fallback_provider = state.config.transcription_provider_fallback;
     let (session_id, selected_provider, locale, mime_type, audio) = {
         let mut sessions = state.transcription_sessions.lock().await;
         let session = sessions
             .get_mut(request.session_id.as_str())
             .ok_or_else(|| "Transcription session not found.".to_string())?;
+        if session.context_id != tenant_session.context_id
+            || session.local_epoch != tenant_session.local_epoch
+        {
+            return Err("DESKTOP_SESSION_CHANGED".to_string());
+        }
         if session.audio_bytes.is_empty() {
             return Err("No audio received for this session.".to_string());
         }
@@ -2640,6 +2891,7 @@ async fn transcription_session_commit_turn(
     };
     emit_transcription_stream_event(
         &window,
+        &tenant_session.context_id,
         TranscriptionStreamEvent::SpeechStopped {
             session_id: session_id.clone(),
             provider: transcription_provider_label(selected_provider).to_string(),
@@ -2649,13 +2901,13 @@ async fn transcription_session_commit_turn(
     let provider_chain = build_transcription_provider_chain(selected_provider, fallback_provider);
     let mut last_error: Option<String> = None;
     for (provider_index, provider) in provider_chain.iter().copied().enumerate() {
+        execution_guard.ensure_current().await?;
         let fallback_used = provider_index > 0;
         let provider_label = transcription_provider_label(provider).to_string();
         append_log(
             &state.config.log_file_path,
             format!(
-                "stt: session commit sessionId={} provider={} fallback={} mime={} bytes={}",
-                session_id,
+                "stt: session commit provider={} fallback={} mime={} bytes={}",
                 provider_label,
                 fallback_used,
                 mime_type,
@@ -2667,6 +2919,7 @@ async fn transcription_session_commit_turn(
                 transcribe_with_openai_realtime(
                     &window,
                     state.inner(),
+                    &execution_guard,
                     session_id.as_str(),
                     &audio,
                     locale.as_deref(),
@@ -2686,9 +2939,11 @@ async fn transcription_session_commit_turn(
 
         match result {
             Ok(text) => {
+                execution_guard.ensure_current().await?;
                 let normalized = text.trim().to_string();
                 emit_transcription_stream_event(
                     &window,
+                    &tenant_session.context_id,
                     TranscriptionStreamEvent::Final {
                         session_id: session_id.clone(),
                         text: normalized.clone(),
@@ -2699,9 +2954,11 @@ async fn transcription_session_commit_turn(
                 return Ok(normalized);
             }
             Err(message) => {
+                execution_guard.ensure_current().await?;
                 last_error = Some(message.clone());
                 let _ = emit_transcription_stream_event(
                     &window,
+                    &tenant_session.context_id,
                     TranscriptionStreamEvent::Error {
                         session_id: session_id.clone(),
                         provider: provider_label,
@@ -2719,8 +2976,23 @@ async fn transcription_session_commit_turn(
 async fn transcription_session_stop(
     state: State<'_, AppState>,
     request: TranscriptionSessionStopRequest,
+    expected_context_id: String,
 ) -> Result<(), String> {
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let tenant_session = broker
+        .require_current(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
     let mut sessions = state.transcription_sessions.lock().await;
+    if sessions
+        .get(request.session_id.as_str())
+        .is_some_and(|session| {
+            session.context_id != tenant_session.context_id
+                || session.local_epoch != tenant_session.local_epoch
+        })
+    {
+        return Err("DESKTOP_SESSION_CHANGED".to_string());
+    }
     sessions.remove(request.session_id.as_str());
     Ok(())
 }
@@ -2780,21 +3052,34 @@ async fn tts_speak(
     request_id: String,
     text: String,
     voice: Option<String>,
+    expected_context_id: String,
 ) -> Result<(), String> {
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let session = broker
+        .require_current(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let execution_guard = TenantExecutionGuard { broker, session };
+    let expected_tts_generation = state.tts_generation.load(Ordering::SeqCst);
     #[cfg(target_os = "macos")]
     {
         let normalized_text = normalize_tts_text(&text);
-        let should_skip = {
-            let mut cache = state.last_tts_text_by_request.lock().await;
-            should_skip_duplicate_tts_entry(&mut cache, &request_id, &normalized_text)
-        };
+        let scoped_request_id = format!("{}:{request_id}", execution_guard.session.context_id);
+        let cache = state.last_tts_text_by_request.clone();
+        let dedupe_broker = execution_guard.broker.clone();
+        let should_skip = dedupe_broker
+            .run_if_current(&expected_context_id, || async move {
+                let mut cache = cache.lock().await;
+                Ok(should_skip_duplicate_tts_entry(
+                    &mut cache,
+                    &scoped_request_id,
+                    &normalized_text,
+                ))
+            })
+            .await
+            .map_err(|error| error.to_string())?;
         if should_skip {
-            append_log(
-                &state.config.log_file_path,
-                format!(
-                    "tts: duplicate suppressed (requestId={request_id}, text={normalized_text})"
-                ),
-            );
+            append_log(&state.config.log_file_path, "tts: duplicate suppressed");
             return Ok(());
         }
 
@@ -2825,12 +3110,16 @@ async fn tts_speak(
 
         let mut last_error: Option<String> = None;
         for (provider_index, provider) in provider_chain.into_iter().enumerate() {
+            execution_guard.ensure_current().await?;
+            ensure_tts_generation(state.inner(), expected_tts_generation)?;
             let is_fallback = provider_index > 0;
             let provider_name = tts_provider_name(provider);
             let result = match provider {
                 TtsProviderMode::Local => {
                     speak_local_tts(
                         state.inner(),
+                        &execution_guard,
+                        expected_tts_generation,
                         &window,
                         &request_id,
                         &text,
@@ -2842,6 +3131,8 @@ async fn tts_speak(
                 TtsProviderMode::FishAudio => {
                     speak_fish_tts(
                         state.inner(),
+                        &execution_guard,
+                        expected_tts_generation,
                         &window,
                         &request_id,
                         &text,
@@ -2853,6 +3144,8 @@ async fn tts_speak(
                 TtsProviderMode::OpenAI => {
                     speak_openai_tts(
                         state.inner(),
+                        &execution_guard,
+                        expected_tts_generation,
                         &window,
                         &request_id,
                         &text,
@@ -2870,7 +3163,10 @@ async fn tts_speak(
                         None
                     };
                     speak_system_tts(
+                        state.inner(),
                         &window,
+                        &execution_guard,
+                        expected_tts_generation,
                         &request_id,
                         &text,
                         system_voice,
@@ -2885,9 +3181,7 @@ async fn tts_speak(
             if result.is_ok() {
                 append_log(
                     &state.config.log_file_path,
-                    format!(
-                        "tts: provider={provider_name} selected (requestId={request_id}, fallback={is_fallback})"
-                    ),
+                    format!("tts: provider={provider_name} selected fallback={is_fallback}"),
                 );
                 return Ok(());
             }
@@ -2897,9 +3191,7 @@ async fn tts_speak(
                 .unwrap_or_else(|| "Unknown TTS provider error.".to_string());
             append_log(
                 &state.config.log_file_path,
-                format!(
-                    "tts: provider={provider:?} failed (requestId={request_id}), error={message}"
-                ),
+                format!("tts: provider={provider:?} failed"),
             );
             last_error = Some(message);
         }
@@ -2912,7 +3204,15 @@ async fn tts_speak(
         let _ = state;
         let _ = text;
         let _ = voice;
-        emit_tts_state(&window, &request_id, false, None, None)?;
+        execution_guard.ensure_current().await?;
+        emit_tts_state(
+            &window,
+            &execution_guard.session.context_id,
+            &request_id,
+            false,
+            None,
+            None,
+        )?;
         Ok(())
     }
 }
@@ -2957,8 +3257,130 @@ async fn list_system_tts_voices() -> Result<Vec<String>, String> {
 }
 
 #[cfg(target_os = "macos")]
-async fn speak_system_tts(
+fn ensure_tts_generation(state: &AppState, expected_generation: u64) -> Result<(), String> {
+    if state.tts_generation.load(Ordering::SeqCst) == expected_generation {
+        Ok(())
+    } else {
+        Err("DESKTOP_SESSION_CHANGED".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn spawn_tenant_tts_process(
+    state: &AppState,
     window: &WebviewWindow,
+    guard: &TenantExecutionGuard,
+    expected_generation: u64,
+    request_id: &str,
+    provider_name: &str,
+    fallback_used: bool,
+    mut command: Command,
+    temp_path: Option<PathBuf>,
+) -> Result<(), String> {
+    command.kill_on_drop(true);
+    let broker = guard.broker.clone();
+    let context_id = guard.session.context_id.clone();
+    let event_context_id = context_id.clone();
+    let process_id = uuid::Uuid::new_v4().to_string();
+    let processes = state.tts_processes.clone();
+    let generation = state.tts_generation.clone();
+    let waiter_guard = guard.clone();
+    let window = window.clone();
+    let request_id = request_id.to_string();
+    let provider_name = provider_name.to_string();
+
+    broker
+        .run_if_current(&context_id, || async move {
+            if generation.load(Ordering::SeqCst) != expected_generation {
+                if let Some(path) = &temp_path {
+                    let _ = fs::remove_file(path);
+                }
+                return Err(AgentStudioApiError::local(
+                    "DESKTOP_SESSION_CHANGED",
+                    "The Agent Studio session changed.",
+                ));
+            }
+
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    if let Some(path) = &temp_path {
+                        let _ = fs::remove_file(path);
+                    }
+                    return Err(AgentStudioApiError::local(
+                        "TTS_PROCESS_FAILED",
+                        error.to_string(),
+                    ));
+                }
+            };
+            if let Err(error) = emit_tts_state(
+                &window,
+                &event_context_id,
+                &request_id,
+                true,
+                Some(&provider_name),
+                Some(fallback_used),
+            ) {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                if let Some(path) = &temp_path {
+                    let _ = fs::remove_file(path);
+                }
+                return Err(AgentStudioApiError::local("TTS_PROCESS_FAILED", error));
+            }
+
+            let (cancel_tx, cancel_rx) = oneshot::channel();
+            let (stopped_tx, stopped_rx) = oneshot::channel();
+            processes.lock().await.insert(
+                process_id.clone(),
+                TtsProcessHandle {
+                    cancel: cancel_tx,
+                    stopped: stopped_rx,
+                },
+            );
+
+            let waiter_processes = processes.clone();
+            let waiter_process_id = process_id.clone();
+            async_runtime::spawn(async move {
+                let cancelled = tokio::select! {
+                    _ = child.wait() => false,
+                    _ = cancel_rx => {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        true
+                    }
+                };
+                if let Some(path) = temp_path {
+                    let _ = fs::remove_file(path);
+                }
+                waiter_processes.lock().await.remove(&waiter_process_id);
+                if !cancelled
+                    && generation.load(Ordering::SeqCst) == expected_generation
+                    && waiter_guard.ensure_current().await.is_ok()
+                {
+                    let _ = emit_tts_state(
+                        &window,
+                        &waiter_guard.session.context_id,
+                        &request_id,
+                        false,
+                        Some(&provider_name),
+                        Some(fallback_used),
+                    );
+                }
+                let _ = stopped_tx.send(());
+            });
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+async fn speak_system_tts(
+    state: &AppState,
+    window: &WebviewWindow,
+    guard: &TenantExecutionGuard,
+    expected_generation: u64,
     request_id: &str,
     text: &str,
     voice: Option<&str>,
@@ -2969,40 +3391,26 @@ async fn speak_system_tts(
     if let Some(selected_voice) = voice {
         command.arg("-v").arg(selected_voice);
     }
-
-    let mut child = command
-        .arg("-r")
-        .arg("185")
-        .arg(text)
-        .spawn()
-        .map_err(|error| error.to_string())?;
-
-    emit_tts_state(
+    command.arg("-r").arg("185").arg(text);
+    spawn_tenant_tts_process(
+        state,
         window,
+        guard,
+        expected_generation,
         request_id,
-        true,
-        Some(provider_name),
-        Some(fallback_used),
-    )?;
-    let window_clone = window.clone();
-    let request_id = request_id.to_string();
-    let provider_name = provider_name.to_string();
-    async_runtime::spawn(async move {
-        let _ = child.wait().await;
-        let _ = emit_tts_state(
-            &window_clone,
-            &request_id,
-            false,
-            Some(provider_name.as_str()),
-            Some(fallback_used),
-        );
-    });
-    Ok(())
+        provider_name,
+        fallback_used,
+        command,
+        None,
+    )
+    .await
 }
 
 #[cfg(target_os = "macos")]
 async fn speak_local_tts(
     state: &AppState,
+    guard: &TenantExecutionGuard,
+    expected_generation: u64,
     window: &WebviewWindow,
     request_id: &str,
     text: &str,
@@ -3024,12 +3432,11 @@ async fn speak_local_tts(
 
     let mut last_error: Option<String> = None;
     for endpoint in endpoints {
-        append_log(
-            &state.config.log_file_path,
-            format!("tts: provider=local attempt requestId={request_id}, endpoint={endpoint}"),
-        );
+        append_log(&state.config.log_file_path, "tts: provider=local attempt");
         match speak_http_tts(
             state,
+            guard,
+            expected_generation,
             window,
             request_id,
             text,
@@ -3050,10 +3457,7 @@ async fn speak_local_tts(
             Err(error) => {
                 append_log(
                     &state.config.log_file_path,
-                    format!(
-                        "tts: provider=local endpoint failed requestId={request_id}, endpoint={endpoint}, error={}",
-                        truncate_for_log(&error, 240)
-                    ),
+                    "tts: provider=local endpoint failed",
                 );
                 last_error = Some(error);
             }
@@ -3066,6 +3470,8 @@ async fn speak_local_tts(
 #[cfg(target_os = "macos")]
 async fn speak_fish_tts(
     state: &AppState,
+    guard: &TenantExecutionGuard,
+    expected_generation: u64,
     window: &WebviewWindow,
     request_id: &str,
     text: &str,
@@ -3087,12 +3493,11 @@ async fn speak_fish_tts(
 
     let mut last_error: Option<String> = None;
     for endpoint in endpoints {
-        append_log(
-            &state.config.log_file_path,
-            format!("tts: provider=fish attempt requestId={request_id}, endpoint={endpoint}"),
-        );
+        append_log(&state.config.log_file_path, "tts: provider=fish attempt");
         match speak_http_tts(
             state,
+            guard,
+            expected_generation,
             window,
             request_id,
             text,
@@ -3113,10 +3518,7 @@ async fn speak_fish_tts(
             Err(error) => {
                 append_log(
                     &state.config.log_file_path,
-                    format!(
-                        "tts: provider=fish endpoint failed requestId={request_id}, endpoint={endpoint}, error={}",
-                        truncate_for_log(&error, 240)
-                    ),
+                    "tts: provider=fish endpoint failed",
                 );
                 last_error = Some(error);
             }
@@ -3129,6 +3531,8 @@ async fn speak_fish_tts(
 #[cfg(target_os = "macos")]
 async fn speak_openai_tts(
     state: &AppState,
+    guard: &TenantExecutionGuard,
+    expected_generation: u64,
     window: &WebviewWindow,
     request_id: &str,
     text: &str,
@@ -3148,6 +3552,8 @@ async fn speak_openai_tts(
 
     speak_http_tts(
         state,
+        guard,
+        expected_generation,
         window,
         request_id,
         text,
@@ -3168,6 +3574,8 @@ async fn speak_openai_tts(
 #[cfg(target_os = "macos")]
 async fn speak_http_tts(
     state: &AppState,
+    guard: &TenantExecutionGuard,
+    expected_generation: u64,
     window: &WebviewWindow,
     request_id: &str,
     text: &str,
@@ -3182,6 +3590,8 @@ async fn speak_http_tts(
     provider_name: &str,
     fallback_used: bool,
 ) -> Result<(), String> {
+    guard.ensure_current().await?;
+    ensure_tts_generation(state, expected_generation)?;
     let selected_voice = voice
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -3208,26 +3618,18 @@ async fn speak_http_tts(
     append_log(
         &state.config.log_file_path,
         format!(
-            "tts:http start provider={provider_name} requestId={request_id} fallback={fallback_used} endpoint={endpoint} model={model} voice={selected_voice} chars={} payloadKeys={}",
+            "tts:http start provider={provider_name} fallback={fallback_used} chars={}",
             text.chars().count(),
-            top_level_json_keys(&payload),
         ),
     );
-    let response = request
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|error| {
-            let message = error.to_string();
-            append_log(
-                &state.config.log_file_path,
-                format!(
-                    "tts:http transport-error provider={provider_name} requestId={request_id} endpoint={endpoint} error={}",
-                    truncate_for_log(&message, 320)
-                ),
-            );
-            message
-        })?;
+    let response = request.json(&payload).send().await.map_err(|error| {
+        let message = error.to_string();
+        append_log(
+            &state.config.log_file_path,
+            format!("tts:http transport-error provider={provider_name}"),
+        );
+        message
+    })?;
 
     let status = response.status();
     let response_content_type = response
@@ -3241,48 +3643,29 @@ async fn speak_http_tts(
         .await
         .map_err(|error| error.to_string())?
         .to_vec();
+    guard.ensure_current().await?;
+    ensure_tts_generation(state, expected_generation)?;
     append_log(
         &state.config.log_file_path,
         format!(
-            "tts:http response provider={provider_name} requestId={request_id} endpoint={endpoint} status={} contentType={} bytes={}",
+            "tts:http response provider={provider_name} status={} contentType={} bytes={}",
             status.as_u16(),
-            response_content_type
-                .as_deref()
-                .unwrap_or("<none>"),
+            response_content_type.as_deref().unwrap_or("<none>"),
             body.len()
         ),
     );
 
     if !status.is_success() {
-        let raw_preview = truncate_for_log(String::from_utf8_lossy(&body).trim(), 320);
         append_log(
             &state.config.log_file_path,
             format!(
-                "tts:http non-success provider={provider_name} requestId={request_id} endpoint={endpoint} status={} body={}",
-                status.as_u16(),
-                raw_preview
+                "tts:http non-success provider={provider_name} status={}",
+                status.as_u16()
             ),
         );
-        let message = serde_json::from_slice::<Value>(&body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("error")
-                    .and_then(|error| error.get("message"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| {
-                let raw = String::from_utf8_lossy(&body);
-                let raw = raw.trim();
-                if raw.is_empty() {
-                    format!("{provider_name} TTS request failed with status {status}.")
-                } else {
-                    format!("{provider_name} TTS request failed with status {status}: {raw}")
-                }
-            });
-        return Err(message);
+        return Err(format!(
+            "{provider_name} TTS request failed with status {status}."
+        ));
     }
 
     let looks_like_json = body
@@ -3309,70 +3692,56 @@ async fn speak_http_tts(
             "{provider_name} TTS returned an empty audio payload."
         ));
     }
+    guard.ensure_current().await?;
 
     let extension = if is_json_content_type || looks_like_json {
         "mp3"
     } else {
         audio_file_extension_from_content_type(response_content_type.as_deref())
     };
-    let request_id_safe: String = request_id
-        .chars()
-        .map(|char| {
-            if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
-                char
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
     let temp_path = env::temp_dir().join(format!(
-        "desktop-avatar-tts-{provider_name}-{request_id_safe}-{timestamp}.{extension}"
+        "desktop-avatar-tts-{}.{extension}",
+        uuid::Uuid::new_v4()
     ));
     fs::write(&temp_path, &bytes).map_err(|error| error.to_string())?;
 
-    let mut child = Command::new("afplay")
-        .arg(&temp_path)
-        .spawn()
-        .map_err(|error| error.to_string())?;
-
-    emit_tts_state(
-        window,
-        request_id,
-        true,
-        Some(provider_name),
-        Some(fallback_used),
-    )?;
-    let window_clone = window.clone();
-    let request_id = request_id.to_string();
-    let provider_name = provider_name.to_string();
-    async_runtime::spawn(async move {
-        let _ = child.wait().await;
+    if let Err(error) = guard.ensure_current().await {
         let _ = fs::remove_file(&temp_path);
-        let _ = emit_tts_state(
-            &window_clone,
-            &request_id,
-            false,
-            Some(provider_name.as_str()),
-            Some(fallback_used),
-        );
-    });
+        return Err(error);
+    }
+    if let Err(error) = ensure_tts_generation(state, expected_generation) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
 
-    Ok(())
+    let mut command = Command::new("afplay");
+    command.arg(&temp_path);
+    spawn_tenant_tts_process(
+        state,
+        window,
+        guard,
+        expected_generation,
+        request_id,
+        provider_name,
+        fallback_used,
+        command,
+        Some(temp_path),
+    )
+    .await
 }
 
 #[tauri::command]
-async fn tts_stop(window: WebviewWindow) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("killall").arg("say").spawn();
-        let _ = Command::new("killall").arg("afplay").spawn();
-    }
-
-    emit_tts_state(&window, "global", false, None, None)
+async fn tts_stop(state: State<'_, AppState>, expected_context_id: String) -> Result<(), String> {
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    broker
+        .run_if_current(&expected_context_id, || async {
+            state.tts_generation.fetch_add(1, Ordering::SeqCst);
+            cancel_tts_processes(state.inner()).await;
+            cleanup_tts_temp_files();
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -3404,92 +3773,16 @@ fn resize_window_internal(
     apply_window_rect(window, clamped)
 }
 
-async fn process_business_stream(
-    window: WebviewWindow,
-    request_id: String,
-    response: reqwest::Response,
-) -> Result<(), String> {
-    let status = response.status();
-    if !status.is_success() {
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("Communication Officer returned {status}: {text}"));
-    }
-
-    let mut parser = SseParser {
-        current: SseFrame::new(),
-    };
-    let mut pending = String::new();
-    let mut stream = response.bytes_stream();
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| error.to_string())?;
-        pending.push_str(&String::from_utf8_lossy(&chunk));
-
-        while let Some(index) = pending.find('\n') {
-            let mut line = pending[..index].to_string();
-            if line.ends_with('\r') {
-                line.pop();
-            }
-            pending.replace_range(..=index, "");
-            if let Some(frame) = parser.push_line(line.as_str()) {
-                let payload: Value = serde_json::from_str(frame.data().as_str())
-                    .map_err(|error| error.to_string())?;
-                emit_stream_event(
-                    &window,
-                    request_id.as_str(),
-                    "business",
-                    map_business_kind(frame.event.as_str()),
-                    payload,
-                )?;
-            }
-        }
-    }
-
-    if !pending.is_empty() {
-        let line = pending.trim_end_matches('\r').to_string();
-        if let Some(frame) = parser.push_line(line.as_str()) {
-            let payload: Value =
-                serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
-            emit_stream_event(
-                &window,
-                request_id.as_str(),
-                "business",
-                map_business_kind(frame.event.as_str()),
-                payload,
-            )?;
-        }
-    }
-
-    if let Some(frame) = parser.finish() {
-        let payload: Value =
-            serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
-        emit_stream_event(
-            &window,
-            request_id.as_str(),
-            "business",
-            map_business_kind(frame.event.as_str()),
-            payload,
-        )?;
-    }
-
-    Ok(())
-}
-
 async fn process_desktop_avatar_stream(
     window: WebviewWindow,
-    request_id: String,
+    _request_id: String,
     response: reqwest::Response,
+    broker: Arc<AgentStudioSessionBroker>,
+    session: DesktopAvatarTenantSession,
 ) -> Result<(), String> {
     let status = response.status();
     if !status.is_success() {
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("SYNTRA Assistant stream returned {status}: {text}"));
+        return Err(format!("SYNTRA Assistant stream returned {status}."));
     }
 
     let mut parser = SseParser {
@@ -3511,7 +3804,8 @@ async fn process_desktop_avatar_stream(
             if let Some(frame) = parser.push_line(line.as_str()) {
                 let payload: Value = serde_json::from_str(frame.data().as_str())
                     .map_err(|error| error.to_string())?;
-                emit_desktop_avatar_stream_event(&window, payload)?;
+                ensure_stream_current(&broker, &session).await?;
+                emit_desktop_avatar_stream_event(&window, &session.context_id, payload)?;
             }
         }
     }
@@ -3521,20 +3815,17 @@ async fn process_desktop_avatar_stream(
         if let Some(frame) = parser.push_line(line.as_str()) {
             let payload: Value =
                 serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
-            emit_desktop_avatar_stream_event(&window, payload)?;
+            ensure_stream_current(&broker, &session).await?;
+            emit_desktop_avatar_stream_event(&window, &session.context_id, payload)?;
         }
     }
 
     if let Some(frame) = parser.finish() {
         let payload: Value =
             serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
-        emit_desktop_avatar_stream_event(&window, payload)?;
+        ensure_stream_current(&broker, &session).await?;
+        emit_desktop_avatar_stream_event(&window, &session.context_id, payload)?;
     }
-
-    append_log(
-        &workspace_root().join("tmp").join("desktop-avatar.log"),
-        format!("desktop-avatar stream closed: {request_id}"),
-    );
 
     Ok(())
 }
@@ -3542,14 +3833,12 @@ async fn process_desktop_avatar_stream(
 async fn process_hitl_decision_stream(
     window: WebviewWindow,
     response: reqwest::Response,
+    broker: Arc<AgentStudioSessionBroker>,
+    session: DesktopAvatarTenantSession,
 ) -> Result<(), String> {
     let status = response.status();
     if !status.is_success() {
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("HITL stream returned {status}: {text}"));
+        return Err(format!("HITL stream returned {status}."));
     }
 
     let mut parser = SseParser {
@@ -3571,7 +3860,8 @@ async fn process_hitl_decision_stream(
             if let Some(frame) = parser.push_line(line.as_str()) {
                 let payload: Value = serde_json::from_str(frame.data().as_str())
                     .map_err(|error| error.to_string())?;
-                emit_hitl_decision_stream_event(&window, payload)?;
+                ensure_stream_current(&broker, &session).await?;
+                emit_hitl_decision_stream_event(&window, &session.context_id, payload)?;
             }
         }
     }
@@ -3581,14 +3871,16 @@ async fn process_hitl_decision_stream(
         if let Some(frame) = parser.push_line(line.as_str()) {
             let payload: Value =
                 serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
-            emit_hitl_decision_stream_event(&window, payload)?;
+            ensure_stream_current(&broker, &session).await?;
+            emit_hitl_decision_stream_event(&window, &session.context_id, payload)?;
         }
     }
 
     if let Some(frame) = parser.finish() {
         let payload: Value =
             serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
-        emit_hitl_decision_stream_event(&window, payload)?;
+        ensure_stream_current(&broker, &session).await?;
+        emit_hitl_decision_stream_event(&window, &session.context_id, payload)?;
     }
 
     Ok(())
@@ -3597,14 +3889,12 @@ async fn process_hitl_decision_stream(
 async fn process_desktop_avatar_radar_stream(
     window: WebviewWindow,
     response: reqwest::Response,
+    broker: Arc<AgentStudioSessionBroker>,
+    session: DesktopAvatarTenantSession,
 ) -> Result<(), String> {
     let status = response.status();
     if !status.is_success() {
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("Operator-Radar stream returned {status}: {text}"));
+        return Err(format!("Operator-Radar stream returned {status}."));
     }
 
     let mut parser = SseParser {
@@ -3626,7 +3916,8 @@ async fn process_desktop_avatar_radar_stream(
             if let Some(frame) = parser.push_line(line.as_str()) {
                 let payload: Value = serde_json::from_str(frame.data().as_str())
                     .map_err(|error| error.to_string())?;
-                emit_desktop_avatar_radar_stream_event(&window, payload)?;
+                ensure_stream_current(&broker, &session).await?;
+                emit_desktop_avatar_radar_stream_event(&window, &session.context_id, payload)?;
             }
         }
     }
@@ -3636,150 +3927,63 @@ async fn process_desktop_avatar_radar_stream(
         if let Some(frame) = parser.push_line(line.as_str()) {
             let payload: Value =
                 serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
-            emit_desktop_avatar_radar_stream_event(&window, payload)?;
+            ensure_stream_current(&broker, &session).await?;
+            emit_desktop_avatar_radar_stream_event(&window, &session.context_id, payload)?;
         }
     }
 
     if let Some(frame) = parser.finish() {
         let payload: Value =
             serde_json::from_str(frame.data().as_str()).map_err(|error| error.to_string())?;
-        emit_desktop_avatar_radar_stream_event(&window, payload)?;
+        ensure_stream_current(&broker, &session).await?;
+        emit_desktop_avatar_radar_stream_event(&window, &session.context_id, payload)?;
     }
 
     Ok(())
 }
 
-async fn process_local_stream(
-    window: WebviewWindow,
-    request_id: String,
-    response: reqwest::Response,
+async fn ensure_stream_current(
+    broker: &AgentStudioSessionBroker,
+    session: &DesktopAvatarTenantSession,
 ) -> Result<(), String> {
-    let status = response.status();
-    if !status.is_success() {
-        let text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".into());
-        return Err(format!("LM Studio returned {status}: {text}"));
-    }
-
-    let mut parser = SseParser {
-        current: SseFrame::new(),
-    };
-    let mut pending = String::new();
-    let mut accumulated = String::new();
-    let mut stream = response.bytes_stream();
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| error.to_string())?;
-        pending.push_str(&String::from_utf8_lossy(&chunk));
-
-        while let Some(index) = pending.find('\n') {
-            let mut line = pending[..index].to_string();
-            if line.ends_with('\r') {
-                line.pop();
-            }
-            pending.replace_range(..=index, "");
-            if let Some(frame) = parser.push_line(line.as_str()) {
-                let data = frame.data();
-                if data.trim() == "[DONE]" {
-                    emit_stream_event(
-                        &window,
-                        request_id.as_str(),
-                        "local",
-                        "final",
-                        json!({
-                            "type": "generic_text",
-                            "speechText": accumulated,
-                            "displayText": accumulated,
-                            "card": Value::Null
-                        }),
-                    )?;
-                    return Ok(());
-                }
-
-                let payload: Value =
-                    serde_json::from_str(data.as_str()).map_err(|error| error.to_string())?;
-                if let Some(delta) = payload
-                    .get("choices")
-                    .and_then(Value::as_array)
-                    .and_then(|choices| choices.first())
-                    .and_then(|choice| choice.get("delta"))
-                    .and_then(|delta| delta.get("content"))
-                    .and_then(Value::as_str)
-                {
-                    accumulated.push_str(delta);
-                    emit_stream_event(
-                        &window,
-                        request_id.as_str(),
-                        "local",
-                        "delta",
-                        json!({
-                            "delta": delta,
-                            "accumulated": accumulated
-                        }),
-                    )?;
-                }
-            }
-        }
-    }
-
-    emit_stream_event(
-        &window,
-        request_id.as_str(),
-        "local",
-        "final",
-        json!({
-            "type": "generic_text",
-            "speechText": accumulated,
-            "displayText": accumulated,
-            "card": Value::Null
-        }),
-    )?;
-
-    Ok(())
-}
-
-fn map_business_kind(event: &str) -> &'static str {
-    match event {
-        "acknowledged" => "acknowledged",
-        "researching" => "researching",
-        "tool_progress" => "tool_progress",
-        "handoff_local" => "handoff_local",
-        "final" => "final",
-        "error" => "error",
-        _ => "error",
+    if broker
+        .is_current(&session.context_id, session.local_epoch)
+        .await
+    {
+        Ok(())
+    } else {
+        Err("DESKTOP_SESSION_CHANGED".to_string())
     }
 }
 
-fn emit_stream_event<T: Serialize + Clone>(
+fn context_bound_payload(context_id: &str, mut payload: Value) -> Value {
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "contextId".to_string(),
+            Value::String(context_id.to_string()),
+        );
+        payload
+    } else {
+        json!({ "contextId": context_id, "payload": payload })
+    }
+}
+
+fn emit_desktop_avatar_stream_event(
     window: &WebviewWindow,
-    request_id: &str,
-    source: &'static str,
-    kind: &'static str,
-    payload: T,
+    context_id: &str,
+    payload: Value,
 ) -> Result<(), String> {
     window
         .emit(
-            CHAT_STREAM_EVENT,
-            StreamEnvelope {
-                request_id: request_id.to_string(),
-                source,
-                kind,
-                payload,
-            },
+            DESKTOP_AVATAR_STREAM_EVENT,
+            context_bound_payload(context_id, payload),
         )
-        .map_err(|error| error.to_string())
-}
-
-fn emit_desktop_avatar_stream_event(window: &WebviewWindow, payload: Value) -> Result<(), String> {
-    window
-        .emit(DESKTOP_AVATAR_STREAM_EVENT, payload)
         .map_err(|error| error.to_string())
 }
 
 fn emit_desktop_avatar_stream_lifecycle(
     window: &WebviewWindow,
+    context_id: &str,
     avatar_request_id: &str,
     phase: &str,
     reason: Option<String>,
@@ -3788,6 +3992,7 @@ fn emit_desktop_avatar_stream_lifecycle(
         .emit(
             DESKTOP_AVATAR_STREAM_LIFECYCLE_EVENT,
             DesktopAvatarStreamLifecycleEvent {
+                context_id: context_id.to_string(),
                 avatar_request_id: avatar_request_id.to_string(),
                 phase: phase.to_string(),
                 reason,
@@ -3796,23 +4001,35 @@ fn emit_desktop_avatar_stream_lifecycle(
         .map_err(|error| error.to_string())
 }
 
-fn emit_hitl_decision_stream_event(window: &WebviewWindow, payload: Value) -> Result<(), String> {
+fn emit_hitl_decision_stream_event(
+    window: &WebviewWindow,
+    context_id: &str,
+    payload: Value,
+) -> Result<(), String> {
     window
-        .emit(HITL_DECISION_STREAM_EVENT, payload)
+        .emit(
+            HITL_DECISION_STREAM_EVENT,
+            context_bound_payload(context_id, payload),
+        )
         .map_err(|error| error.to_string())
 }
 
 fn emit_desktop_avatar_radar_stream_event(
     window: &WebviewWindow,
+    context_id: &str,
     payload: Value,
 ) -> Result<(), String> {
     window
-        .emit(DESKTOP_AVATAR_RADAR_STREAM_EVENT, payload)
+        .emit(
+            DESKTOP_AVATAR_RADAR_STREAM_EVENT,
+            context_bound_payload(context_id, payload),
+        )
         .map_err(|error| error.to_string())
 }
 
 fn emit_desktop_avatar_radar_stream_lifecycle(
     window: &WebviewWindow,
+    context_id: &str,
     phase: &str,
     reason: Option<String>,
 ) -> Result<(), String> {
@@ -3820,6 +4037,7 @@ fn emit_desktop_avatar_radar_stream_lifecycle(
         .emit(
             DESKTOP_AVATAR_RADAR_STREAM_LIFECYCLE_EVENT,
             DesktopAvatarRadarStreamLifecycleEvent {
+                context_id: context_id.to_string(),
                 phase: phase.to_string(),
                 reason,
             },
@@ -3829,6 +4047,7 @@ fn emit_desktop_avatar_radar_stream_lifecycle(
 
 fn emit_hitl_decision_stream_lifecycle(
     window: &WebviewWindow,
+    context_id: &str,
     phase: &str,
     reason: Option<String>,
 ) -> Result<(), String> {
@@ -3836,6 +4055,7 @@ fn emit_hitl_decision_stream_lifecycle(
         .emit(
             HITL_DECISION_STREAM_LIFECYCLE_EVENT,
             HitlDecisionStreamLifecycleEvent {
+                context_id: context_id.to_string(),
                 phase: phase.to_string(),
                 reason,
             },
@@ -3845,6 +4065,7 @@ fn emit_hitl_decision_stream_lifecycle(
 
 fn emit_tts_state(
     window: &WebviewWindow,
+    context_id: &str,
     request_id: &str,
     speaking: bool,
     provider: Option<&str>,
@@ -3854,6 +4075,7 @@ fn emit_tts_state(
         .emit(
             TTS_STATE_EVENT,
             TtsStateEvent {
+                context_id: context_id.to_string(),
                 request_id: request_id.to_string(),
                 speaking,
                 provider: provider.map(str::to_string),
@@ -3871,13 +4093,49 @@ fn workspace_root() -> PathBuf {
 }
 
 fn append_log(path: &Path, message: impl AsRef<str>) {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = path;
+        let _ = message;
+        return;
+    }
 
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "[{timestamp}] {}", message.as_ref());
+    #[cfg(debug_assertions)]
+    {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        if let Ok(mut file) = options.open(path) {
+            #[cfg(unix)]
+            let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+            let _ = writeln!(file, "[{timestamp}] {}", message.as_ref());
+        }
+    }
+}
+
+fn reset_log_file(path: &Path) {
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = path;
+        return;
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        let mut options = OpenOptions::new();
+        options.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        if let Ok(file) = options.open(path) {
+            #[cfg(unix)]
+            let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+        }
     }
 }
 
@@ -3922,10 +4180,6 @@ fn resolve_avatar_manifest_paths(manifest: &mut AvatarManifest, base_dir: &Path)
 }
 
 async fn load_remote_avatar_asset(path: String) -> Result<AssetPayload, String> {
-    append_log(
-        &workspace_root().join("tmp").join("desktop-avatar.log"),
-        format!("asset: remote fetch {path}"),
-    );
     let response = Client::new()
         .get(&path)
         .send()
@@ -4052,32 +4306,58 @@ fn normalize_language_code(value: &str) -> Option<String> {
 fn resolve_transcription_language(request_locale: Option<&str>) -> Option<String> {
     request_locale
         .and_then(normalize_language_code)
-        .or_else(|| env::var("LANG").ok().and_then(|value| normalize_language_code(&value)))
+        .or_else(|| {
+            env::var("LANG")
+                .ok()
+                .and_then(|value| normalize_language_code(&value))
+        })
         .or_else(|| Some("de".to_string()))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let bootstrap_config = AppConfig::load();
+    let agent_studio = bootstrap_config
+        .comm_officer_base_url
+        .as_deref()
+        .ok_or_else(|| {
+            AgentStudioApiError::local("AUTH_NOT_CONFIGURED", "COMM_OFFICER_BASE_URL is required.")
+        })
+        .and_then(|base_url| {
+            AgentStudioApiClient::new(
+                base_url,
+                bootstrap_config.comm_officer_csrf_cookie_name.as_deref(),
+            )
+        })
+        .map(AgentStudioSessionBroker::new)
+        .map(Arc::new);
     let default_transcription_provider = bootstrap_config.transcription_provider_default;
-    let mut persisted_window_state = read_persisted_window_state(&bootstrap_config.window_state_path);
+    let mut persisted_window_state =
+        read_persisted_window_state(&bootstrap_config.window_state_path);
     let normalized_peek_size = normalize_peek_size(
         persisted_window_state.peek_size.width,
         persisted_window_state.peek_size.height,
     );
     persisted_window_state.peek_size = normalized_peek_size;
-    persisted_window_state.last_peek_rect = persisted_window_state.last_peek_rect.map(|rect| WindowRect {
-        width: normalized_peek_size.width,
-        height: normalized_peek_size.height,
-        ..rect
-    });
+    persisted_window_state.last_peek_rect =
+        persisted_window_state
+            .last_peek_rect
+            .map(|rect| WindowRect {
+                width: normalized_peek_size.width,
+                height: normalized_peek_size.height,
+                ..rect
+            });
     let state = AppState {
         client: Client::new(),
         config: Arc::new(bootstrap_config),
+        agent_studio,
         desktop_avatar_streams: Arc::new(Mutex::new(HashMap::new())),
         desktop_avatar_radar_stream: Arc::new(Mutex::new(None)),
         hitl_decision_stream: Arc::new(Mutex::new(None)),
         last_tts_text_by_request: Arc::new(Mutex::new(HashMap::new())),
+        tts_generation: Arc::new(AtomicU64::new(0)),
+        tts_processes: Arc::new(Mutex::new(HashMap::new())),
+        shutdown_started: Arc::new(AtomicBool::new(false)),
         peek_position: Arc::new(Mutex::new(persisted_window_state.peek_position)),
         current_window_mode: Arc::new(Mutex::new(WindowMode::default())),
         last_peek_rect: Arc::new(Mutex::new(persisted_window_state.last_peek_rect)),
@@ -4090,29 +4370,24 @@ pub fn run() {
         transcription_sessions: Arc::new(Mutex::new(HashMap::new())),
     };
     let provider_label = tts_provider_name(state.config.tts_provider);
-    let local_tts_url = state
-        .config
-        .local_tts_url
-        .as_deref()
-        .unwrap_or("<none>");
     append_log(
         &state.config.log_file_path,
         format!(
-            "tts: config provider={provider_label} localUrl={local_tts_url} localModel={} openaiEnabled={} localTemplateKeys={} localResponsePath={}",
-            state.config.local_tts_model,
-            state.config.openai_tts_available(),
-            top_level_json_keys(&state.config.local_tts_request_template),
-            state
-                .config
-                .local_tts_response_base64_path
-                .as_deref()
-                .unwrap_or("<auto>")
+            "tts: config provider={provider_label} localConfigured={} openaiEnabled={}",
+            state.config.local_tts_available(),
+            state.config.openai_tts_available()
         ),
     );
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(state)
         .invoke_handler(tauri::generate_handler![
+            auth_preauthenticate,
+            auth_companies,
+            auth_branches,
+            auth_complete,
+            auth_session_get,
+            auth_logout,
             load_bootstrap_state,
             load_avatar_asset,
             frontend_log,
@@ -4133,8 +4408,6 @@ pub fn run() {
             hitl_decision_approve,
             hitl_decision_reject,
             hitl_request_more_info,
-            chat_send_business,
-            chat_send_local,
             speech_transcribe,
             transcription_provider_get,
             transcription_provider_set,
@@ -4169,7 +4442,10 @@ pub fn run() {
             let app_state = app.state::<AppState>().inner().clone();
             let tracked_window = window.clone();
             window.on_window_event(move |event| {
-                if matches!(event, WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed) {
+                if matches!(
+                    event,
+                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+                ) {
                     let app_state = app_state.clone();
                     let tracked_window = tracked_window.clone();
                     async_runtime::spawn(async move {
@@ -4181,9 +4457,13 @@ pub fn run() {
                             WindowMode::Peek => {
                                 let peek_size = *app_state.peek_size.lock().await;
                                 let mut guard = app_state.last_peek_rect.lock().await;
-                                *guard =
-                                    peek_rect_for_origin(&tracked_window, rect.x, rect.y, peek_size)
-                                        .ok();
+                                *guard = peek_rect_for_origin(
+                                    &tracked_window,
+                                    rect.x,
+                                    rect.y,
+                                    peek_size,
+                                )
+                                .ok();
                             }
                             WindowMode::Expanded => {
                                 let mut guard = app_state.last_expanded_rect.lock().await;
@@ -4274,16 +4554,13 @@ pub fn run() {
             let peek_pos_bottom_right =
                 MenuItemBuilder::with_id("peek_pos_bottom_right", ui_text("tray.peekBottomRight"))
                     .build(app)?;
-            let peek_position_menu = SubmenuBuilder::with_id(
-                app,
-                "peek_position",
-                ui_text("tray.peekPosition"),
-            )
-            .item(&peek_pos_top_left)
-            .item(&peek_pos_top_right)
-            .item(&peek_pos_bottom_left)
-            .item(&peek_pos_bottom_right)
-            .build()?;
+            let peek_position_menu =
+                SubmenuBuilder::with_id(app, "peek_position", ui_text("tray.peekPosition"))
+                    .item(&peek_pos_top_left)
+                    .item(&peek_pos_top_right)
+                    .item(&peek_pos_bottom_left)
+                    .item(&peek_pos_bottom_right)
+                    .build()?;
             let reset_window_position = MenuItemBuilder::with_id(
                 "peek_reset_position",
                 ui_text("tray.resetWindowPosition"),
@@ -4292,7 +4569,8 @@ pub fn run() {
 
             // TTS toggle
             let tts_toggle_label = ui_text("tray.toggleTts");
-            let tts_toggle = MenuItemBuilder::with_id("tts_toggle", &tts_toggle_label).build(app)?;
+            let tts_toggle =
+                MenuItemBuilder::with_id("tts_toggle", &tts_toggle_label).build(app)?;
             let transcription_provider_realtime = MenuItemBuilder::with_id(
                 "transcription_provider_realtime",
                 ui_text("tray.transcriptionProviderRealtime"),
@@ -4314,13 +4592,20 @@ pub fn run() {
 
             // Always on top toggle
             let always_on_top_label = ui_text("tray.toggleAlwaysOnTop");
-            let always_on_top = MenuItemBuilder::with_id("always_on_top", &always_on_top_label)
-                .build(app)?;
+            let always_on_top =
+                MenuItemBuilder::with_id("always_on_top", &always_on_top_label).build(app)?;
 
             // API URL display (informational + click to copy)
             let config = app.state::<AppState>();
-            let llm_label = format!("LLM: {}", config.config.local_llm_base_url);
-            let api_url_item = MenuItemBuilder::with_id("api_url", &llm_label).build(app)?;
+            let api_label = format!(
+                "Agent Studio: {}",
+                config
+                    .config
+                    .comm_officer_base_url
+                    .as_deref()
+                    .unwrap_or("nicht konfiguriert")
+            );
+            let api_url_item = MenuItemBuilder::with_id("api_url", &api_label).build(app)?;
 
             let quit_label = ui_text("tray.quit");
             let quit = MenuItemBuilder::with_id("quit", &quit_label).build(app)?;
@@ -4341,7 +4626,7 @@ pub fn run() {
                 .item(&quit)
                 .build()?;
 
-            let _tray = TrayIconBuilder::new()
+            let _tray = TrayIconBuilder::with_id(MAIN_TRAY_ID)
                 .icon(Image::from_bytes(include_bytes!(
                     "../icons/menubar-icon.png"
                 ))?)
@@ -4398,7 +4683,8 @@ pub fn run() {
                                     let peek_size = *peek_size_state.lock().await;
                                     let mut peek_rect_guard = peek_rect_state.lock().await;
                                     *peek_rect_guard =
-                                        peek_rect_for_position(&win_for_state, next, peek_size).ok();
+                                        peek_rect_for_position(&win_for_state, next, peek_size)
+                                            .ok();
                                     persist_window_state(&app_state).await;
                                 });
                                 if let Ok(current) = current_window_rect(&win) {
@@ -4433,16 +4719,22 @@ pub fn run() {
                                     let default_position = PeekPosition::default();
                                     let current = current_window_rect(&win).ok();
                                     let current_mode = *app_state.current_window_mode.lock().await;
-                                    let saved_expanded_rect = *app_state.last_expanded_rect.lock().await;
+                                    let saved_expanded_rect =
+                                        *app_state.last_expanded_rect.lock().await;
                                     let expanded_size = saved_expanded_rect
                                         .map(|rect| (rect.width, rect.height))
                                         .unwrap_or((
-                                            current.map(|rect| rect.width).unwrap_or(EXPANDED_WIDTH),
-                                            current.map(|rect| rect.height).unwrap_or(EXPANDED_HEIGHT),
+                                            current
+                                                .map(|rect| rect.width)
+                                                .unwrap_or(EXPANDED_WIDTH),
+                                            current
+                                                .map(|rect| rect.height)
+                                                .unwrap_or(EXPANDED_HEIGHT),
                                         ));
                                     let peek_size = *app_state.peek_size.lock().await;
                                     let default_peek_rect =
-                                        peek_rect_for_position(&win, default_position, peek_size).ok();
+                                        peek_rect_for_position(&win, default_position, peek_size)
+                                            .ok();
                                     let default_expanded_rect = expanded_rect_for_position(
                                         &win,
                                         default_position,
@@ -4506,7 +4798,8 @@ pub fn run() {
                                         let mut guard = provider_state.lock().await;
                                         *guard = provider;
                                     }
-                                    let _ = emit_transcription_provider_changed(&win_clone, provider);
+                                    let _ =
+                                        emit_transcription_provider_changed(&win_clone, provider);
                                 });
                             }
                         }
@@ -4517,9 +4810,13 @@ pub fn run() {
                             }
                         }
                         "api_url" => {
-                            // Copy the LLM URL to clipboard for convenience
+                            // Copy the configured Agent Studio URL to clipboard.
                             let state = app.state::<AppState>();
-                            let url = state.config.local_llm_base_url.clone();
+                            let url = state
+                                .config
+                                .comm_officer_base_url
+                                .clone()
+                                .unwrap_or_default();
                             #[cfg(target_os = "macos")]
                             {
                                 let _ = std::process::Command::new("pbcopy")
@@ -4559,8 +4856,23 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app, event| {
+        if let RunEvent::ExitRequested { code, api, .. } = event {
+            let state = app.state::<AppState>();
+            if !state.shutdown_started.swap(true, Ordering::SeqCst) {
+                api.prevent_exit();
+                let app = app.clone();
+                async_runtime::spawn(async move {
+                    let state = app.state::<AppState>();
+                    reset_agent_studio_activity(state.inner()).await;
+                    app.exit(code.unwrap_or(0));
+                });
+            }
+        }
+    });
 }
 
 fn main() {
@@ -4591,6 +4903,18 @@ mod tests {
             frame.data(),
             "{\"speechText\":\"Hallo\",\n\"displayText\":\"Hallo\"}"
         );
+    }
+
+    #[test]
+    fn privileged_request_input_rejects_tenant_and_free_header_overrides() {
+        let payload = serde_json::json!({
+            "clientRequestId": "client-1",
+            "utterance": "tenant-bound request",
+            "tenantId": "tenant-b",
+            "headers": { "x-tenant-id": "tenant-b" }
+        });
+
+        assert!(serde_json::from_value::<CreateDesktopAvatarRequestInput>(payload).is_err());
     }
 
     #[test]
@@ -4665,6 +4989,7 @@ mod tests {
     #[test]
     fn tts_state_event_serialization_skips_optional_fields_when_absent() {
         let event = TtsStateEvent {
+            context_id: "context-a".to_string(),
             request_id: "req-1".to_string(),
             speaking: false,
             provider: None,
@@ -4674,7 +4999,14 @@ mod tests {
         let object = value
             .as_object()
             .expect("serialized tts event to be an object");
-        assert_eq!(object.get("requestId").and_then(Value::as_str), Some("req-1"));
+        assert_eq!(
+            object.get("contextId").and_then(Value::as_str),
+            Some("context-a")
+        );
+        assert_eq!(
+            object.get("requestId").and_then(Value::as_str),
+            Some("req-1")
+        );
         assert_eq!(object.get("speaking").and_then(Value::as_bool), Some(false));
         assert!(!object.contains_key("provider"));
         assert!(!object.contains_key("fallback"));
@@ -4688,7 +5020,7 @@ mod tests {
 
     #[test]
     fn duplicate_tts_detection_is_request_scoped() {
-        let mut cache = HashMap::<String, String>::new();
+        let mut cache = HashMap::<String, u64>::new();
         let first_text = normalize_tts_text("Zeig   mir  Bestellungen");
         let same_text = normalize_tts_text("Zeig mir Bestellungen");
         let next_text = normalize_tts_text("Zeig mir offene Bestellungen");
@@ -4699,19 +5031,13 @@ mod tests {
             &first_text
         ));
         assert!(should_skip_duplicate_tts_entry(
-            &mut cache,
-            "req-1",
-            &same_text
+            &mut cache, "req-1", &same_text
         ));
         assert!(!should_skip_duplicate_tts_entry(
-            &mut cache,
-            "req-1",
-            &next_text
+            &mut cache, "req-1", &next_text
         ));
         assert!(!should_skip_duplicate_tts_entry(
-            &mut cache,
-            "req-2",
-            &same_text
+            &mut cache, "req-2", &same_text
         ));
     }
 
@@ -4780,12 +5106,88 @@ mod tests {
     #[test]
     fn normalize_language_code_accepts_locale_variants() {
         assert_eq!(normalize_language_code("de-DE"), Some("de".to_string()));
-        assert_eq!(normalize_language_code("en_US.UTF-8"), Some("en".to_string()));
+        assert_eq!(
+            normalize_language_code("en_US.UTF-8"),
+            Some("en".to_string())
+        );
     }
 
     #[test]
     fn normalize_language_code_rejects_shell_placeholders() {
         assert_eq!(normalize_language_code("C"), None);
         assert_eq!(normalize_language_code("POSIX"), None);
+    }
+
+    #[tokio::test]
+    async fn tts_shutdown_waits_for_child_termination_acknowledgement() {
+        let terminated = Arc::new(AtomicBool::new(false));
+        let task_terminated = terminated.clone();
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let (stopped_tx, stopped_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let _ = cancel_rx.await;
+            task_terminated.store(true, Ordering::SeqCst);
+            let _ = stopped_tx.send(());
+        });
+
+        cancel_tts_process_handles(vec![TtsProcessHandle {
+            cancel: cancel_tx,
+            stopped: stopped_rx,
+        }])
+        .await;
+
+        assert!(terminated.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn stale_stream_cleanup_cannot_remove_replacement_owner() {
+        let old_handle = async_runtime::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let new_handle = async_runtime::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let mut streams = HashMap::from([(
+            "same-id".to_string(),
+            OwnedStreamHandle {
+                owner_id: "owner-old".to_string(),
+                context_id: "context-a".to_string(),
+                handle: old_handle,
+            },
+        )]);
+        let replaced = streams.insert(
+            "same-id".to_string(),
+            OwnedStreamHandle {
+                owner_id: "owner-new".to_string(),
+                context_id: "context-b".to_string(),
+                handle: new_handle,
+            },
+        );
+        replaced.expect("old stream").handle.abort();
+
+        assert!(
+            remove_stream_if_owner(&mut streams, "same-id", "owner-old").is_none(),
+            "old A cleanup must not remove the B replacement"
+        );
+        let current = streams.remove("same-id").expect("replacement stream");
+        assert_eq!(current.context_id, "context-b");
+        current.handle.abort();
+    }
+
+    #[tokio::test]
+    async fn stale_single_stream_cleanup_cannot_remove_replacement_owner() {
+        let handle = async_runtime::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let mut slot = Some(OwnedStreamHandle {
+            owner_id: "owner-new".to_string(),
+            context_id: "context-b".to_string(),
+            handle,
+        });
+
+        assert!(take_stream_if_owner(&mut slot, "owner-old").is_none());
+        let current = slot.take().expect("replacement stream");
+        assert_eq!(current.context_id, "context-b");
+        current.handle.abort();
     }
 }

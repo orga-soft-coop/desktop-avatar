@@ -1,6 +1,6 @@
 # SYNTRA Assistant
 
-Cross-platform desktop companion that renders a 3D VRM avatar with voice and text chat. Integrates with a local LLM (LM Studio) for casual conversation and a Communication Officer backend for business data queries.
+Cross-platform desktop companion that renders a 3D VRM avatar with voice and text chat. All commands, questions, HITL decisions, Radar reads, polls, and streams run through the active Agent Studio tenant session.
 
 ## Stack
 
@@ -24,9 +24,8 @@ Cross-platform desktop companion that renders a 3D VRM avatar with voice and tex
 
 1. `pnpm install`
 2. Copy `.env.example` to `.env` and fill in the required values (see Environment below).
-3. Start LM Studio with an OpenAI-compatible server on `http://127.0.0.1:1234/v1`.
-4. Start the Communication Officer backend (if using business queries).
-5. `pnpm tauri:dev`
+3. Start Agent Studio and configure `COMM_OFFICER_BASE_URL`.
+4. `pnpm tauri:dev`
 
 ## Commands
 
@@ -82,12 +81,11 @@ User input (text or voice)
     ├─ Voice → OpenAI STT → transcript
     │
     ▼
-routePrompt(text)  ──→  API-first classifier
+routePrompt(text)  ──→  UX/diagnostic intent classification
     │
-    ├─ clear smalltalk      → LM Studio (local LLM, SSE streaming)
-    └─ non-casual prompts   → SYNTRA Assistant backend API (create + SSE stream)
-                                  ├─ clarification → reply endpoint → child-turn stream
-                                  └─ dataset       → cursor page endpoint
+    └─ every prompt → Agent Studio DesktopAvatar API (create + SSE stream)
+                          ├─ clarification → reply endpoint → child-turn stream
+                          └─ dataset       → cursor page endpoint
     │
     ▼
 SSE stream events → Tauri emits to frontend
@@ -100,14 +98,33 @@ SSE stream events → Tauri emits to frontend
 TTS (macOS `say` command) → speaking animation
 ```
 
-### Routing Policy (API-first)
+### Routing Policy (Agent Studio only)
 
-- Default behavior is API-first: non-casual prompts are sent to the SYNTRA Assistant backend API.
-- Local LM Studio chat is reserved for clear smalltalk/greeting prompts.
-- Business intent wins over greeting keywords in mixed prompts.
-- Business denials, unsupported/no-match results, authorization failures, and technical backend failures never auto-fallback to the local LLM; the backend error is shown to the user.
+- Every text and voice prompt is submitted to the Agent Studio DesktopAvatar API in the active tenant.
+- Business intent wins over general-intent keywords in mixed prompts.
+- Unsupported/no-match, timeout, network, and server errors remain visible errors; none triggers a local response path.
+- Tenant context comes only from the confirmed Agent Studio session. Request bodies, query parameters, and free headers cannot override it.
 - `NEEDS_CLARIFICATION` waits for a chip, text, or voice answer and resumes via the dedicated reply endpoint as an immutable child turn.
 - `dataset` widgets load additional rows with an opaque server cursor.
+
+### Authentication and tenant switching
+
+- The native window appears immediately at startup. Before authentication it opens at 520 x 600, remains in the neutral closed/peek-circle presentation with the bundled OrgaSoft app icon, and shows only the dedicated opaque login-step overlay. The normal content overlays stay unavailable, and the Three.js/VRM avatar is mounted only after Agent Studio confirms the tenant session.
+- The login surface is named `SYNTRA · Desktop Agent`; authentication copy exposes the SYNTRA product name rather than the internal Agent Studio service name.
+- Drag the circle, heading, or another non-interactive part of the login surface to move the window; form controls remain interactive.
+- The React login gate calls Agent Studio's `preauthenticate → companies → branches → complete` flow through Tauri IPC.
+- Credentials are shown first. After preauthentication, company and branch are selected together through searchable, keyboard-accessible comboboxes in a subtly animated second screen; choosing a company still loads its authorized branches before `complete` can run.
+- React clears the password immediately after submission. Rust retains it only in process memory until the canonical `complete` request, which requires `companyId`, `branchId`, and password, and clears it regardless of that request's outcome.
+- Rust retains HttpOnly/session/CSRF cookies in an in-memory cookie jar; the WebView receives only the public session projection.
+- The native broker enforces the server-provided login-flow expiry and clears the pending in-memory password and cookies automatically when it expires.
+- During the running process, `GET /v1/auth/session` revalidates a still-valid session. A process restart starts at the login gate because cookies are deliberately not persisted. Session expiry or revocation closes the tenant UI.
+- During initial bootstrap or recovery, a transient session-check outage keeps the tenant UI closed and offers session retry or logout; credentials are shown again only after Agent Studio confirms that the session is missing or invalid. A transient verification failure does not by itself invalidate an already confirmed, locally unexpired tenant session.
+- Closing a visible HITL approval panel hides it only for the current expanded presentation. The pending decision remains live and counted until it is approved, rejected, or resolved by the Agent Studio API; collapsing and reopening the avatar shows every still-pending HITL panel again.
+- Tenant switching requires logout and full login. Stream start, replacement, task spawn, and handle registration are serialized with the session transition. Each stream has a unique owner token, so completion from an old stream cannot unregister a replacement stream. Logout/re-login aborts streams and discards all in-memory tenant state before the next session becomes visible.
+- The active-tenant badge explicitly restores pointer interaction inside the click-through avatar shell so its logout action remains usable.
+- Each privileged operation captures the current session epoch together with its cookie transport; delayed text or microphone work and stale responses are rejected instead of inheriting a replacement login.
+- Window geometry and redacted debug logs are stored with owner-only permissions in the operating system application-data directory, not below the repository. They contain no prompt, transcript, cookie, token, or business payload.
+- TTS child processes are spawned and registered atomically under the session-transition guard. Logout cancels all registered children and waits for their termination before a replacement login can activate; it also clears transcription buffers and temporary audio. App exit performs the same awaited drain, while `kill_on_drop` is the final process-safety net.
 
 ### Directory Structure
 
@@ -126,7 +143,9 @@ src/
   lib/
     contracts.ts             All TypeScript interfaces
     tauri.ts                 Tauri IPC bridge (invoke + listen wrappers)
-    router.ts                Prompt routing (API-first + local smalltalk exception)
+    auth-contracts.ts        Public Agent Studio auth/session DTOs
+    tenant-session.ts        Immutable active context guard
+    router.ts                UX/diagnostic intent classification only
     avatar-assets.ts         Asset resolution (file paths, relative, HTTPS → blob URLs)
     vrm-animation.ts         VRMA + FBX loading with Mixamo bone mapping
     window-presets.ts        Size presets (S/M/L) + localStorage persistence
@@ -157,11 +176,12 @@ src-tauri/
 | thinking | thinking clip |
 | speaking | talking clip |
 
-**`router.ts`** — API-first prompt classification. Casual phrases (hallo, witz, who are you, etc.) stay local; all other prompts route to backend paths (`backendBusiness` or `backendReview`).
+**`router.ts`** — Intent classification used for UX/diagnostics. It does not select a transport: all prompts use Agent Studio.
 
 **`main.rs` (Rust)** — Tauri backend with commands for:
 - Window management (resize, drag, expand/collapse, click-through)
-- Chat streaming (local LLM + business backend, both via SSE)
+- Agent Studio authentication/session handling with an in-memory cookie jar and CSRF protection
+- Tenant-bound DesktopAvatar, HITL, and Radar HTTP/SSE calls
 - Speech transcription (OpenAI API)
 - TTS (macOS `say` command)
 - Asset loading (local files + remote URLs)
@@ -206,7 +226,7 @@ The macOS menu bar tray provides:
 - Size submenu (Collapsed / Expanded)
 - Toggle TTS
 - Toggle Always on Top
-- LLM URL display (click to copy)
+- Agent Studio URL display (click to copy)
 - Quit
 
 ## Avatar Assets
@@ -318,8 +338,8 @@ Details: `tools/avatar-build/README.md`.
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `COMM_OFFICER_BASE_URL` | For business queries | — | Backend API URL |
-| `COMM_OFFICER_TOKEN` | For business queries | — | Bearer token |
+| `COMM_OFFICER_BASE_URL` | Yes | — | Agent Studio API origin |
+| `COMM_OFFICER_CSRF_COOKIE_NAME` | No | `agent_studio_csrf` | CSRF cookie-name override |
 | `OPENAI_API_KEY` | For voice I/O | — | Speech transcription + OpenAI TTS |
 | `OPENAI_STT_MODEL` | No | `gpt-4o-mini-transcribe` | STT model |
 | `TTS_PROVIDER` | No | `auto` | TTS backend: `auto`, `local`, `fish`, `openai`, `system` |
@@ -338,12 +358,7 @@ Details: `tools/avatar-build/README.md`.
 | `LOCAL_TTS_HEADERS` | No | `{}` | Optional JSON headers map for local TTS requests |
 | `ENABLE_TTS` | No | `true` | Text-to-speech toggle |
 | `AVATAR_ASSET_MANIFEST` | No | `public/sample-avatar-manifest.json` | Path to manifest JSON |
-| `LOCAL_LLM_BASE_URL` | No | `http://127.0.0.1:1234/v1` | LM Studio URL |
-| `LOCAL_LLM_MODEL` | No | `qwen/qwen3.5-35b-a3b` | Model name |
-| `LOCAL_LLM_API_KEY` | No | — | API key for local LLM |
 | `VITE_DEV_TOOLS` | No | `false` | Show dev tools in chat panel |
-
-`COMM_OFFICER_TOKEN` and `requestedBy: "desktop-avatar"` are transitional development configuration. Per-user identity, token refresh, and OS-keychain storage remain deferred until the backend publishes a trusted authentication contract. Poll/stream URLs returned by the backend are accepted only when they have the same scheme, host, and effective port as `COMM_OFFICER_BASE_URL`.
 
 ## Design
 

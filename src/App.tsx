@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   DEFAULT_AVATAR_CAMERA_CONFIG,
@@ -20,6 +20,10 @@ import type {
 } from "./lib/contracts";
 import { t } from "./lib/i18n";
 import { getWindowGeometry } from "./lib/tauri";
+import type { DesktopAvatarTenantSession } from "./lib/auth-contracts";
+import { LoginGate } from "./components/LoginGate";
+import { useTenantSession } from "./hooks/useTenantSession";
+import { useHitlPanelDismissals } from "./hooks/useHitlPanelDismissals";
 
 const TEXT_WIDGET_BUBBLE_ONLY_MAX_CHARS = 220;
 const PEEK_REST_ANIMATION_STORAGE_KEY = "desktop-avatar.peekRestAnimationClip";
@@ -79,7 +83,13 @@ interface PanelEntry {
   followUpQuestions: string[];
 }
 
-export default function App() {
+function AuthenticatedApp({
+  session,
+  onLogout
+}: {
+  session: Readonly<DesktopAvatarTenantSession>;
+  onLogout: () => Promise<void>;
+}) {
   const companion = useDesktopCompanion();
   const isExpanded = companion.peekMode === "expanded";
   const isPeek = companion.peekMode === "peek";
@@ -129,6 +139,12 @@ export default function App() {
   const previousExpandedRef = useRef(isExpanded);
   const reopenLeftDockAnchorGuardRef = useRef(false);
 
+  const {
+    dismissedDecisionIds: dismissedHitlDecisionIds,
+    dismissDecision: dismissHitlDecision,
+    dismissDecisions: dismissHitlDecisions
+  } = useHitlPanelDismissals(companion.hitlWidgets, isExpanded);
+
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -175,74 +191,95 @@ export default function App() {
       ? "status"
       : "default";
   const showThinkingIndicator = companion.companionState === "thinking" && !companion.error;
-  const demoWidgets = activeDemoWidgets
-    .map((kind) => ({ kind, widget: buildDemoWidget(kind) }))
-    .filter((entry): entry is { kind: DevToolsDemoWidgetKind; widget: DesktopAvatarWidgetPayload } =>
-      entry.widget !== null
-    );
-  const requestPanelEntries: PanelEntry[] = companion.messages.reduce<PanelEntry[]>(
-    (entries, message) => {
-      if (message.role !== "assistant" || !message.widget) {
-        return entries;
-      }
+  const requestPanelEntries = useMemo(
+    () =>
+      companion.messages.reduce<PanelEntry[]>((entries, message) => {
+        if (message.role !== "assistant" || !message.widget) {
+          return entries;
+        }
 
-      const widget = message.widget;
-      const hideShortTextWidget =
-        widget.type === "text" &&
-        widget.text.trim().length > 0 &&
-        widget.text.trim().length <= TEXT_WIDGET_BUBBLE_ONLY_MAX_CHARS &&
-        (message.followUpQuestions?.length ?? 0) === 0;
-      if (hideShortTextWidget || dismissedWidgetMessageIds.has(message.id)) {
-        return entries;
-      }
+        const widget = message.widget;
+        const hideShortTextWidget =
+          widget.type === "text" &&
+          widget.text.trim().length > 0 &&
+          widget.text.trim().length <= TEXT_WIDGET_BUBBLE_ONLY_MAX_CHARS &&
+          (message.followUpQuestions?.length ?? 0) === 0;
+        if (hideShortTextWidget || dismissedWidgetMessageIds.has(message.id)) {
+          return entries;
+        }
 
-      entries.push({
-        id: `request:${message.id}`,
-        source: "request",
-        messageId: message.id,
-        avatarRequestId: message.avatarRequestId ?? undefined,
-        clarificationState: message.clarificationState,
-        widget,
-        followUpQuestions: message.followUpQuestions ?? []
-      });
-      return entries;
-    },
-    []
+        entries.push({
+          id: `request:${message.id}`,
+          source: "request",
+          messageId: message.id,
+          avatarRequestId: message.avatarRequestId ?? undefined,
+          clarificationState: message.clarificationState,
+          widget,
+          followUpQuestions: message.followUpQuestions ?? []
+        });
+        return entries;
+      }, []),
+    [companion.messages, dismissedWidgetMessageIds]
   );
 
-  const demoPanelEntries: PanelEntry[] = demoWidgets.map((entry) => ({
-    id: `demo:${entry.kind}`,
-    source: "demo",
-    demoKind: entry.kind,
-    widget: entry.widget,
-    followUpQuestions: demoFollowUpQuestions(entry.widget)
-  }));
+  const demoPanelEntries = useMemo(
+    () =>
+      activeDemoWidgets
+        .map((kind) => ({ kind, widget: buildDemoWidget(kind) }))
+        .filter(
+          (
+            entry
+          ): entry is { kind: DevToolsDemoWidgetKind; widget: DesktopAvatarWidgetPayload } =>
+            entry.widget !== null
+        )
+        .map<PanelEntry>((entry) => ({
+          id: `demo:${entry.kind}`,
+          source: "demo",
+          demoKind: entry.kind,
+          widget: entry.widget,
+          followUpQuestions: demoFollowUpQuestions(entry.widget)
+        })),
+    [activeDemoWidgets]
+  );
 
-  const hitlPanelEntries: PanelEntry[] = companion.hitlWidgets.map((widget) => ({
-    id: `hitl:${widget.decisionId}`,
-    source: "hitl",
-    decisionId: widget.decisionId,
-    widget,
-    followUpQuestions: []
-  }));
-
-  const radarPanelEntries: PanelEntry[] = companion.operatorRadarWidget
-    ? [
-        {
-          id: "radar:operator",
-          source: "radar",
-          widget: companion.operatorRadarWidget,
+  const hitlPanelEntries = useMemo<PanelEntry[]>(
+    () =>
+      companion.hitlWidgets
+        .filter((widget) => !dismissedHitlDecisionIds.has(widget.decisionId))
+        .map((widget) => ({
+          id: `hitl:${widget.decisionId}`,
+          source: "hitl",
+          decisionId: widget.decisionId,
+          widget,
           followUpQuestions: []
-        }
-      ]
-    : [];
+        })),
+    [companion.hitlWidgets, dismissedHitlDecisionIds]
+  );
 
-  const panelEntries: PanelEntry[] = [
-    ...requestPanelEntries,
-    ...hitlPanelEntries,
-    ...radarPanelEntries,
-    ...demoPanelEntries
-  ];
+  const radarPanelEntries = useMemo<PanelEntry[]>(
+    () =>
+      companion.operatorRadarWidget
+        ? [
+            {
+              id: "radar:operator",
+              source: "radar",
+              widget: companion.operatorRadarWidget,
+              followUpQuestions: []
+            }
+          ]
+        : [],
+    [companion.operatorRadarWidget]
+  );
+
+  const panelEntries = useMemo<PanelEntry[]>(
+    () => [
+      ...requestPanelEntries,
+      ...hitlPanelEntries,
+      ...radarPanelEntries,
+      ...demoPanelEntries
+    ],
+    [demoPanelEntries, hitlPanelEntries, radarPanelEntries, requestPanelEntries]
+  );
   const activePanelIndex = panelEntries.findIndex((entry) => entry.id === activePanelEntryId);
   const preferredFallbackPanelEntry =
     hitlPanelEntries[hitlPanelEntries.length - 1] ??
@@ -470,10 +507,10 @@ export default function App() {
 
   useEffect(() => {
     const latestHitl = companion.hitlWidgets[companion.hitlWidgets.length - 1];
-    if (latestHitl) {
+    if (latestHitl && !dismissedHitlDecisionIds.has(latestHitl.decisionId)) {
       setActivePanelEntryId(`hitl:${latestHitl.decisionId}`);
     }
-  }, [companion.hitlWidgets]);
+  }, [companion.hitlWidgets, dismissedHitlDecisionIds]);
 
   useEffect(() => {
     if (!radarOpenRequested || !companion.operatorRadarWidget) {
@@ -586,28 +623,35 @@ export default function App() {
     [companion, widgetDockSide, widgetDockVisible]
   );
 
-  const dismissPanelEntry = useCallback((entry: PanelEntry) => {
-    if (entry.source === "demo" && entry.demoKind) {
-      setActiveDemoWidgets((current) => current.filter((kind) => kind !== entry.demoKind));
-      return;
-    }
-    if (entry.source === "radar") {
-      setRadarOpenRequested(false);
-      companion.dismissOperatorRadar();
-      return;
-    }
-    if (!entry.messageId) {
-      return;
-    }
-    setDismissedWidgetMessageIds((previous) => {
-      if (previous.has(entry.messageId!)) {
-        return previous;
+  const dismissPanelEntry = useCallback(
+    (entry: PanelEntry) => {
+      if (entry.source === "demo" && entry.demoKind) {
+        setActiveDemoWidgets((current) => current.filter((kind) => kind !== entry.demoKind));
+        return;
       }
-      const next = new Set(previous);
-      next.add(entry.messageId!);
-      return next;
-    });
-  }, []);
+      if (entry.source === "radar") {
+        setRadarOpenRequested(false);
+        companion.dismissOperatorRadar();
+        return;
+      }
+      if (entry.source === "hitl" && entry.decisionId) {
+        dismissHitlDecision(entry.decisionId);
+        return;
+      }
+      if (!entry.messageId) {
+        return;
+      }
+      setDismissedWidgetMessageIds((previous) => {
+        if (previous.has(entry.messageId!)) {
+          return previous;
+        }
+        const next = new Set(previous);
+        next.add(entry.messageId!);
+        return next;
+      });
+    },
+    [companion, dismissHitlDecision]
+  );
 
   const toggleDemoWidget = useCallback((kind: DevToolsDemoWidgetKind) => {
     setActiveDemoWidgets((current) =>
@@ -623,6 +667,11 @@ export default function App() {
     setActiveDemoWidgets([]);
     setRadarOpenRequested(false);
     companion.dismissOperatorRadar();
+    dismissHitlDecisions(
+      panelEntries.flatMap((entry) =>
+        entry.source === "hitl" && entry.decisionId ? [entry.decisionId] : []
+      )
+    );
     setDismissedWidgetMessageIds((previous) => {
       const next = new Set(previous);
       for (const entry of panelEntries) {
@@ -632,7 +681,7 @@ export default function App() {
       }
       return next;
     });
-  }, [companion, panelEntries]);
+  }, [companion, dismissHitlDecisions, panelEntries]);
 
   const handleOpenRadar = useCallback(() => {
     setRadarOpenRequested(true);
@@ -671,6 +720,14 @@ export default function App() {
       data-theme={uiTheme}
       className={`app-shell ${isExpanded ? "is-expanded" : "is-peek"} peek-size-${companion.sizePreset} ${!startupMaskRevealComplete && isPeek ? "startup-peek-prep" : ""} ${startupMaskRevealActive && isPeek ? "startup-peek-in" : ""} ${companion.isModeTransitioning ? "is-mode-transitioning" : ""} ${companion.modeTransitionPhase !== "idle" ? `mode-transition-${companion.modeTransitionPhase}` : ""} ${widgetTooltipOpen ? "has-widget-tooltip" : ""} ${widgetDockVisible ? "widget-dock-visible" : ""} widget-dock-${widgetDockSide}`}
     >
+      {isExpanded ? (
+        <div className="tenant-session-badge" role="status">
+          <span>
+            {session.publicSession.selectedTenant.companyName} · {session.publicSession.selectedTenant.branchName}
+          </span>
+          <button type="button" onClick={() => void onLogout()}>{t("auth.logout")}</button>
+        </div>
+      ) : null}
       <div className={`app-content-column ${isExpanded ? "is-expanded" : ""}`} style={expandedContentStyle}>
         {isExpanded ? (
           <SpeechBubble
@@ -862,6 +919,29 @@ export default function App() {
       ) : null}
     </main>
   );
+}
+
+export default function App() {
+  const auth = useTenantSession();
+  if (!auth.session) {
+    return (
+      <LoginGate
+        step={auth.step}
+        companies={auth.companies}
+        branches={auth.branches}
+        selectedCompanyId={auth.selectedCompanyId}
+        busy={auth.busy}
+        error={auth.error}
+        sessionRecoveryRequired={auth.sessionRecoveryRequired}
+        onCredentials={auth.preauthenticate}
+        onCompany={auth.selectCompany}
+        onBranch={auth.selectBranch}
+        onRetrySession={auth.retrySession}
+        onLogout={auth.logout}
+      />
+    );
+  }
+  return <AuthenticatedApp key={auth.session.contextId} session={auth.session} onLogout={auth.logout} />;
 }
 
 function demoFollowUpQuestions(widget: DesktopAvatarWidgetPayload): string[] {

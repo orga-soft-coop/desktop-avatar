@@ -109,6 +109,11 @@ describe("desktop avatar orchestrator", () => {
       document: {
         avatarRequestId: "req-2",
         clientRequestId: "client-2",
+        requestedBy: "desktop-avatar",
+        mode: "SIMULATION",
+        modality: "chat",
+        utterance: "Welche Bestellungen sind offen?",
+        responseModes: ["talk", "widget"],
         status: "COMPLETED",
         response: {
           talk: { text: "Polling hat das Endergebnis geliefert." },
@@ -119,7 +124,9 @@ describe("desktop avatar orchestrator", () => {
           },
           followUpQuestions: []
         },
-        error: null
+        error: null,
+        createdAt: "2026-08-25T10:00:00.000Z",
+        updatedAt: "2026-08-25T10:00:01.000Z"
       }
     });
 
@@ -192,8 +199,15 @@ describe("desktop avatar orchestrator", () => {
       document: {
         avatarRequestId: "req-polled-clarification",
         clientRequestId: "client-1",
+        requestedBy: "desktop-avatar",
+        mode: "SIMULATION",
+        modality: "chat",
+        utterance: "Zeige mir die Bestellungen",
+        responseModes: ["talk", "widget"],
         conversationId: "conversation-1",
         status: "NEEDS_CLARIFICATION",
+        createdAt: "2026-08-14T10:00:00.000Z",
+        updatedAt: "2026-08-14T10:00:01.000Z",
         response: {
           talk: { text: "Ich brauche noch einen Zeitraum." },
           followUpQuestions: []
@@ -209,8 +223,15 @@ describe("desktop avatar orchestrator", () => {
       document: {
         avatarRequestId: "req-polled-clarification",
         clientRequestId: "client-1",
+        requestedBy: "desktop-avatar",
+        mode: "SIMULATION",
+        modality: "chat",
+        utterance: "Zeige mir die Bestellungen",
+        responseModes: ["talk", "widget"],
         conversationId: "conversation-1",
         status: "NEEDS_CLARIFICATION",
+        createdAt: "2026-08-14T10:00:00.000Z",
+        updatedAt: "2026-08-14T10:00:02.000Z",
         response: {
           talk: { text: "Ich brauche noch einen Zeitraum." },
           widget: {

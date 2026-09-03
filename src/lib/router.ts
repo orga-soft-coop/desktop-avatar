@@ -73,7 +73,7 @@ export function routePrompt(prompt: string): PromptRoute {
   }
 
   if (casualKeywords.some((keyword) => normalized.includes(keyword))) {
-    return "localChat";
+    return "agentStudioGeneral";
   }
 
   return "backendBusiness";

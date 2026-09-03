@@ -27,11 +27,21 @@ import type {
   TranscriptionSessionStopRequest,
   PeekMode,
   PeekPosition,
-  LocalChatRequest,
   SpeechTranscriptionRequest,
-  StreamEnvelope,
   TtsStateEvent
 } from "./contracts";
+import type {
+  AuthBranchSummary,
+  AuthCompanySummary,
+  AuthPreauthenticateResult,
+  DesktopAvatarTenantSession
+} from "./auth-contracts";
+import {
+  clearTenantSession,
+  getRequiredTenantContextId,
+  isCurrentTenantContext
+} from "./tenant-session";
+import { isAgentStudioSessionInvalid } from "./auth-errors";
 import { t } from "./i18n";
 import { DEFAULT_SIZE_PRESET, getWindowSizesForPreset } from "./window-presets";
 
@@ -46,6 +56,39 @@ function requireTauriRuntime(feature: string): void {
   if (!isTauriRuntime()) {
     throw new Error(t("errors.tauriRequired", { feature }));
   }
+}
+
+const TENANT_SESSION_INVALIDATED_EVENT = "desktop-avatar-session-invalidated";
+
+function resolveExpectedContextId(capturedContextId?: string): string {
+  if (capturedContextId) {
+    if (!isCurrentTenantContext(capturedContextId)) {
+      throw new Error("DESKTOP_SESSION_CHANGED");
+    }
+    return capturedContextId;
+  }
+  return getRequiredTenantContextId();
+}
+
+function invalidateTenantSessionFromApi(error: unknown): void {
+  if (!isAgentStudioSessionInvalid(error)) return;
+  clearTenantSession();
+  window.dispatchEvent(new Event(TENANT_SESSION_INVALIDATED_EVENT));
+  void invoke("auth_session_get").catch(() => undefined);
+}
+
+async function invokeTenant<T>(command: string, args: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    invalidateTenantSessionFromApi(error);
+    throw error;
+  }
+}
+
+export function onTenantSessionInvalidated(listener: () => void): () => void {
+  window.addEventListener(TENANT_SESSION_INVALIDATED_EVENT, listener);
+  return () => window.removeEventListener(TENANT_SESSION_INVALIDATED_EVENT, listener);
 }
 
 export async function getBootstrapState(): Promise<BootstrapState> {
@@ -180,119 +223,210 @@ export async function frontendLog(level: string, message: string): Promise<void>
   await invoke("frontend_log", { level, message });
 }
 
+export async function authPreauthenticate(
+  username: string,
+  password: string
+): Promise<AuthPreauthenticateResult> {
+  requireTauriRuntime("Agent Studio Login");
+  return invoke<AuthPreauthenticateResult>("auth_preauthenticate", {
+    input: { username, password }
+  });
+}
+
+export async function authCompanies(): Promise<AuthCompanySummary[]> {
+  requireTauriRuntime("Agent Studio Login");
+  return invoke<AuthCompanySummary[]>("auth_companies");
+}
+
+export async function authBranches(companyId: string): Promise<AuthBranchSummary[]> {
+  requireTauriRuntime("Agent Studio Login");
+  return invoke<AuthBranchSummary[]>("auth_branches", { companyId });
+}
+
+export async function authComplete(
+  companyId: string,
+  branchId: string
+): Promise<DesktopAvatarTenantSession> {
+  requireTauriRuntime("Agent Studio Login");
+  return invoke<DesktopAvatarTenantSession>("auth_complete", {
+    input: { companyId, branchId }
+  });
+}
+
+export async function authSessionGet(): Promise<DesktopAvatarTenantSession> {
+  requireTauriRuntime("Agent Studio Session");
+  return invoke<DesktopAvatarTenantSession>("auth_session_get");
+}
+
+export async function authLogout(): Promise<void> {
+  requireTauriRuntime("Agent Studio Logout");
+  await invoke("auth_logout");
+}
+
 export async function createDesktopAvatarRequest(
-  request: CreateDesktopAvatarRequestInput
+  request: CreateDesktopAvatarRequestInput,
+  capturedContextId?: string
 ): Promise<CreateDesktopAvatarRequestResult> {
   requireTauriRuntime("SYNTRA Assistant Anfrage");
-  return invoke<CreateDesktopAvatarRequestResult>("desktop_avatar_request_create", { request });
+  return invokeTenant<CreateDesktopAvatarRequestResult>("desktop_avatar_request_create", {
+    request,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function getDesktopAvatarRequest(args: {
   avatarRequestId?: string;
   pollUrl?: string;
-}): Promise<DesktopAvatarRequestDocument> {
+}, capturedContextId?: string): Promise<DesktopAvatarRequestDocument> {
   requireTauriRuntime("SYNTRA Assistant Polling");
-  return invoke<DesktopAvatarRequestDocument>("desktop_avatar_request_get", args);
+  return invokeTenant<DesktopAvatarRequestDocument>("desktop_avatar_request_get", {
+    ...args,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function replyDesktopAvatarClarification(args: {
   avatarRequestId: string;
   clarificationId: string;
   request: ReplyDesktopAvatarClarificationInput;
-}): Promise<CreateDesktopAvatarRequestResult> {
+}, capturedContextId?: string): Promise<CreateDesktopAvatarRequestResult> {
   requireTauriRuntime("SYNTRA Assistant Rückfrage");
-  return invoke<CreateDesktopAvatarRequestResult>("desktop_avatar_clarification_reply", args);
+  return invokeTenant<CreateDesktopAvatarRequestResult>("desktop_avatar_clarification_reply", {
+    ...args,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function getDesktopAvatarDatasetPage(args: {
   avatarRequestId: string;
   resultId: string;
   cursor?: string;
-}): Promise<DesktopAvatarDatasetPage> {
+}, capturedContextId?: string): Promise<DesktopAvatarDatasetPage> {
   requireTauriRuntime("SYNTRA Assistant Datensatz");
-  return invoke<DesktopAvatarDatasetPage>("desktop_avatar_dataset_page_get", args);
-}
-
-export async function cancelDesktopAvatarConversation(
-  conversationId: string
-): Promise<DesktopAvatarConversationCancelResult> {
-  requireTauriRuntime("SYNTRA Assistant Konversation");
-  return invoke<DesktopAvatarConversationCancelResult>("desktop_avatar_conversation_cancel", {
-    conversationId
+  return invokeTenant<DesktopAvatarDatasetPage>("desktop_avatar_dataset_page_get", {
+    ...args,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
   });
 }
 
-export async function getDesktopAvatarRadar(): Promise<DesktopAvatarRadarResponse> {
+export async function cancelDesktopAvatarConversation(
+  conversationId: string,
+  capturedContextId?: string
+): Promise<DesktopAvatarConversationCancelResult> {
+  requireTauriRuntime("SYNTRA Assistant Konversation");
+  return invokeTenant<DesktopAvatarConversationCancelResult>("desktop_avatar_conversation_cancel", {
+    conversationId,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
+}
+
+export async function getDesktopAvatarRadar(
+  capturedContextId?: string
+): Promise<DesktopAvatarRadarResponse> {
   requireTauriRuntime("Operator-Radar");
-  return invoke<DesktopAvatarRadarResponse>("desktop_avatar_radar_get");
+  return invokeTenant<DesktopAvatarRadarResponse>("desktop_avatar_radar_get", {
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
-export async function startDesktopAvatarRadarStream(): Promise<void> {
+export async function startDesktopAvatarRadarStream(capturedContextId?: string): Promise<void> {
   requireTauriRuntime("Operator-Radar Stream");
-  await invoke("desktop_avatar_radar_stream_start");
+  await invokeTenant("desktop_avatar_radar_stream_start", {
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
-export async function stopDesktopAvatarRadarStream(): Promise<void> {
+export async function stopDesktopAvatarRadarStream(capturedContextId?: string): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
-  await invoke("desktop_avatar_radar_stream_stop");
+  await invokeTenant("desktop_avatar_radar_stream_stop", {
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function startDesktopAvatarStream(args: {
   avatarRequestId?: string;
   streamUrl?: string;
-}): Promise<void> {
+}, capturedContextId?: string): Promise<void> {
   requireTauriRuntime("SYNTRA Assistant Stream");
-  await invoke("desktop_avatar_request_stream", args);
+  await invokeTenant("desktop_avatar_request_stream", {
+    ...args,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
-export async function stopDesktopAvatarStream(avatarRequestId: string): Promise<void> {
+export async function stopDesktopAvatarStream(
+  avatarRequestId: string,
+  capturedContextId?: string
+): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
-  await invoke("desktop_avatar_request_stream_stop", { avatarRequestId });
+  await invokeTenant("desktop_avatar_request_stream_stop", {
+    avatarRequestId,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
-export async function startHitlDecisionStream(): Promise<void> {
+export async function startHitlDecisionStream(capturedContextId?: string): Promise<void> {
   requireTauriRuntime("HITL Stream");
-  await invoke("hitl_decision_stream_start");
+  await invokeTenant("hitl_decision_stream_start", {
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
-export async function stopHitlDecisionStream(): Promise<void> {
+export async function stopHitlDecisionStream(capturedContextId?: string): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
-  await invoke("hitl_decision_stream_stop");
+  await invokeTenant("hitl_decision_stream_stop", {
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
-export async function approveHitlDecision(input: HitlDecisionInput): Promise<void> {
+export async function approveHitlDecision(
+  input: HitlDecisionInput,
+  capturedContextId?: string
+): Promise<void> {
   requireTauriRuntime("HITL Approval");
-  await invoke("hitl_decision_approve", { input });
+  await invokeTenant("hitl_decision_approve", {
+    input,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
-export async function rejectHitlDecision(input: HitlDecisionInput): Promise<void> {
+export async function rejectHitlDecision(
+  input: HitlDecisionInput,
+  capturedContextId?: string
+): Promise<void> {
   requireTauriRuntime("HITL Ablehnung");
-  await invoke("hitl_decision_reject", { input });
+  await invokeTenant("hitl_decision_reject", {
+    input,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function requestMoreInfoForHitl(
-  input: HitlRequestMoreInfoInput
+  input: HitlRequestMoreInfoInput,
+  capturedContextId?: string
 ): Promise<void> {
   requireTauriRuntime("HITL Rueckfrage");
-  await invoke("hitl_request_more_info", { input });
-}
-
-export async function sendLocalChat(request: LocalChatRequest): Promise<void> {
-  requireTauriRuntime("Lokaler Chat");
-  await invoke("chat_send_local", { request });
+  await invokeTenant("hitl_request_more_info", {
+    input,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function transcribeAudio(
-  request: SpeechTranscriptionRequest
+  request: SpeechTranscriptionRequest,
+  capturedContextId?: string
 ): Promise<string> {
   requireTauriRuntime(t("features.voiceTranscription"));
-  return invoke<string>("speech_transcribe", { request });
+  return invokeTenant<string>("speech_transcribe", {
+    request,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function getTranscriptionProvider(): Promise<TranscriptionProviderId> {
@@ -308,33 +442,49 @@ export async function setTranscriptionProvider(
 }
 
 export async function startTranscriptionSession(
-  request: TranscriptionSessionStartRequest
+  request: TranscriptionSessionStartRequest,
+  capturedContextId?: string
 ): Promise<TranscriptionSessionStartResult> {
   requireTauriRuntime(t("features.voiceTranscription"));
-  return invoke<TranscriptionSessionStartResult>("transcription_session_start", { request });
+  return invokeTenant<TranscriptionSessionStartResult>("transcription_session_start", {
+    request,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function appendTranscriptionAudio(
-  request: TranscriptionSessionAppendAudioRequest
+  request: TranscriptionSessionAppendAudioRequest,
+  capturedContextId?: string
 ): Promise<void> {
   requireTauriRuntime(t("features.voiceTranscription"));
-  await invoke("transcription_session_append_audio", { request });
+  await invokeTenant("transcription_session_append_audio", {
+    request,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function commitTranscriptionTurn(
-  request: TranscriptionSessionCommitTurnRequest
+  request: TranscriptionSessionCommitTurnRequest,
+  capturedContextId?: string
 ): Promise<string> {
   requireTauriRuntime(t("features.voiceTranscription"));
-  return invoke<string>("transcription_session_commit_turn", { request });
+  return invokeTenant<string>("transcription_session_commit_turn", {
+    request,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function stopTranscriptionSession(
-  request: TranscriptionSessionStopRequest
+  request: TranscriptionSessionStopRequest,
+  capturedContextId?: string
 ): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
-  await invoke("transcription_session_stop", { request });
+  await invokeTenant("transcription_session_stop", {
+    request,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export async function listTtsVoices(): Promise<string[]> {
@@ -347,32 +497,27 @@ export async function listTtsVoices(): Promise<string[]> {
 export async function speakText(
   requestId: string,
   text: string,
-  voice?: string | null
+  voice?: string | null,
+  capturedContextId?: string
 ): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
-  await invoke("tts_speak", {
+  await invokeTenant("tts_speak", {
     requestId,
     text,
-    voice: voice?.trim() ? voice : null
+    voice: voice?.trim() ? voice : null,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
   });
 }
 
-export async function stopSpeaking(): Promise<void> {
+export async function stopSpeaking(capturedContextId?: string): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
-  await invoke("tts_stop");
-}
-
-export function onStreamEvent(
-  listener: (event: StreamEnvelope) => void
-): Promise<() => void> {
-  if (!isTauriRuntime()) {
-    return Promise.resolve(() => {});
-  }
-  return listen<StreamEnvelope>("chat-stream-event", ({ payload }) => listener(payload));
+  await invokeTenant("tts_stop", {
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
 }
 
 export function onDesktopAvatarStreamEvent(
@@ -381,8 +526,11 @@ export function onDesktopAvatarStreamEvent(
   if (!isTauriRuntime()) {
     return Promise.resolve(() => {});
   }
-  return listen<DesktopAvatarStreamEvent>("desktop-avatar-stream-event", ({ payload }) =>
-    listener(payload)
+  return listen<DesktopAvatarStreamEvent & { contextId?: string }>(
+    "desktop-avatar-stream-event",
+    ({ payload }) => {
+      if (isCurrentTenantContext(payload.contextId)) listener(payload);
+    }
   );
 }
 
@@ -392,9 +540,14 @@ export function onDesktopAvatarStreamLifecycle(
   if (!isTauriRuntime()) {
     return Promise.resolve(() => {});
   }
-  return listen<DesktopAvatarStreamLifecycleEvent>(
+  return listen<DesktopAvatarStreamLifecycleEvent & { contextId?: string }>(
     "desktop-avatar-stream-lifecycle",
-    ({ payload }) => listener(payload)
+    ({ payload }) => {
+      if (isCurrentTenantContext(payload.contextId)) {
+        invalidateTenantSessionFromApi(payload.reason);
+        listener(payload);
+      }
+    }
   );
 }
 
@@ -404,9 +557,11 @@ export function onDesktopAvatarRadarStreamEvent(
   if (!isTauriRuntime()) {
     return Promise.resolve(() => {});
   }
-  return listen<DesktopAvatarRadarStreamEvent>(
+  return listen<DesktopAvatarRadarStreamEvent & { contextId?: string }>(
     "desktop-avatar-radar-stream-event",
-    ({ payload }) => listener(payload)
+    ({ payload }) => {
+      if (isCurrentTenantContext(payload.contextId)) listener(payload);
+    }
   );
 }
 
@@ -416,9 +571,14 @@ export function onDesktopAvatarRadarStreamLifecycle(
   if (!isTauriRuntime()) {
     return Promise.resolve(() => {});
   }
-  return listen<DesktopAvatarRadarStreamLifecycleEvent>(
+  return listen<DesktopAvatarRadarStreamLifecycleEvent & { contextId?: string }>(
     "desktop-avatar-radar-stream-lifecycle",
-    ({ payload }) => listener(payload)
+    ({ payload }) => {
+      if (isCurrentTenantContext(payload.contextId)) {
+        invalidateTenantSessionFromApi(payload.reason);
+        listener(payload);
+      }
+    }
   );
 }
 
@@ -428,8 +588,11 @@ export function onHitlDecisionStreamEvent(
   if (!isTauriRuntime()) {
     return Promise.resolve(() => {});
   }
-  return listen<HitlDecisionStreamEvent>("hitl-decision-stream-event", ({ payload }) =>
-    listener(payload)
+  return listen<HitlDecisionStreamEvent & { contextId?: string }>(
+    "hitl-decision-stream-event",
+    ({ payload }) => {
+      if (isCurrentTenantContext(payload.contextId)) listener(payload);
+    }
   );
 }
 
@@ -439,9 +602,14 @@ export function onHitlDecisionStreamLifecycle(
   if (!isTauriRuntime()) {
     return Promise.resolve(() => {});
   }
-  return listen<HitlDecisionStreamLifecycleEvent>(
+  return listen<HitlDecisionStreamLifecycleEvent & { contextId?: string }>(
     "hitl-decision-stream-lifecycle",
-    ({ payload }) => listener(payload)
+    ({ payload }) => {
+      if (isCurrentTenantContext(payload.contextId)) {
+        invalidateTenantSessionFromApi(payload.reason);
+        listener(payload);
+      }
+    }
   );
 }
 
@@ -451,7 +619,9 @@ export function onTtsState(
   if (!isTauriRuntime()) {
     return Promise.resolve(() => {});
   }
-  return listen<TtsStateEvent>("tts-state", ({ payload }) => listener(payload));
+  return listen<TtsStateEvent & { contextId?: string }>("tts-state", ({ payload }) => {
+    if (isCurrentTenantContext(payload.contextId)) listener(payload);
+  });
 }
 
 export function onTranscriptionSessionEvent(
@@ -460,8 +630,11 @@ export function onTranscriptionSessionEvent(
   if (!isTauriRuntime()) {
     return Promise.resolve(() => {});
   }
-  return listen<TranscriptionSessionEvent>("transcription-stream-event", ({ payload }) =>
-    listener(payload)
+  return listen<TranscriptionSessionEvent & { contextId?: string }>(
+    "transcription-stream-event",
+    ({ payload }) => {
+      if (isCurrentTenantContext(payload.contextId)) listener(payload);
+    }
   );
 }
 

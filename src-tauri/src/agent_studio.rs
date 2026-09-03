@@ -824,6 +824,14 @@ impl AgentStudioApiClient {
             .await
     }
 
+    pub async fn post_empty<T: DeserializeOwned>(
+        &self,
+        path_or_url: &str,
+    ) -> Result<T, AgentStudioApiError> {
+        self.send_json(Method::POST, path_or_url, None::<&Value>, true)
+            .await
+    }
+
     pub async fn post_json_with_idempotency<B: Serialize, T: DeserializeOwned>(
         &self,
         path_or_url: &str,

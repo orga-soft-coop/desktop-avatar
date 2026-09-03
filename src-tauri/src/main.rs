@@ -354,6 +354,7 @@ enum DesktopAvatarRequestStatus {
     WidgetReady,
     Completed,
     NeedsClarification,
+    Cancelled,
     Failed,
 }
 
@@ -387,6 +388,44 @@ struct CreateDesktopAvatarRequestResult {
     stream_url: String,
     poll_url: String,
     idempotent: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conversation_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ReplyDesktopAvatarClarificationInput {
+    client_request_id: String,
+    answer: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopAvatarDatasetColumn {
+    key: String,
+    label: String,
+    data_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lookup: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopAvatarDatasetPage {
+    result_id: String,
+    columns: Vec<DesktopAvatarDatasetColumn>,
+    rows: Vec<Value>,
+    next_cursor: Option<String>,
+    total_row_count: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopAvatarConversationCancelResult {
+    conversation_id: String,
+    status: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -413,6 +452,8 @@ struct DesktopAvatarRequestDocument {
     created_at: String,
     updated_at: String,
     completed_at: Option<String>,
+    #[serde(default)]
+    conversation_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1644,6 +1685,34 @@ fn update_tray_tenant(app: &AppHandle, session: Option<&DesktopAvatarTenantSessi
     }
 }
 
+fn desktop_avatar_resource_path(
+    path_segments: &[&str],
+    query: &[(&str, &str)],
+) -> Result<String, String> {
+    let mut url = Url::parse("https://desktop-avatar.invalid/")
+        .map_err(|error| format!("Could not initialize Desktop Avatar URL: {error}"))?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| "Could not build Desktop Avatar resource path.".to_string())?;
+        for segment in path_segments {
+            segments.push(segment);
+        }
+    }
+    if !query.is_empty() {
+        let mut pairs = url.query_pairs_mut();
+        for (key, value) in query {
+            pairs.append_pair(key, value);
+        }
+    }
+    let mut path = url.path().to_string();
+    if let Some(query) = url.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    Ok(path)
+}
+
 async fn reset_agent_studio_activity(state: &AppState) {
     state.tts_generation.fetch_add(1, Ordering::SeqCst);
     let request_handles = {
@@ -1825,7 +1894,10 @@ async fn desktop_avatar_request_get(
     let session = execution.session;
     let url = match (avatar_request_id, poll_url) {
         (_, Some(url)) => url,
-        (Some(request_id), None) => format!("/v1/desktop-avatar/requests/{request_id}"),
+        (Some(request_id), None) => desktop_avatar_resource_path(
+            &["v1", "desktop-avatar", "requests", request_id.as_str()],
+            &[],
+        )?,
         (None, None) => {
             return Err(
                 "desktop_avatar_request_get requires avatarRequestId or pollUrl.".to_string(),
@@ -1844,6 +1916,149 @@ async fn desktop_avatar_request_get(
         return Err("DESKTOP_SESSION_CHANGED".to_string());
     }
     Ok(document)
+}
+
+#[tauri::command]
+async fn desktop_avatar_clarification_reply(
+    state: State<'_, AppState>,
+    avatar_request_id: String,
+    clarification_id: String,
+    request: ReplyDesktopAvatarClarificationInput,
+    expected_context_id: String,
+) -> Result<CreateDesktopAvatarRequestResult, String> {
+    let avatar_request_id = avatar_request_id.trim();
+    let clarification_id = clarification_id.trim();
+    if avatar_request_id.is_empty() || clarification_id.is_empty() {
+        return Err("avatarRequestId and clarificationId are required.".to_string());
+    }
+    if request.client_request_id.trim().is_empty() || request.answer.trim().is_empty() {
+        return Err("clientRequestId and answer are required.".to_string());
+    }
+
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = execution.session;
+    let url = desktop_avatar_resource_path(
+        &[
+            "v1",
+            "desktop-avatar",
+            "requests",
+            avatar_request_id,
+            "clarifications",
+            clarification_id,
+            "replies",
+        ],
+        &[],
+    )?;
+    let result = execution
+        .api
+        .post_json::<_, CreateDesktopAvatarRequestResult>(&url, &request)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !broker
+        .is_current(&session.context_id, session.local_epoch)
+        .await
+    {
+        return Err("DESKTOP_SESSION_CHANGED".to_string());
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn desktop_avatar_dataset_page_get(
+    state: State<'_, AppState>,
+    avatar_request_id: String,
+    result_id: String,
+    cursor: Option<String>,
+    expected_context_id: String,
+) -> Result<DesktopAvatarDatasetPage, String> {
+    let avatar_request_id = avatar_request_id.trim();
+    let result_id = result_id.trim();
+    if avatar_request_id.is_empty() || result_id.is_empty() {
+        return Err("avatarRequestId and resultId are required.".to_string());
+    }
+
+    let cursor = cursor
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let query = cursor
+        .map(|value| vec![("cursor", value)])
+        .unwrap_or_default();
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = execution.session;
+    let url = desktop_avatar_resource_path(
+        &[
+            "v1",
+            "desktop-avatar",
+            "requests",
+            avatar_request_id,
+            "results",
+            result_id,
+            "pages",
+        ],
+        query.as_slice(),
+    )?;
+    let page = execution
+        .api
+        .get_json::<DesktopAvatarDatasetPage>(&url)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !broker
+        .is_current(&session.context_id, session.local_epoch)
+        .await
+    {
+        return Err("DESKTOP_SESSION_CHANGED".to_string());
+    }
+    Ok(page)
+}
+
+#[tauri::command]
+async fn desktop_avatar_conversation_cancel(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    expected_context_id: String,
+) -> Result<DesktopAvatarConversationCancelResult, String> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err("conversationId is required.".to_string());
+    }
+
+    let broker = agent_studio_broker(state.inner()).map_err(|error| error.to_string())?;
+    let execution = broker
+        .require_execution_context(&expected_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = execution.session;
+    let url = desktop_avatar_resource_path(
+        &[
+            "v1",
+            "desktop-avatar",
+            "conversations",
+            conversation_id,
+            "cancel",
+        ],
+        &[],
+    )?;
+    let result = execution
+        .api
+        .post_empty::<DesktopAvatarConversationCancelResult>(&url)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !broker
+        .is_current(&session.context_id, session.local_epoch)
+        .await
+    {
+        return Err("DESKTOP_SESSION_CHANGED".to_string());
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2007,7 +2222,16 @@ async fn desktop_avatar_request_stream(
         })?;
     let url = match stream_url {
         Some(url) => url,
-        None => format!("/v1/desktop-avatar/requests/{request_id}/stream"),
+        None => desktop_avatar_resource_path(
+            &[
+                "v1",
+                "desktop-avatar",
+                "requests",
+                request_id.as_str(),
+                "stream",
+            ],
+            &[],
+        )?,
     };
 
     let api = execution.api;
@@ -4398,6 +4622,9 @@ pub fn run() {
             window_start_drag,
             desktop_avatar_request_create,
             desktop_avatar_request_get,
+            desktop_avatar_clarification_reply,
+            desktop_avatar_dataset_page_get,
+            desktop_avatar_conversation_cancel,
             desktop_avatar_radar_get,
             desktop_avatar_radar_stream_start,
             desktop_avatar_radar_stream_stop,
@@ -4882,6 +5109,28 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_avatar_resource_urls_encode_ids_and_cursors() {
+        let url = desktop_avatar_resource_path(
+            &[
+                "v1",
+                "desktop-avatar",
+                "requests",
+                "request/with spaces",
+                "results",
+                "result?1",
+                "pages",
+            ],
+            &[("cursor", "next page&tenant=other")],
+        )
+        .expect("resource URL to be built");
+
+        assert_eq!(
+            url,
+            "/v1/desktop-avatar/requests/request%2Fwith%20spaces/results/result%3F1/pages?cursor=next+page%26tenant%3Dother"
+        );
+    }
 
     #[test]
     fn sse_parser_collects_multiline_data() {

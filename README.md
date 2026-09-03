@@ -84,6 +84,8 @@ User input (text or voice)
 routePrompt(text)  ──→  UX/diagnostic intent classification
     │
     └─ every prompt → Agent Studio DesktopAvatar API (create + SSE stream)
+                          ├─ clarification → reply endpoint → child-turn stream
+                          └─ dataset       → cursor page endpoint
     │
     ▼
 SSE stream events → Tauri emits to frontend
@@ -99,8 +101,11 @@ TTS (macOS `say` command) → speaking animation
 ### Routing Policy (Agent Studio only)
 
 - Every text and voice prompt is submitted to the Agent Studio DesktopAvatar API in the active tenant.
+- Business intent wins over general-intent keywords in mixed prompts.
 - Unsupported/no-match, timeout, network, and server errors remain visible errors; none triggers a local response path.
 - Tenant context comes only from the confirmed Agent Studio session. Request bodies, query parameters, and free headers cannot override it.
+- `NEEDS_CLARIFICATION` waits for a chip, text, or voice answer and resumes via the dedicated reply endpoint as an immutable child turn.
+- `dataset` widgets load additional rows with an opaque server cursor.
 
 ### Authentication and tenant switching
 
@@ -372,6 +377,9 @@ pnpm test
 | Test file | Coverage |
 |-----------|----------|
 | `router.test.ts` | Prompt routing for German/English business, casual, and review keywords |
-| `contracts.test.ts` | BusinessCardPayload type structure validation |
-| `tauri.test.ts` | IPC mocking and fallback behavior outside Tauri runtime |
+| `contracts.test.ts` | Clarification, dataset, response, Radar, and HITL contract shapes |
+| `desktop-avatar-widget-panel.test.tsx` | Clarification chip lifecycle and dataset cursor paging UI |
+| `desktop-avatar-orchestrator.test.ts` | Stream/poll lifecycle including `awaiting-clarification` |
+| `tauri.test.ts` | IPC command mapping and runtime guards outside Tauri |
+| `use-desktop-companion.test.tsx` | Request/reply child turns, paging, cancellation, streaming, and fallback safety |
 | `window-presets.test.ts` | Preset dimensions, validation, and defaults |

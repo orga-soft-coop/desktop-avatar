@@ -70,6 +70,13 @@ interface PanelEntry {
   id: string;
   source: "request" | "radar" | "hitl" | "demo";
   messageId?: string;
+  avatarRequestId?: string;
+  clarificationState?:
+    | "pending"
+    | "submitting"
+    | "answered"
+    | "expired"
+    | "unavailable";
   decisionId?: string;
   demoKind?: DevToolsDemoWidgetKind;
   widget: DesktopAvatarWidgetPayload;
@@ -205,6 +212,8 @@ function AuthenticatedApp({
           id: `request:${message.id}`,
           source: "request",
           messageId: message.id,
+          avatarRequestId: message.avatarRequestId ?? undefined,
+          clarificationState: message.clarificationState,
           widget,
           followUpQuestions: message.followUpQuestions ?? []
         });
@@ -882,7 +891,18 @@ function AuthenticatedApp({
                   key={entry.id}
                   widget={entry.widget}
                   followUpQuestions={entry.followUpQuestions}
+                  clarificationState={entry.clarificationState}
                   onSuggestionSelect={companion.submitSuggestion}
+                  onDatasetPageRequest={
+                    entry.source === "request" && entry.avatarRequestId
+                      ? (resultId, cursor) =>
+                          companion.loadDatasetPage({
+                            avatarRequestId: entry.avatarRequestId!,
+                            resultId,
+                            cursor
+                          })
+                      : undefined
+                  }
                   onHitlApprove={companion.approveHitl}
                   onHitlReject={companion.rejectHitl}
                   onHitlRequestMoreInfo={companion.requestMoreInfoForHitl}

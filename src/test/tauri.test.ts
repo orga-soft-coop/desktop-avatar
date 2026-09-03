@@ -15,13 +15,16 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import {
+  cancelDesktopAvatarConversation,
   createDesktopAvatarRequest,
+  getDesktopAvatarDatasetPage,
   onTenantSessionInvalidated,
   onHitlDecisionStreamEvent,
   onDesktopAvatarStreamEvent,
   onTranscriptionSessionEvent,
   onTtsState,
   requestMoreInfoForHitl,
+  replyDesktopAvatarClarification,
   transcribeAudio
 } from "../lib/tauri";
 import { activateTenantSession, clearTenantSession } from "../lib/tenant-session";
@@ -109,6 +112,63 @@ describe("tauri runtime guards", () => {
         runId: "run:1",
         message: "Bitte Lieferantwerk pruefen"
       },
+      expectedContextId: "context-1"
+    });
+  });
+
+  it("sends clarification replies through the dedicated Tauri command", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    installTenantSession();
+    invokeMock.mockResolvedValue({
+      accepted: true,
+      avatarRequestId: "request-child",
+      conversationId: "conversation-1",
+      status: "RECEIVED",
+      streamUrl: "https://ops.example/stream",
+      pollUrl: "https://ops.example/poll",
+      idempotent: false
+    });
+
+    await replyDesktopAvatarClarification({
+      avatarRequestId: "request-parent",
+      clarificationId: "clarification-1",
+      request: {
+        clientRequestId: "client-child",
+        answer: "Letzte Woche"
+      }
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("desktop_avatar_clarification_reply", {
+      avatarRequestId: "request-parent",
+      clarificationId: "clarification-1",
+      request: {
+        clientRequestId: "client-child",
+        answer: "Letzte Woche"
+      },
+      expectedContextId: "context-1"
+    });
+  });
+
+  it("loads dataset pages and cancels conversations through Tauri", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    installTenantSession();
+    invokeMock.mockResolvedValue({});
+
+    await getDesktopAvatarDatasetPage({
+      avatarRequestId: "request-1",
+      resultId: "result-1",
+      cursor: "next-page"
+    });
+    await cancelDesktopAvatarConversation("conversation-1");
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "desktop_avatar_dataset_page_get", {
+      avatarRequestId: "request-1",
+      resultId: "result-1",
+      cursor: "next-page",
+      expectedContextId: "context-1"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "desktop_avatar_conversation_cancel", {
+      conversationId: "conversation-1",
       expectedContextId: "context-1"
     });
   });

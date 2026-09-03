@@ -4,6 +4,8 @@ import type {
   BootstrapState,
   CreateDesktopAvatarRequestInput,
   CreateDesktopAvatarRequestResult,
+  DesktopAvatarConversationCancelResult,
+  DesktopAvatarDatasetPage,
   DesktopAvatarRadarResponse,
   DesktopAvatarRadarStreamEvent,
   DesktopAvatarRadarStreamLifecycleEvent,
@@ -14,6 +16,7 @@ import type {
   HitlDecisionStreamEvent,
   HitlDecisionStreamLifecycleEvent,
   HitlRequestMoreInfoInput,
+  ReplyDesktopAvatarClarificationInput,
   TranscriptionProviderChangedEvent,
   TranscriptionProviderId,
   TranscriptionSessionAppendAudioRequest,
@@ -278,6 +281,41 @@ export async function getDesktopAvatarRequest(args: {
   requireTauriRuntime("SYNTRA Assistant Polling");
   return invokeTenant<DesktopAvatarRequestDocument>("desktop_avatar_request_get", {
     ...args,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
+}
+
+export async function replyDesktopAvatarClarification(args: {
+  avatarRequestId: string;
+  clarificationId: string;
+  request: ReplyDesktopAvatarClarificationInput;
+}, capturedContextId?: string): Promise<CreateDesktopAvatarRequestResult> {
+  requireTauriRuntime("SYNTRA Assistant Rückfrage");
+  return invokeTenant<CreateDesktopAvatarRequestResult>("desktop_avatar_clarification_reply", {
+    ...args,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
+}
+
+export async function getDesktopAvatarDatasetPage(args: {
+  avatarRequestId: string;
+  resultId: string;
+  cursor?: string;
+}, capturedContextId?: string): Promise<DesktopAvatarDatasetPage> {
+  requireTauriRuntime("SYNTRA Assistant Datensatz");
+  return invokeTenant<DesktopAvatarDatasetPage>("desktop_avatar_dataset_page_get", {
+    ...args,
+    expectedContextId: resolveExpectedContextId(capturedContextId)
+  });
+}
+
+export async function cancelDesktopAvatarConversation(
+  conversationId: string,
+  capturedContextId?: string
+): Promise<DesktopAvatarConversationCancelResult> {
+  requireTauriRuntime("SYNTRA Assistant Konversation");
+  return invokeTenant<DesktopAvatarConversationCancelResult>("desktop_avatar_conversation_cancel", {
+    conversationId,
     expectedContextId: resolveExpectedContextId(capturedContextId)
   });
 }

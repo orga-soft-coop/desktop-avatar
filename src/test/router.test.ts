@@ -14,6 +14,12 @@ describe("routePrompt", () => {
     );
   });
 
+  it("does not let a greeting downgrade a business request to the general route", () => {
+    expect(routePrompt("Hallo, zeig mir bitte den aktuellen Bestand")).toBe(
+      "backendBusiness"
+    );
+  });
+
   it("classifies casual prompts for the Agent Studio general route", () => {
     expect(routePrompt("Tell me a joke about coffee")).toBe("agentStudioGeneral");
   });

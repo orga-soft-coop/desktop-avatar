@@ -988,6 +988,18 @@ button {
   background: rgba(166, 206, 57, 0.22);
 }
 
+.chat-panel__message-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.chat-panel__clarification-status {
+  display: block;
+  margin-top: 7px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.66rem;
+}
+
 /* --- Composer (input + send) --- */
 
 .chat-panel__composer {
@@ -1992,6 +2004,29 @@ button {
   color: #fbbf54;
 }
 
+.dataset-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dataset-widget__paging {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+  color: rgba(255, 255, 255, 0.64);
+  font-size: 0.74rem;
+}
+
+.dataset-widget__error {
+  margin: 0;
+  padding: 0 4px;
+  color: #fca5a5;
+  font-size: 0.74rem;
+}
+
 .widget-card {
   display: flex;
   flex-direction: column;
@@ -2134,6 +2169,12 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.widget-card__clarification-status {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.74rem;
 }
 
 .widget-card__hitl-alert {
@@ -2770,8 +2811,11 @@ button {
 .app-shell[data-theme="light"] .chat-panel__devtools-section-title,
 .app-shell[data-theme="light"] .chat-panel__devtools-toggle,
 .app-shell[data-theme="light"] .chat-panel__devtools-section-toggle,
+.app-shell[data-theme="light"] .chat-panel__clarification-status,
 .app-shell[data-theme="light"] .data-table__title,
+.app-shell[data-theme="light"] .dataset-widget__paging,
 .app-shell[data-theme="light"] .widget-card__list-row dt,
+.app-shell[data-theme="light"] .widget-card__clarification-status,
 .app-shell[data-theme="light"] .data-table thead th,
 .app-shell[data-theme="light"] .data-table__meta {
   color: var(--da-text-subtle) !important;

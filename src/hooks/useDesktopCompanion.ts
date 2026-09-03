@@ -13,6 +13,7 @@ import type {
   CreateDesktopAvatarRequestInput,
   BackendConnectionState,
   DesktopAvatarOperatorRadarWidget,
+  DesktopAvatarDatasetPage,
   DesktopAvatarRadarResponse,
   DesktopAvatarRadarSignal,
   DesktopAvatarRadarStreamEvent,
@@ -39,7 +40,7 @@ import {
   desktopAvatarInitialState,
   reduceDesktopAvatarState,
   type DesktopAvatarOrchestratorState,
-  isDesktopAvatarTerminalStatus,
+  isTerminalDesktopAvatarDocument,
 } from "../lib/desktop-avatar-orchestrator";
 import { routePrompt } from "../lib/router";
 import {
@@ -131,12 +132,22 @@ interface SubmissionContext {
   source: MessageSource;
   route: PromptRoute;
   clientRequestId?: string;
+  clarificationReply?: ClarificationReplyContext;
+}
+
+interface ClarificationReplyContext {
+  avatarRequestId: string;
+  clarificationId: string;
+  conversationId: string;
+  parentAssistantMessageId: string;
+  expiresAt?: string;
 }
 
 interface ActiveDesktopAvatarRequest extends SubmissionContext {
   assistantMessageId: string;
   avatarRequestId: string | null;
   clientRequestId: string;
+  conversationId: string | null;
 }
 
 interface LatencyTimeline {
@@ -421,12 +432,13 @@ function buildDesktopAvatarRequestInput(
   prompt: string,
   source: MessageSource,
   clientRequestId: string,
+  locale: LocaleId,
 ): CreateDesktopAvatarRequestInput {
   return {
     clientRequestId,
     mode: "SIMULATION",
     modality: source === "voice" ? "voice" : "chat",
-    locale: navigator.language,
+    locale,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     utterance: prompt,
     responseModes: ["talk", "widget"],
@@ -451,6 +463,32 @@ function errorMessage(error: unknown, fallback: string): string {
     }
   }
   return fallback;
+}
+
+function authoritativeClarificationState(
+  message: string,
+): "answered" | "expired" | null {
+  const normalized = message.toLowerCase();
+  if (
+    /\b410\b/.test(normalized) ||
+    normalized.includes("expired") ||
+    normalized.includes("abgelaufen")
+  ) {
+    return "expired";
+  }
+  if (
+    (/\b409\b/.test(normalized) || normalized.includes("conflict")) &&
+    (normalized.includes("already answered") ||
+      normalized.includes("already has a reply") ||
+      normalized.includes("already resolved") ||
+      normalized.includes("not awaiting") ||
+      normalized.includes("no longer awaiting") ||
+      normalized.includes("bereits beantwortet") ||
+      normalized.includes("bereits abgeschlossen"))
+  ) {
+    return "answered";
+  }
+  return null;
 }
 
 function nextPollDelay(attempt: number): number {
@@ -796,6 +834,8 @@ export function useDesktopCompanion() {
   const [operatorRadarSignalCount, setOperatorRadarSignalCount] = useState(0);
   const [backendConnectionState, setBackendConnectionState] =
     useState<BackendConnectionState>("connecting");
+  const [pendingClarification, setPendingClarification] =
+    useState<ClarificationReplyContext | null>(null);
 
   const requestContextsRef = useRef(new Map<string, SubmissionContext>());
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -819,11 +859,18 @@ export function useDesktopCompanion() {
   const conversationEpochRef = useRef(0);
   const activeDesktopAvatarRequestRef =
     useRef<ActiveDesktopAvatarRequest | null>(null);
+  const activeConversationIdRef = useRef<string | null>(null);
+  const pendingClarificationRef = useRef<ClarificationReplyContext | null>(
+    null,
+  );
+  const legacyClarificationBlockedRef = useRef(false);
+  const clarificationReplyInFlightRef = useRef(false);
   const desktopAvatarStateRef = useRef<DesktopAvatarOrchestratorState>(
     desktopAvatarInitialState,
   );
   const desktopAvatarConnectionRef =
     useRef<DesktopAvatarStreamConnection | null>(null);
+  const desktopAvatarConnectionGenerationRef = useRef(0);
   const hitlDecisionConnectionRef =
     useRef<HitlDecisionStreamConnection | null>(null);
   const operatorRadarConnectionRef =
@@ -1051,6 +1098,14 @@ export function useDesktopCompanion() {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  const updatePendingClarification = useCallback(
+    (next: ClarificationReplyContext | null) => {
+      pendingClarificationRef.current = next;
+      setPendingClarification(next);
+    },
+    [],
+  );
 
   useEffect(() => {
     desktopAvatarStateRef.current = desktopAvatarState;
@@ -1281,7 +1336,7 @@ export function useDesktopCompanion() {
         if (document.status === "FAILED") {
           next.failedAtMs = current.failedAtMs ?? now;
           next.lastError = document.error ?? current.lastError;
-        } else if (isDesktopAvatarTerminalStatus(document.status)) {
+        } else if (isTerminalDesktopAvatarDocument(document)) {
           next.completedAtMs = current.completedAtMs ?? now;
         }
 
@@ -1304,6 +1359,23 @@ export function useDesktopCompanion() {
             return message;
           }
 
+          const clarificationReplyCapable =
+            state.widget?.type === "clarification" &&
+            Boolean(state.widget.clarificationId?.trim()) &&
+            Boolean(
+              state.widget.conversationId?.trim() ||
+                state.conversationId?.trim() ||
+                activeRequest.conversationId?.trim(),
+            );
+          const clarificationState =
+            state.widget?.type === "clarification"
+              ? clarificationReplyCapable
+                ? message.clarificationState === "unavailable"
+                  ? "pending"
+                  : message.clarificationState ?? "pending"
+                : "unavailable"
+              : message.clarificationState;
+
           return {
             ...message,
             text: state.talkText || state.error || message.text,
@@ -1313,6 +1385,7 @@ export function useDesktopCompanion() {
             requestStatus: state.status,
             avatarRequestId: activeRequest.avatarRequestId,
             clientRequestId: activeRequest.clientRequestId,
+            clarificationState,
           };
         }),
       );
@@ -1328,6 +1401,7 @@ export function useDesktopCompanion() {
   }, []);
 
   const closeDesktopAvatarConnection = useCallback(async () => {
+    desktopAvatarConnectionGenerationRef.current += 1;
     const connection = desktopAvatarConnectionRef.current;
     desktopAvatarConnectionRef.current = null;
     if (connection) {
@@ -1360,10 +1434,18 @@ export function useDesktopCompanion() {
             avatarRequestId,
             pollUrl,
           }, tenantContextId);
+          const latestRequest = activeDesktopAvatarRequestRef.current;
+          if (
+            !latestRequest ||
+            latestRequest.avatarRequestId !== avatarRequestId ||
+            latestRequest.clientRequestId !== activeRequest.clientRequestId
+          ) {
+            return;
+          }
           desktopAvatarPollErrorCountRef.current = 0;
-          markDesktopPollingSnapshot(activeRequest.clientRequestId, document);
+          markDesktopPollingSnapshot(latestRequest.clientRequestId, document);
           desktopAvatarDispatch({ type: "pollingSnapshot", document });
-          if (isDesktopAvatarTerminalStatus(document.status)) {
+          if (isTerminalDesktopAvatarDocument(document)) {
             clearDesktopAvatarPolling();
             return;
           }
@@ -1419,8 +1501,8 @@ export function useDesktopCompanion() {
     async (avatarRequestId: string, streamUrl: string, pollUrl: string) => {
       await closeDesktopAvatarConnection();
       clearDesktopAvatarPolling();
-      desktopAvatarConnectionRef.current =
-        await desktopAvatarApiClient.connectStream({
+      const generation = desktopAvatarConnectionGenerationRef.current;
+      const connection = await desktopAvatarApiClient.connectStream({
           avatarRequestId,
           streamUrl,
           expectedContextId: tenantContextId,
@@ -1453,6 +1535,11 @@ export function useDesktopCompanion() {
             startDesktopAvatarPolling(avatarRequestId, pollUrl);
           },
         });
+      if (generation !== desktopAvatarConnectionGenerationRef.current) {
+        await connection.close();
+        return;
+      }
+      desktopAvatarConnectionRef.current = connection;
       const activeRequest = activeDesktopAvatarRequestRef.current;
       if (activeRequest && activeRequest.avatarRequestId === avatarRequestId) {
         patchLatencyByRequestKey(activeRequest.clientRequestId, (current) => ({
@@ -1686,17 +1773,131 @@ export function useDesktopCompanion() {
   ]);
 
   useEffect(() => {
-    if (!activeDesktopAvatarRequestRef.current) {
+    const activeRequest = activeDesktopAvatarRequestRef.current;
+    if (!activeRequest) {
       return;
     }
 
+    if (desktopAvatarState.conversationId) {
+      activeRequest.conversationId = desktopAvatarState.conversationId;
+      activeConversationIdRef.current = desktopAvatarState.conversationId;
+    }
+
     syncDesktopAvatarMessage(desktopAvatarState);
-    setStatus(desktopAvatarState.error ?? desktopAvatarState.statusMessage);
+    setStatus(
+      desktopAvatarState.error ??
+        (desktopAvatarState.phase === "awaiting-clarification"
+          ? t("status.awaitingClarification")
+          : desktopAvatarState.statusMessage),
+    );
     setError(desktopAvatarState.error);
     if (!isTtsSpeakingRef.current) {
       setCompanionState(desktopAvatarState.companionState);
     }
   }, [desktopAvatarState, syncDesktopAvatarMessage]);
+
+  useEffect(() => {
+    const activeRequest = activeDesktopAvatarRequestRef.current;
+    const widget = desktopAvatarState.widget;
+    if (!activeRequest || widget?.type !== "clarification") {
+      return;
+    }
+
+    const clarificationId = widget.clarificationId?.trim();
+    const conversationId =
+      widget.conversationId?.trim() ||
+      desktopAvatarState.conversationId?.trim() ||
+      activeRequest.conversationId?.trim();
+    if (!activeRequest.avatarRequestId || !clarificationId || !conversationId) {
+      legacyClarificationBlockedRef.current = true;
+      updatePendingClarification(null);
+      const nextMessages = messagesRef.current.map((message) =>
+        message.id === activeRequest.assistantMessageId
+          ? { ...message, clarificationState: "unavailable" as const }
+          : message,
+      );
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
+      return;
+    }
+
+    legacyClarificationBlockedRef.current = false;
+    activeConversationIdRef.current = conversationId;
+    const expiresAt = widget.expiresAt?.trim() || undefined;
+    const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+      updatePendingClarification(null);
+      const nextMessages = messagesRef.current.map((message) =>
+        message.id === activeRequest.assistantMessageId
+          ? { ...message, clarificationState: "expired" as const }
+          : message,
+      );
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
+      setStatus(t("status.clarificationExpired"));
+      setCompanionState("idle");
+      return;
+    }
+
+    const next: ClarificationReplyContext = {
+      avatarRequestId: activeRequest.avatarRequestId,
+      clarificationId,
+      conversationId,
+      parentAssistantMessageId: activeRequest.assistantMessageId,
+      expiresAt,
+    };
+    updatePendingClarification(next);
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === activeRequest.assistantMessageId &&
+        message.clarificationState !== "answered"
+          ? { ...message, clarificationState: "pending" }
+          : message,
+      ),
+    );
+  }, [desktopAvatarState, updatePendingClarification]);
+
+  useEffect(() => {
+    if (!pendingClarification?.expiresAt) {
+      return;
+    }
+    const expiresAtMs = Date.parse(pendingClarification.expiresAt);
+    if (!Number.isFinite(expiresAtMs)) {
+      return;
+    }
+
+    const expire = () => {
+      const current = pendingClarificationRef.current;
+      if (
+        current?.clarificationId !== pendingClarification.clarificationId ||
+        current.avatarRequestId !== pendingClarification.avatarRequestId
+      ) {
+        return;
+      }
+      updatePendingClarification(null);
+      const nextMessages = messagesRef.current.map((message) =>
+        message.id === pendingClarification.parentAssistantMessageId
+          ? { ...message, clarificationState: "expired" as const }
+          : message,
+      );
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
+      setStatus(t("status.clarificationExpired"));
+      setCompanionState("idle");
+    };
+
+    const remainingMs = expiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      expire();
+      return;
+    }
+    if (remainingMs > 2_147_000_000) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(expire, remainingMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [pendingClarification, updatePendingClarification]);
 
   useEffect(() => {
     const activeRequest = activeDesktopAvatarRequestRef.current;
@@ -1765,6 +1966,9 @@ export function useDesktopCompanion() {
     if (!isCurrentTenantContext(capturedContextId)) {
       throw new Error("DESKTOP_SESSION_CHANGED");
     }
+    updatePendingClarification(null);
+    legacyClarificationBlockedRef.current = false;
+    activeConversationIdRef.current = null;
     const requestEpoch = conversationEpochRef.current;
     const requestId =
       clientRequestId ?? `desktop-avatar-client:${crypto.randomUUID()}`;
@@ -1795,6 +1999,7 @@ export function useDesktopCompanion() {
       assistantMessageId: assistantMessage.id,
       avatarRequestId: null,
       clientRequestId: requestId,
+      conversationId: null,
       prompt,
       source,
       route,
@@ -1828,7 +2033,7 @@ export function useDesktopCompanion() {
 
     try {
       const result = await desktopAvatarApiClient.createRequest(
-        buildDesktopAvatarRequestInput(prompt, source, requestId),
+        buildDesktopAvatarRequestInput(prompt, source, requestId, locale),
         capturedContextId,
       );
       if (
@@ -1841,12 +2046,15 @@ export function useDesktopCompanion() {
         ...(activeDesktopAvatarRequestRef.current ?? {
           assistantMessageId: assistantMessage.id,
           clientRequestId: requestId,
+          conversationId: null,
           prompt,
           source,
           route,
         }),
         avatarRequestId: result.avatarRequestId,
+        conversationId: result.conversationId ?? null,
       };
+      activeConversationIdRef.current = result.conversationId ?? null;
       patchLatencyByRequestKey(requestId, (current) => ({
         ...current,
         status: result.status,
@@ -1877,6 +2085,208 @@ export function useDesktopCompanion() {
     }
   }
 
+  async function submitClarificationReply(
+    answer: string,
+    source: MessageSource,
+    clarification: ClarificationReplyContext,
+    clientRequestId?: string,
+  ) {
+    const capturedContextId = tenantContextId;
+    if (!isCurrentTenantContext(capturedContextId)) {
+      throw new Error("DESKTOP_SESSION_CHANGED");
+    }
+    if (clarificationReplyInFlightRef.current) {
+      return;
+    }
+
+    const expiresAtMs = clarification.expiresAt
+      ? Date.parse(clarification.expiresAt)
+      : Number.NaN;
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+      updatePendingClarification(null);
+      const nextMessages = messagesRef.current.map((message) =>
+        message.id === clarification.parentAssistantMessageId
+          ? { ...message, clarificationState: "expired" as const }
+          : message,
+      );
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
+      setError(null);
+      setStatus(t("status.clarificationExpired"));
+      setCompanionState("idle");
+      return;
+    }
+
+    clarificationReplyInFlightRef.current = true;
+    legacyClarificationBlockedRef.current = false;
+    const requestEpoch = conversationEpochRef.current;
+    const requestId =
+      clientRequestId ?? `desktop-avatar-client:${crypto.randomUUID()}`;
+    const route = lastSubmissionRef.current?.route ?? "backendBusiness";
+    const startedAtMs = Date.now();
+    const userMessage = buildUserMessage(answer, source);
+    const assistantMessage = buildAssistantPlaceholder(source, requestId);
+    const parentMessages = messagesRef.current.map((message) =>
+      message.id === clarification.parentAssistantMessageId
+        ? { ...message, clarificationState: "submitting" as const }
+        : message,
+    );
+    const nextMessages = [...parentMessages, userMessage, assistantMessage];
+    messagesRef.current = nextMessages;
+    setMessages(nextMessages);
+    setDraft("");
+    setError(null);
+    setStatus(t("status.sendingClarification"));
+    desktopAvatarDispatch({
+      type: "createRequested",
+      clientRequestId: requestId,
+    });
+    lastSubmissionRef.current = {
+      prompt: answer,
+      source,
+      route,
+      clientRequestId: requestId,
+      clarificationReply: clarification,
+    };
+    activeDesktopAvatarRequestRef.current = {
+      assistantMessageId: assistantMessage.id,
+      avatarRequestId: null,
+      clientRequestId: requestId,
+      conversationId: clarification.conversationId,
+      prompt: answer,
+      source,
+      route,
+      clarificationReply: clarification,
+    };
+    activeConversationIdRef.current = clarification.conversationId;
+    setLatencyTimeline({
+      requestKey: requestId,
+      requestKind: "desktop-avatar",
+      route,
+      source,
+      status: "creating",
+      startedAtMs,
+      startedAt: new Date(startedAtMs).toISOString(),
+      usedPolling: false,
+      ttsProvider: null,
+      ttsFallbackUsed: null,
+      lastError: null,
+      clientRequestId: requestId,
+      avatarRequestId: null,
+      ttsRequestId: null,
+    });
+
+    try {
+      if (peekMode === "peek") {
+        await applyPeekMode("expanded");
+      }
+
+      await stopSpeaking(capturedContextId);
+      if (!isCurrentTenantContext(capturedContextId)) return;
+      await cleanupDesktopAvatarRuntime();
+      if (!isCurrentTenantContext(capturedContextId)) return;
+
+      const result = await desktopAvatarApiClient.replyClarification(
+        {
+          avatarRequestId: clarification.avatarRequestId,
+          clarificationId: clarification.clarificationId,
+          request: {
+            clientRequestId: requestId,
+            answer,
+          },
+        },
+        capturedContextId,
+      );
+      if (
+        requestEpoch !== conversationEpochRef.current ||
+        !isCurrentTenantContext(capturedContextId)
+      ) {
+        return;
+      }
+
+      const conversationId =
+        result.conversationId ?? clarification.conversationId;
+      activeConversationIdRef.current = conversationId;
+      activeDesktopAvatarRequestRef.current = {
+        ...(activeDesktopAvatarRequestRef.current ?? {
+          assistantMessageId: assistantMessage.id,
+          clientRequestId: requestId,
+          conversationId,
+          prompt: answer,
+          source,
+          route,
+          clarificationReply: clarification,
+        }),
+        avatarRequestId: result.avatarRequestId,
+        conversationId,
+      };
+      const answeredMessages = messagesRef.current.map((message) =>
+        message.id === clarification.parentAssistantMessageId
+          ? { ...message, clarificationState: "answered" as const }
+          : message,
+      );
+      messagesRef.current = answeredMessages;
+      setMessages(answeredMessages);
+      updatePendingClarification(null);
+      patchLatencyByRequestKey(requestId, (current) => ({
+        ...current,
+        status: result.status,
+        avatarRequestId: result.avatarRequestId,
+        createAcceptedAtMs: current.createAcceptedAtMs ?? Date.now(),
+      }));
+      desktopAvatarDispatch({
+        type: "createAccepted",
+        result: { ...result, conversationId },
+      });
+      await connectDesktopAvatarStream(
+        result.avatarRequestId,
+        result.streamUrl,
+        result.pollUrl,
+      );
+    } catch (caughtError) {
+      if (requestEpoch !== conversationEpochRef.current) {
+        return;
+      }
+      const message = errorMessage(
+        caughtError,
+        t("status.requestCouldNotStart"),
+      );
+      const serverState = authoritativeClarificationState(message);
+      const clarificationExpiredLocally =
+        Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now();
+      const finalClarificationState =
+        serverState ?? (clarificationExpiredLocally ? "expired" : null);
+      const restoredClarificationState: NonNullable<
+        ChatMessage["clarificationState"]
+      > = finalClarificationState ?? "pending";
+      const restoredMessages = messagesRef.current.map((chatMessage) =>
+        chatMessage.id === clarification.parentAssistantMessageId
+          ? {
+              ...chatMessage,
+              clarificationState: restoredClarificationState,
+            }
+          : chatMessage,
+      );
+      messagesRef.current = restoredMessages;
+      setMessages(restoredMessages);
+      updatePendingClarification(
+        finalClarificationState ? null : clarification,
+      );
+      if (finalClarificationState) {
+        lastSubmissionRef.current = null;
+      }
+      patchLatencyByRequestKey(requestId, (current) => ({
+        ...current,
+        status: "FAILED",
+        failedAtMs: current.failedAtMs ?? Date.now(),
+        lastError: message,
+      }));
+      desktopAvatarDispatch({ type: "requestFailed", message });
+    } finally {
+      clarificationReplyInFlightRef.current = false;
+    }
+  }
+
   async function submitPrompt(
     rawPrompt: string,
     source: MessageSource,
@@ -1888,6 +2298,23 @@ export function useDesktopCompanion() {
     }
     const prompt = rawPrompt.trim();
     if (!prompt) {
+      return;
+    }
+
+    const clarification = pendingClarificationRef.current;
+    if (clarification) {
+      await submitClarificationReply(
+        prompt,
+        source,
+        clarification,
+        retryClientRequestId,
+      );
+      return;
+    }
+    if (legacyClarificationBlockedRef.current) {
+      setError(null);
+      setStatus(t("status.clarificationUnavailable"));
+      setCompanionState("idle");
       return;
     }
 
@@ -2118,17 +2545,31 @@ export function useDesktopCompanion() {
       return;
     }
 
-    const { prompt, source, route, clientRequestId } =
+    const { prompt, source, route, clientRequestId, clarificationReply } =
       lastSubmissionRef.current;
+    if (clarificationReply) {
+      await submitClarificationReply(
+        prompt,
+        source,
+        clarificationReply,
+        clientRequestId,
+      );
+      return;
+    }
     await submitPrompt(prompt, source, clientRequestId);
   }
 
   async function clearConversation() {
+    const conversationId = activeConversationIdRef.current;
     conversationEpochRef.current += 1;
     messagesRef.current = [];
     requestContextsRef.current.clear();
     lastSubmissionRef.current = null;
     activeDesktopAvatarRequestRef.current = null;
+    activeConversationIdRef.current = null;
+    clarificationReplyInFlightRef.current = false;
+    legacyClarificationBlockedRef.current = false;
+    updatePendingClarification(null);
     lastSpokenDesktopAvatarKeyRef.current = null;
     setMessages([]);
     setDraft("");
@@ -2139,7 +2580,30 @@ export function useDesktopCompanion() {
     desktopAvatarDispatch({ type: "reset" });
     await stopSpeaking(tenantContextId);
     await cleanupDesktopAvatarRuntime();
+    if (conversationId) {
+      await desktopAvatarApiClient
+        .cancelConversation(conversationId, tenantContextId)
+        .catch((caughtError) => {
+          void frontendLog(
+            "warn",
+            `desktop-avatar conversation cancel failed: ${errorMessage(
+              caughtError,
+              "unknown error",
+            )}`,
+          );
+        });
+    }
   }
+
+  const loadDatasetPage = useCallback(
+    (input: {
+      avatarRequestId: string;
+      resultId: string;
+      cursor?: string;
+    }): Promise<DesktopAvatarDatasetPage> =>
+      desktopAvatarApiClient.getDatasetPage(input, tenantContextId),
+    [tenantContextId],
+  );
 
   async function startRecording() {
     if (isRecording) {
@@ -2642,6 +3106,7 @@ export function useDesktopCompanion() {
     backendConnectionState,
     isRecording,
     messages,
+    pendingClarification,
     hitlWidgets,
     operatorRadarWidget,
     operatorRadarSignalCount,
@@ -2663,6 +3128,7 @@ export function useDesktopCompanion() {
     setSizePreset,
     submitCurrentDraft: () => submitPrompt(draft, "text"),
     submitSuggestion: (value: string) => submitPrompt(value, "text"),
+    loadDatasetPage,
     clearConversation,
     approveHitl,
     rejectHitl,

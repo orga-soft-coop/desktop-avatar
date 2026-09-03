@@ -444,6 +444,11 @@ export function ChatPanel({
               {hasConversation ? (
                 visibleMessages.map((message) => {
                   const hasFollowUps = (message.followUpQuestions?.length ?? 0) > 0;
+                  const clarificationDisabled =
+                    message.clarificationState === "submitting" ||
+                    message.clarificationState === "answered" ||
+                    message.clarificationState === "expired" ||
+                    message.clarificationState === "unavailable";
                   const assistantText =
                     message.text.trim() ||
                     (message.isStreaming ? t("chat.assistantWorking") : "");
@@ -470,6 +475,7 @@ export function ChatPanel({
                                 key={question}
                                 type="button"
                                 className="chat-panel__message-chip"
+                                disabled={clarificationDisabled}
                                 onClick={() => {
                                   if (onSuggestionSubmit) {
                                     onSuggestionSubmit(question);
@@ -482,6 +488,11 @@ export function ChatPanel({
                               </button>
                             ))}
                           </div>
+                        ) : null}
+                        {message.clarificationState ? (
+                          <span className="chat-panel__clarification-status" role="status">
+                            {t(`widgets.clarification.${message.clarificationState}`)}
+                          </span>
                         ) : null}
                       </div>
                     </article>

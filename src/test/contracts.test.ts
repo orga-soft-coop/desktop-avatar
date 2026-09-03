@@ -13,10 +13,41 @@ describe("desktop avatar contracts", () => {
       type: "clarification",
       title: "Rueckfrage",
       question: "Welchen Zeitraum meinst du?",
-      suggestions: ["Heute", "Gestern"]
+      suggestions: ["Heute", "Gestern"],
+      clarificationId: "clarification-1",
+      conversationId: "conversation-1",
+      expiresAt: "2026-08-14T12:00:00.000Z"
     };
 
     expect(widget.type).toBe("clarification");
+  });
+
+  it("accepts paged dataset widgets with typed and localized columns", () => {
+    const widget: DesktopAvatarWidgetPayload = {
+      type: "dataset",
+      resultId: "result-1",
+      title: "Offene Bestellungen",
+      locale: "de-DE",
+      rowCount: 42,
+      columns: [
+        { key: "orderNo", label: "Bestellung", dataType: "string" },
+        {
+          key: "status",
+          label: "Status",
+          dataType: "string",
+          lookup: {
+            locale: "de-DE",
+            labels: { OPEN: "Offen" }
+          }
+        },
+        { key: "amount", label: "Betrag", dataType: "number", format: "currency:EUR" }
+      ],
+      rows: [{ orderNo: "A-100", status: "OPEN", amount: 12.5 }],
+      cursor: "next-page"
+    };
+
+    expect(widget.type).toBe("dataset");
+    expect(widget.columns[1]?.lookup?.labels.OPEN).toBe("Offen");
   });
 
   it("accepts full desktop avatar responses", () => {

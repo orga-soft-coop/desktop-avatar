@@ -15,6 +15,27 @@ It provides:
 
 `desktop-avatar/` is the existing Tauri DesktopAvatar app and is the target client for DesktopAvatar features in this repository.
 
+## Request Conversation, Clarification, and Dataset Contract
+
+Business requests are append-only server turns. `POST /v1/desktop-avatar/requests` returns the request identifiers/URLs and may return `conversationId` while older deployments remain supported.
+
+When a turn reaches `NEEDS_CLARIFICATION`, the client enters `awaiting-clarification` and keeps the clarification visible. A reply-capable widget has:
+
+- `type: "clarification"`
+- `clarificationId`, `conversationId`, and optional `expiresAt`
+- `title`, `question`, and `suggestions[]`
+
+Chip, typed, and transcribed voice answers all call `POST /v1/desktop-avatar/requests/:requestId/clarifications/:clarificationId/replies` with `{ clientRequestId, answer }`. The `202` response has the same shape as request creation and starts a new immutable child-turn stream. Legacy clarification widgets without IDs remain renderable but cannot resume a server conversation. Expired or already answered chips are disabled. Starting a new chat clears local state immediately and best-effort calls `POST /v1/desktop-avatar/conversations/:conversationId/cancel` for the captured server conversation.
+
+Relational results use a `dataset` widget with `resultId`, `locale`, `rowCount`, typed columns, rows, and an optional opaque `cursor`. Additional pages are loaded with `GET /v1/desktop-avatar/requests/:requestId/results/:resultId/pages?cursor=...`; the client appends rows and uses only the returned `nextCursor` for continuation. Lookup labels are display metadata and do not replace raw row values in the transport contract.
+
+### Routing and transport safety
+
+- Every prompt uses the Agent Studio DesktopAvatar API. Any prompt containing business intent keeps its business classification even if it also contains a greeting.
+- A business denial, authorization failure, no-agent result, timeout, or other backend error is shown as-is and never handed to local execution.
+- Tauri validates backend-supplied stream and polling URLs against the configured Agent Studio origin before using the active session credentials.
+- Request IDs, result IDs, clarification IDs, conversations, and cursors are URL-encoded as path/query data.
+
 ## Tenant authentication
 
 - A tenant is exactly the server-derived `tenantId` for one `{companyId, branchId}` pair.

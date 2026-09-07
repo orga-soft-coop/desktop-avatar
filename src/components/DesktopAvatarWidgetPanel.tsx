@@ -8,9 +8,10 @@ import type {
 } from "../lib/contracts";
 import { t } from "../lib/i18n";
 import { DataTable } from "./DataTable";
-import { WidgetAreaChart } from "./WidgetAreaChart";
 import { WidgetHeader } from "./WidgetHeader";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+
+const WidgetAreaChart = lazy(() => import("./WidgetAreaChart").then(module => ({ default: module.WidgetAreaChart })));
 
 interface DesktopAvatarWidgetPanelProps {
   widget: DesktopAvatarWidgetPayload;
@@ -212,7 +213,11 @@ export function DesktopAvatarWidgetPanel({
   }
 
   if (widget.type === "areaChart") {
-    return <WidgetAreaChart widget={widget} onClose={onDismiss} />;
+    return (
+      <Suspense fallback={<section className="widget-card" role="status">{t("widgets.dataset.loading")}</section>}>
+        <WidgetAreaChart widget={widget} onClose={onDismiss} />
+      </Suspense>
+    );
   }
 
   if (widget.type === "operatorRadar") {

@@ -1,17 +1,15 @@
 {
-  "displayName": "Female Avatar 1 (Packed)",
+  "displayName": "female_avatar_1",
   "license": "Project internal",
-  "thumbnailUrl": null,
-  "modelUrl": "./sample-assets/female_avatar_1_packed.glb",
+  "animationLibraryUrl": "./avatars/female_avatar_1/manifest.json",
   "animationMapping": {
     "idle": "idle",
-    "walking": "walking",
+    "attention": "taking-notes",
+    "thinking": "thinking",
     "working": "thinking",
+    "talking": "talking",
     "communicating": "communicating",
-    "coffee-break": "coffee-break",
-    "at-phone": "at-phone",
     "teleport-out": "teleport-out",
-    "teleport-in": "teleport-in",
-    "talking": "talking"
+    "teleport-in": "teleport-in"
   }
 }

@@ -1,12 +1,12 @@
+import { getWindowSizesForPreset } from "./lib/window-presets";
+import { useWidgetDockLayout } from "./hooks/useWidgetDockLayout";
+import { useAvatarPreference } from "./hooks/useAvatarPreference";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
 import {
   DEFAULT_AVATAR_CAMERA_CONFIG,
   formatAvatarCameraConfig,
   type AvatarCameraConfig
 } from "./lib/avatar-stage-config";
-import { MIN_CONTENT_WINDOW_HEIGHT } from "./lib/window-layout";
-import { getWindowSizesForPreset } from "./lib/window-presets";
 import { ChatPanel, type DevToolsDemoWidgetKind } from "./components/ChatPanel";
 import { AvatarStage } from "./components/AvatarStage";
 import { DataPanelSlider } from "./components/DataPanelSlider";
@@ -14,12 +14,12 @@ import { DesktopAvatarWidgetPanel } from "./components/DesktopAvatarWidgetPanel"
 import { SpeechBubble } from "./components/SpeechBubble";
 import { useDesktopCompanion } from "./hooks/useDesktopCompanion";
 import type {
+  AvatarAnimationDebug,
   DesktopAvatarOperatorRadarWidget,
   DesktopAvatarRadarSignal,
   DesktopAvatarWidgetPayload
 } from "./lib/contracts";
 import { t } from "./lib/i18n";
-import { getWindowGeometry } from "./lib/tauri";
 import type { DesktopAvatarTenantSession } from "./lib/auth-contracts";
 import { LoginGate } from "./components/LoginGate";
 import { useTenantSession } from "./hooks/useTenantSession";
@@ -28,15 +28,6 @@ import { useHitlPanelDismissals } from "./hooks/useHitlPanelDismissals";
 const TEXT_WIDGET_BUBBLE_ONLY_MAX_CHARS = 220;
 const PEEK_REST_ANIMATION_STORAGE_KEY = "desktop-avatar.peekRestAnimationClip";
 const UI_THEME_STORAGE_KEY = "desktop-avatar.uiTheme";
-const STARTUP_TELEPORT_OUT_FALLBACK_MS = 2600;
-const WIDGET_DOCK_WIDTH = 620;
-const WIDGET_DOCK_EDGE_THRESHOLD = 18;
-const WIDGET_DOCK_SWITCH_HYSTERESIS = 56;
-const PEEK_SHADOW_PADDING = 20;
-const PEEK_CAMERA_REFERENCE_SCALE = 2.28;
-const PEEK_CAMERA_TARGET_Y_OFFSET = 0.12;
-
-type WidgetDockSide = "left" | "right";
 type UiTheme = "dark" | "light";
 
 function readStoredUiTheme(): UiTheme {
@@ -45,11 +36,6 @@ function readStoredUiTheme(): UiTheme {
   }
   const value = window.localStorage.getItem(UI_THEME_STORAGE_KEY);
   return value === "light" ? "light" : "dark";
-}
-
-function resolvePeekVisualDiameter(width: number, height: number): number {
-  const diameter = Math.min(width, height);
-  return Math.max(1, diameter - PEEK_SHADOW_PADDING * 2);
 }
 
 function backendConnectionLabel(state: ReturnType<typeof useDesktopCompanion>["backendConnectionState"]) {
@@ -91,6 +77,7 @@ function AuthenticatedApp({
   onLogout: () => Promise<void>;
 }) {
   const companion = useDesktopCompanion();
+  const avatar = useAvatarPreference();
   const isExpanded = companion.peekMode === "expanded";
   const isPeek = companion.peekMode === "peek";
   const [peekRestAnimationClip] = useState<string | null>(() => {
@@ -111,34 +98,23 @@ function AuthenticatedApp({
     "closed" | "opening" | "open" | "closing"
   >("closed");
   const [widgetDockPrepared, setWidgetDockPrepared] = useState(true);
-  const [widgetDockSide, setWidgetDockSide] = useState<WidgetDockSide>("right");
   const [animationNames, setAnimationNames] = useState<string[]>([]);
   const [cameraConfig, setCameraConfig] = useState<AvatarCameraConfig>(
     DEFAULT_AVATAR_CAMERA_CONFIG
   );
   const [forcedAnimation, setForcedAnimation] = useState<string | null>(null);
-  const [startupOneShotAnimation, setStartupOneShotAnimation] = useState<string | null>(null);
   const [startupMaskRevealActive, setStartupMaskRevealActive] = useState(false);
   const [startupMaskRevealComplete, setStartupMaskRevealComplete] = useState(false);
   const [uiTheme, setUiTheme] = useState<UiTheme>(() => readStoredUiTheme());
-  const [avatarDebug, setAvatarDebug] = useState<{
-    assetKind: "legacy-vrm" | "packed-glb" | null;
-    selectedClip: string | null;
-    resolvedAnimationMapping: Record<string, string>;
-  }>({
+  const [avatarDebug, setAvatarDebug] = useState<AvatarAnimationDebug>({
     assetKind: null,
     selectedClip: null,
     resolvedAnimationMapping: {}
   });
 
-  const appShellRef = useRef<HTMLElement>(null);
   const peekPressStateRef = useRef<{ x: number; y: number; dragging: boolean } | null>(null);
   const suppressNextPeekOpenRef = useRef(false);
-  const startupTeleportOutTriggeredRef = useRef(false);
   const startupMaskRevealPlayedRef = useRef(false);
-  const previousExpandedRef = useRef(isExpanded);
-  const reopenLeftDockAnchorGuardRef = useRef(false);
-
   const {
     dismissedDecisionIds: dismissedHitlDecisionIds,
     dismissDecision: dismissHitlDecision,
@@ -152,24 +128,9 @@ function AuthenticatedApp({
     window.localStorage.setItem(UI_THEME_STORAGE_KEY, uiTheme);
   }, [uiTheme]);
 
-  useEffect(() => {
-    if (isExpanded && !previousExpandedRef.current) {
-      reopenLeftDockAnchorGuardRef.current = true;
-    }
-    if (!isExpanded || widgetDockSide === "right") {
-      reopenLeftDockAnchorGuardRef.current = false;
-    }
-    previousExpandedRef.current = isExpanded;
-  }, [isExpanded, widgetDockSide]);
-
   const handleAnimationsLoaded = useCallback((names: string[]) => {
     setAnimationNames(names);
   }, []);
-
-  const lastResizedHeight = useRef(0);
-  const lastResizedWidth = useRef(0);
-  const resizeWindowRef = useRef(companion.resizeWindow);
-  resizeWindowRef.current = companion.resizeWindow;
 
   const latestAssistantMessage = [...companion.messages]
     .reverse()
@@ -327,130 +288,13 @@ function AuthenticatedApp({
           })
       : backendLabel;
   const cameraConfigSnippet = formatAvatarCameraConfig(cameraConfig);
-  const presetSizes = getWindowSizesForPreset(companion.sizePreset);
-  const expandedContentWidth = presetSizes.expanded.width;
-  const expectedWindowWidth = Math.round(
-    expandedContentWidth + (widgetDockVisible ? WIDGET_DOCK_WIDTH : 0)
-  );
-  const widgetDockReady =
-    !widgetDockVisible || Math.abs(companion.windowSize.width - expectedWindowWidth) < 2;
-  const expandedContentStyle: CSSProperties | undefined = isExpanded
-    ? { width: `${expandedContentWidth}px` }
-    : undefined;
-  const peekVisualDiameter = resolvePeekVisualDiameter(
-    presetSizes.collapsed.width,
-    presetSizes.collapsed.height
-  );
-  const avatarStageCameraConfig: AvatarCameraConfig = isPeek
-    ? {
-        ...cameraConfig,
-        target: {
-          ...cameraConfig.target,
-          y: cameraConfig.target.y + PEEK_CAMERA_TARGET_Y_OFFSET
-        },
-        referenceHeight: peekVisualDiameter * PEEK_CAMERA_REFERENCE_SCALE
-      }
-    : cameraConfig;
-  const effectiveForcedAnimation = startupOneShotAnimation
-    ? startupOneShotAnimation
-    : isPeek
-      ? (peekRestAnimationClip ?? forcedAnimation)
-      : forcedAnimation;
-
-  const updateWidgetDockSide = useCallback(async () => {
-    if (!isExpanded) {
-      return;
-    }
-    const geometry = await getWindowGeometry().catch(() => null);
-    if (!geometry) {
-      return;
-    }
-    const leftSpace = geometry.x;
-    const rightSpace = geometry.screenWidth - (geometry.x + geometry.width);
-    const requiredSpace = WIDGET_DOCK_WIDTH + WIDGET_DOCK_EDGE_THRESHOLD;
-    const canFitLeft = leftSpace >= requiredSpace;
-    const canFitRight = rightSpace >= requiredSpace;
-
-    setWidgetDockSide((current) => {
-      // Deterministic fit rule: choose the side that can fully fit the dock.
-      if (canFitLeft && !canFitRight) {
-        return "left";
-      }
-      if (canFitRight && !canFitLeft) {
-        return "right";
-      }
-      if (!canFitLeft && !canFitRight) {
-        // Neither side fits completely: keep the side with more remaining room.
-        return leftSpace >= rightSpace ? "left" : "right";
-      }
-
-      // Both sides fit: keep hysteresis to avoid jitter while dragging.
-      if (
-        current === "right" &&
-        leftSpace > rightSpace + WIDGET_DOCK_SWITCH_HYSTERESIS
-      ) {
-        return "left";
-      }
-      if (
-        current === "left" &&
-        rightSpace > leftSpace + WIDGET_DOCK_SWITCH_HYSTERESIS
-      ) {
-        return "right";
-      }
-      return current;
-    });
-  }, [isExpanded]);
-
-  // Fit the native window to the measured layout.
-  const syncWindowHeight = useCallback(() => {
-    if (!isExpanded) {
-      return;
-    }
-    const shell = appShellRef.current;
-    if (!shell) return;
-
-    const preset = getWindowSizesForPreset(companion.sizePreset);
-    const widgetWidth = widgetDockVisible ? WIDGET_DOCK_WIDTH : 0;
-    const targetWidth = Math.round(preset.expanded.width + widgetWidth);
-    const measured = Math.ceil(
-      Math.max(shell.scrollHeight, shell.getBoundingClientRect().height)
-    );
-    const targetHeight = Math.max(MIN_CONTENT_WINDOW_HEIGHT, measured);
-
-    const sameHeight = Math.abs(targetHeight - lastResizedHeight.current) < 2;
-    const sameWidth = Math.abs(targetWidth - lastResizedWidth.current) < 2;
-    if (sameHeight && sameWidth) return;
-    lastResizedHeight.current = targetHeight;
-    lastResizedWidth.current = targetWidth;
-    let resizeAnchor: "left" | "right" = "left";
-    if (widgetDockSide === "left") {
-      // After reopening from peek, keep the left origin once so we restore
-      // the previous expanded rect before returning to right-anchor behavior.
-      if (reopenLeftDockAnchorGuardRef.current) {
-        resizeAnchor = "left";
-        reopenLeftDockAnchorGuardRef.current = false;
-      } else {
-        resizeAnchor = "right";
-      }
-    }
-    void resizeWindowRef.current(targetWidth, targetHeight, resizeAnchor);
-  }, [companion.sizePreset, isExpanded, widgetDockSide, widgetDockVisible]);
-
-  useEffect(() => {
-    const shell = appShellRef.current;
-    if (!shell) return;
-    let rafId = 0;
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => syncWindowHeight());
-    });
-    observer.observe(shell);
-    syncWindowHeight();
-    return () => {
-      observer.disconnect();
-      cancelAnimationFrame(rafId);
-    };
-  }, [syncWindowHeight]);
+  const { appShellRef, widgetDockSide, widgetDockReady, expandedContentStyle, updateWidgetDockSide, adjustWindowHeight } = useWidgetDockLayout({
+    isExpanded, sizePreset: companion.sizePreset, windowSize: companion.windowSize,
+    widgetDockVisible, resizeWindow: companion.resizeWindow
+  });
+  const effectiveForcedAnimation = isPeek
+    ? (peekRestAnimationClip ?? forcedAnimation)
+    : forcedAnimation;
 
   useEffect(() => {
     if (panelEntries.length > 0) {
@@ -521,45 +365,6 @@ function AuthenticatedApp({
   }, [radarOpenRequested, companion.operatorRadarWidget]);
 
   useEffect(() => {
-    // The native shell can change size externally when switching peek/expanded mode.
-    // Reset cached dimensions so the next sync always re-applies the correct dock width.
-    lastResizedHeight.current = 0;
-    lastResizedWidth.current = 0;
-    if (!isExpanded) {
-      return;
-    }
-    const id = requestAnimationFrame(() => syncWindowHeight());
-    return () => cancelAnimationFrame(id);
-  }, [isExpanded, widgetDockVisible, syncWindowHeight]);
-
-  useEffect(() => {
-    if (startupTeleportOutTriggeredRef.current) {
-      return;
-    }
-    if (companion.peekMode !== "peek") {
-      return;
-    }
-    if (companion.isModeTransitioning || companion.modeTransitionPhase !== "idle") {
-      return;
-    }
-
-    startupTeleportOutTriggeredRef.current = true;
-    setStartupOneShotAnimation("teleport-out");
-  }, [companion.isModeTransitioning, companion.modeTransitionPhase, companion.peekMode]);
-
-  useEffect(() => {
-    if (!startupOneShotAnimation) {
-      return;
-    }
-    const timeoutId = window.setTimeout(() => {
-      setStartupOneShotAnimation((current) =>
-        current === startupOneShotAnimation ? null : current
-      );
-    }, STARTUP_TELEPORT_OUT_FALLBACK_MS);
-    return () => window.clearTimeout(timeoutId);
-  }, [startupOneShotAnimation]);
-
-  useEffect(() => {
     if (
       startupMaskRevealPlayedRef.current ||
       !companion.bootstrapReady ||
@@ -589,39 +394,6 @@ function AuthenticatedApp({
     }, 220);
     return () => window.clearTimeout(timeoutId);
   }, [startupMaskRevealActive]);
-
-  const handleForcedAnimationFinished = useCallback((finishedName: string) => {
-    const normalized = finishedName.trim().toLowerCase();
-    if (normalized === "teleport-out" || normalized === "teleported-out") {
-      setStartupOneShotAnimation(null);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isExpanded) {
-      return;
-    }
-    void updateWidgetDockSide();
-    const intervalId = window.setInterval(() => {
-      void updateWidgetDockSide();
-    }, 120);
-    return () => window.clearInterval(intervalId);
-  }, [isExpanded, updateWidgetDockSide]);
-
-  const adjustWindowHeight = useCallback(
-    (delta: number) => {
-      const nextHeight = Math.max(MIN_CONTENT_WINDOW_HEIGHT, companion.windowSize.height + delta);
-      const widgetWidth = widgetDockVisible ? WIDGET_DOCK_WIDTH : 0;
-      const targetWidth = Math.round(
-        getWindowSizesForPreset(companion.sizePreset).expanded.width + widgetWidth
-      );
-      lastResizedWidth.current = targetWidth;
-      lastResizedHeight.current = nextHeight;
-      const resizeAnchor = widgetDockSide === "left" ? "right" : "left";
-      void companion.resizeWindow(targetWidth, nextHeight, resizeAnchor);
-    },
-    [companion, widgetDockSide, widgetDockVisible]
-  );
 
   const dismissPanelEntry = useCallback(
     (entry: PanelEntry) => {
@@ -741,14 +513,13 @@ function AuthenticatedApp({
         <AvatarStage
           companionState={companion.companionState}
           expanded={isExpanded}
-          manifest={companion.avatarManifest}
-          cameraConfig={avatarStageCameraConfig}
+          manifest={avatar.manifest}
+          cameraConfig={cameraConfig}
           forcedAnimation={effectiveForcedAnimation}
           suggestedAnimation={isPeek ? "idle" : companion.activeAnimation}
           onDragStart={companion.startWindowDrag}
           onAnimationsLoaded={handleAnimationsLoaded}
           onAnimationDebugChange={setAvatarDebug}
-          onForcedAnimationFinished={handleForcedAnimationFinished}
         />
 
         {isPeek ? (
@@ -819,6 +590,11 @@ function AuthenticatedApp({
         {isExpanded ? (
           <div className="bottom-stack">
             <ChatPanel
+              canStopOutput={companion.canStopOutput}
+              isStoppingOutput={companion.isStoppingOutput}
+              onStopOutput={() => void companion.stopOutput()}
+              avatarPreference={avatar.selection}
+              onSelectAvatar={avatar.select}
               draft={companion.draft}
               error={companion.error}
               isExpanded={isExpanded}

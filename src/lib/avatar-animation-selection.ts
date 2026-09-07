@@ -1,7 +1,7 @@
 import type {
   CompanionState,
   DesktopAvatarAnimationKey,
-  PackedAvatarAnimationState
+  AvatarAnimationState
 } from "./contracts";
 
 export function deriveAnimationCandidates(input: {
@@ -42,14 +42,14 @@ export function deriveAnimationCandidates(input: {
   return ["idle"];
 }
 
-export function normalizePackedAnimationMapping(
-  input?: Partial<Record<PackedAvatarAnimationState, string>> | null
-): Partial<Record<PackedAvatarAnimationState, string>> {
+export function normalizeAnimationMapping(
+  input?: Partial<Record<AvatarAnimationState, string>> | null
+): Partial<Record<AvatarAnimationState, string>> {
   if (!input) {
     return {};
   }
 
-  const normalized: Partial<Record<PackedAvatarAnimationState, string>> = {};
+  const normalized: Partial<Record<AvatarAnimationState, string>> = {};
   for (const [key, value] of Object.entries(input)) {
     if (typeof value !== "string") {
       continue;
@@ -58,7 +58,7 @@ export function normalizePackedAnimationMapping(
     if (!trimmed) {
       continue;
     }
-    normalized[key as PackedAvatarAnimationState] = trimmed;
+    normalized[key as AvatarAnimationState] = trimmed;
   }
   return normalized;
 }
@@ -73,9 +73,8 @@ export function selectAnimationAction<T>(
   }
 
   const resolveIdle = (): T | undefined => {
-    if (actions.idle) {
-      return actions.idle;
-    }
+    const idleKey = actionKeys.find((key) => key.trim().toLowerCase() === "idle");
+    if (idleKey) return actions[idleKey];
     for (const key of actionKeys) {
       if (key.toLowerCase().startsWith("idle-")) {
         return actions[key];
@@ -92,9 +91,8 @@ export function selectAnimationAction<T>(
       }
       continue;
     }
-    if (actions[candidate]) {
-      return actions[candidate];
-    }
+    const key = actionKeys.find((key) => key.trim().toLowerCase() === candidate.trim().toLowerCase());
+    if (key) return actions[key];
   }
 
   return resolveIdle() ?? actions[actionKeys[0]];

@@ -1,4 +1,5 @@
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   BootstrapState,
@@ -94,7 +95,6 @@ export function onTenantSessionInvalidated(listener: () => void): () => void {
 export async function getBootstrapState(): Promise<BootstrapState> {
   if (!isTauriRuntime()) {
     return {
-      avatarManifest: null,
       collapsedSize: COLLAPSED_SIZE,
       expandedSize: EXPANDED_SIZE,
       ttsEnabled: true,
@@ -199,21 +199,13 @@ export async function getWindowGeometry(): Promise<WindowGeometry | null> {
   return invoke<WindowGeometry>("window_get_geometry");
 }
 
-export async function loadAvatarAsset(path: string): Promise<string> {
-  if (!isTauriRuntime()) {
-    if (/^(https?:|blob:|data:)/i.test(path) || /^(\/(?!\/)|\.{1,2}\/)/.test(path)) {
-      return path;
-    }
-    return convertFileSrc(path);
-  }
+export async function getAvatarWindowVisibility(): Promise<boolean> {
+  return isTauriRuntime() ? getCurrentWindow().isVisible() : true;
+}
 
-  const response = await invoke<{ mimeType: string; base64: string }>("load_avatar_asset", {
-    path
-  });
-  const binary = atob(response.base64);
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  const blob = new Blob([bytes], { type: response.mimeType });
-  return URL.createObjectURL(blob);
+export async function onAvatarWindowVisibility(callback: (visible: boolean) => void): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  return listen<boolean>("avatar-window-visibility", (event) => callback(event.payload));
 }
 
 export async function frontendLog(level: string, message: string): Promise<void> {

@@ -1,0 +1,300 @@
+{
+  "version": 2,
+  "avatar": "female_avatar_1",
+  "model": "avatar.glb",
+  "skeleton": "avatar-body-hands-45",
+  "jointCount": 45,
+  "props": {
+    "phone": {
+      "url": "props/phone.glb",
+      "sha256": "12133ae2797ae7bb1e31aa4eab3ce3339eb1d4ef21cb015f7f4a65607794ae0f",
+      "bytes": 31436
+    },
+    "notebook": {
+      "url": "props/notebook.glb",
+      "sha256": "c9df8dfb21351ee088d83822bae8159aa5e2d8d332a699087378ab8f5557aaf5",
+      "bytes": 33692
+    },
+    "pen": {
+      "url": "props/pen.glb",
+      "sha256": "f714e76199c3b9bdffb00525005803149f9978ce31582f31681bbd60c88dcfe1",
+      "bytes": 7304
+    },
+    "cup": {
+      "url": "props/cup.glb",
+      "sha256": "f93a74a45e2fdd8812df3e0c9208063c029a7e7809e6a6c560b97016e3c534f1",
+      "bytes": 17396
+    }
+  },
+  "retargetProfile": "female_avatar_1",
+  "units": "meters",
+  "upAxis": "Y",
+  "rootHeightOffset": 0.02689627930521965,
+  "clips": [
+    {
+      "name": "idle",
+      "source": "Rohdaten/Animationen/idle.fbx",
+      "source_sha256": "06f90b391794b211c68df4919044a71bc68130aa031636e7f34d54e6cad2e4b4",
+      "frames": 174,
+      "fps": 30,
+      "duration": 5.766666666666667,
+      "wrist_rotation_range_degrees": {
+        "L": 7.2382963391910335,
+        "R": 5.024182321243296
+      },
+      "motion_sha256": "869e9f20c38f752f66c5e6d8d86c30691f0a995a90144a5032a8afe52ab200bf",
+      "finger_adaptation": "Source thumb/index bends reduced to two joints, with grouped curls and wrist-driven relaxation; contact grips override the holding hand",
+      "generator": "scripts/animation/hand_props.py",
+      "generator_sha256": "78dba63350324629515ee96a57b3ffe4e41e7da5903eccead4e23ceda10a71a4",
+      "url": "animations/idle.glb",
+      "loop": true
+    },
+    {
+      "name": "walking",
+      "source": "Rohdaten/Animationen/walking.fbx",
+      "source_sha256": "a3b1780458ab0a0a6bda54147398f8b246613353ab257700a4cd92a6f2ff4c8e",
+      "frames": 32,
+      "fps": 30,
+      "duration": 1.0333333333333334,
+      "wrist_rotation_range_degrees": {
+        "L": 33.5357102549879,
+        "R": 30.172952896525867
+      },
+      "motion_sha256": "b11c9eabc7324b56fd651058d0c407c5e1f5e9b61d093850165d1d2f5a135b55",
+      "finger_adaptation": "Source thumb/index bends reduced to two joints, with grouped curls and wrist-driven relaxation; contact grips override the holding hand",
+      "generator": "scripts/animation/hand_props.py",
+      "generator_sha256": "78dba63350324629515ee96a57b3ffe4e41e7da5903eccead4e23ceda10a71a4",
+      "url": "animations/walking.glb",
+      "loop": true
+    },
+    {
+      "name": "thinking",
+      "source": "Rohdaten/Animationen/thinking.fbx",
+      "source_sha256": "28c67a14491f9cd39b953002276ef8d11d8d4edaf2156304a8c27eea37a0c4a4",
+      "frames": 158,
+      "fps": 30,
+      "duration": 5.233333333333333,
+      "wrist_rotation_range_degrees": {
+        "L": 79.35655102201328,
+        "R": 85.38897000118027
+      },
+      "motion_sha256": "c4519a18be3e11ee01d7b655b5bc7c2fbb794b012b09136c7059c770185844e6",
+      "finger_adaptation": "Source thumb/index bends reduced to two joints, with grouped curls and wrist-driven relaxation; contact grips override the holding hand",
+      "generator": "scripts/animation/hand_props.py",
+      "generator_sha256": "78dba63350324629515ee96a57b3ffe4e41e7da5903eccead4e23ceda10a71a4",
+      "url": "animations/thinking.glb",
+      "loop": true
+    },
+    {
+      "name": "talking",
+      "source": "Rohdaten/Animationen/talking.fbx",
+      "source_sha256": "68d7cff017aeea6cddc7ecaad8a1dcbeda2d7fca9b73d4e5f99777f932c84131",
+      "frames": 308,
+      "fps": 30,
+      "duration": 10.233333333333333,
+      "wrist_rotation_range_degrees": {
+        "L": 78.05029846444657,
+        "R": 77.74716097481401
+      },
+      "motion_sha256": "994ed42702920ad8920449f1490ef3714171927b362231545d7164db043b489b",
+      "finger_adaptation": "Source thumb/index bends reduced to two joints, with grouped curls and wrist-driven relaxation; contact grips override the holding hand",
+      "generator": "scripts/animation/hand_props.py",
+      "generator_sha256": "78dba63350324629515ee96a57b3ffe4e41e7da5903eccead4e23ceda10a71a4",
+      "url": "animations/talking.glb",
+      "loop": true
+    },
+    {
+      "name": "communicating",
+      "source": "Rohdaten/Animationen/communicating.fbx",
+      "source_sha256": "68d7cff017aeea6cddc7ecaad8a1dcbeda2d7fca9b73d4e5f99777f932c84131",
+      "frames": 308,
+      "fps": 30,
+      "duration": 10.233333333333333,
+      "wrist_rotation_range_degrees": {
+        "L": 78.05029846444657,
+        "R": 77.74716097481401
+      },
+      "motion_sha256": "994ed42702920ad8920449f1490ef3714171927b362231545d7164db043b489b",
+      "finger_adaptation": "Source thumb/index bends reduced to two joints, with grouped curls and wrist-driven relaxation; contact grips override the holding hand",
+      "generator": "scripts/animation/hand_props.py",
+      "generator_sha256": "78dba63350324629515ee96a57b3ffe4e41e7da5903eccead4e23ceda10a71a4",
+      "url": "animations/communicating.glb",
+      "loop": true
+    },
+    {
+      "name": "coffee-break",
+      "source": "Rohdaten/Animationen/coffee-break.fbx",
+      "source_sha256": "68d7cff017aeea6cddc7ecaad8a1dcbeda2d7fca9b73d4e5f99777f932c84131",
+      "frames": 308,
+      "fps": 30,
+      "duration": 10.233333333333333,
+      "wrist_rotation_range_degrees": {
+        "L": 78.05029846444657,
+        "R": 127.50155654054996
+      },
+      "motion_sha256": "2dcc4b5213a3465d6f0fbff3d2bbc37b07d9144e8e10328525e5aebe9d11fd37",
+      "label": "Kaffee trinken",
+      "adaptation": "Supplied body motion with authored cup lift, rim contact, sip and lower",
+      "props": [
+        {
+          "prop": "cup",
+          "bone": "DEF-hand.R",
+          "position": [
+            -0.056658655405044556,
+            0.05138309672474861,
+            -0.007735186722129583
+          ],
+          "quaternion": [
+            0.7070625424385071,
+            0.007904720492661,
+            -0.007905419915914536,
+            0.7070626616477966
+          ],
+          "scale": [
+            1.0,
+            0.9999999403953552,
+            0.9999998807907104
+          ]
+        }
+      ],
+      "finger_adaptation": "Source thumb/index bends reduced to two joints, with grouped curls and wrist-driven relaxation; contact grips override the holding hand",
+      "generator": "scripts/animation/hand_props.py",
+      "generator_sha256": "78dba63350324629515ee96a57b3ffe4e41e7da5903eccead4e23ceda10a71a4",
+      "url": "animations/coffee-break.glb",
+      "loop": true
+    },
+    {
+      "name": "at-phone",
+      "source": "Rohdaten/Animationen/at-phone.fbx",
+      "source_sha256": "59427f7b9cae1445e89890779abd1274f574187a3b946b0aba03d2bafcfefa20",
+      "frames": 1166,
+      "fps": 30,
+      "duration": 38.833333333333336,
+      "wrist_rotation_range_degrees": {
+        "L": 130.45106961036902,
+        "R": 121.30147971257357
+      },
+      "motion_sha256": "39fa456b991e60f4cc0f6574d2e0b74a8fe56a0bb109f5cab62c6dbaa80b8a2c",
+      "adaptation": "Baked right-arm ear contact and simplified phone grip",
+      "props": [
+        {
+          "prop": "phone",
+          "bone": "DEF-hand.R",
+          "position": [
+            -0.02301662042737007,
+            0.04600002244114876,
+            -0.00048552078078500926
+          ],
+          "quaternion": [
+            -3.6039449469171814e-07,
+            -0.6991575360298157,
+            -3.0611386137024965e-07,
+            0.714967668056488
+          ],
+          "scale": [
+            0.9999999403953552,
+            0.9999998807907104,
+            1.0
+          ]
+        }
+      ],
+      "finger_adaptation": "Source thumb/index bends reduced to two joints, with grouped curls and wrist-driven relaxation; contact grips override the holding hand",
+      "generator": "scripts/animation/hand_props.py",
+      "generator_sha256": "78dba63350324629515ee96a57b3ffe4e41e7da5903eccead4e23ceda10a71a4",
+      "url": "animations/at-phone.glb",
+      "loop": true
+    },
+    {
+      "name": "teleport-in",
+      "source": "Rohdaten/Animationen/teleport-in.fbx",
+      "source_sha256": "9e3f29603f9edf854d9ddc0763e4636ffe48c20716f0ad2ed227211cbb30fc74",
+      "frames": 95,
+      "fps": 30,
+      "duration": 3.1333333333333333,
+      "wrist_rotation_range_degrees": {
+        "L": 6.995311751729892,
+        "R": 5.7281904998637385
+      },
+      "motion_sha256": "3f57f63a1dad9f14f39a0931e89c6c569a40567d9c0ab9b3b514ea6b1aa9e593",
+      "finger_adaptation": "Source thumb/index bends reduced to two joints, with grouped curls and wrist-driven relaxation; contact grips override the holding hand",
+      "generator": "scripts/animation/hand_props.py",
+      "generator_sha256": "78dba63350324629515ee96a57b3ffe4e41e7da5903eccead4e23ceda10a71a4",
+      "url": "animations/teleport-in.glb",
+      "loop": false
+    },
+    {
+      "name": "teleport-out",
+      "source": "Rohdaten/Animationen/teleport-out.fbx",
+      "source_sha256": "5a67c92763b6ab08eb7215d41b72f2eb91814d0f607695c86788ff44bc783412",
+      "frames": 76,
+      "fps": 30,
+      "duration": 2.5,
+      "wrist_rotation_range_degrees": {
+        "L": 13.533778704998708,
+        "R": 57.024694746115834
+      },
+      "motion_sha256": "1a10ed5b965edf13134c1d8f94e17f00ef6c6685eca590bda74ad2f3289dfb29",
+      "finger_adaptation": "Source thumb/index bends reduced to two joints, with grouped curls and wrist-driven relaxation; contact grips override the holding hand",
+      "generator": "scripts/animation/hand_props.py",
+      "generator_sha256": "78dba63350324629515ee96a57b3ffe4e41e7da5903eccead4e23ceda10a71a4",
+      "url": "animations/teleport-out.glb",
+      "loop": false
+    },
+    {
+      "name": "taking-notes",
+      "label": "Notizen machen",
+      "source": "Rohdaten/Animationen/idle.fbx",
+      "source_sha256": "06f90b391794b211c68df4919044a71bc68130aa031636e7f34d54e6cad2e4b4",
+      "adaptation": "Authored writing hands and head over supplied idle lower-body motion",
+      "generator": "scripts/animation/hand_props.py",
+      "generator_sha256": "78dba63350324629515ee96a57b3ffe4e41e7da5903eccead4e23ceda10a71a4",
+      "frames": 241,
+      "fps": 30,
+      "duration": 8.0,
+      "props": [
+        {
+          "prop": "notebook",
+          "bone": "DEF-hand.L",
+          "position": [
+            0.02043585479259491,
+            0.08000000566244125,
+            0.02546326443552971
+          ],
+          "quaternion": [
+            0.00790497288107872,
+            -0.007905088365077972,
+            -0.7070622444152832,
+            0.7070629596710205
+          ],
+          "scale": [
+            0.9999998807907104,
+            1.0,
+            0.9999999403953552
+          ]
+        },
+        {
+          "prop": "pen",
+          "bone": "DEF-hand.R",
+          "position": [
+            -0.018525755032896996,
+            0.05000003054738045,
+            0.021419551223516464
+          ],
+          "quaternion": [
+            -0.3966188430786133,
+            -0.3966185450553894,
+            0.5854002833366394,
+            0.5854006409645081
+          ],
+          "scale": [
+            1.0000001192092896,
+            1.0000001192092896,
+            0.9999999403953552
+          ]
+        }
+      ],
+      "url": "animations/taking-notes.glb",
+      "loop": true
+    }
+  ]
+}

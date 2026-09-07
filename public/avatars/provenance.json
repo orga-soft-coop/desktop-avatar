@@ -1,0 +1,135 @@
+{
+  "sourceProject": "agent-avatars",
+  "libraryVersion": 2,
+  "sourceSnapshot": "Version 2 body/hands/props export with corrected side-on writing grip imported 2026-09-06",
+  "files": {
+    "female_avatar_1/animations/at-phone.glb": {
+      "source": "Blender/female_avatar_1/runtime/animations/at-phone.glb",
+      "sha256": "027ace678337c4f5fb9c52b00733097703ae4f7f7560902974b29b2747e83e20"
+    },
+    "female_avatar_1/animations/coffee-break.glb": {
+      "source": "Blender/female_avatar_1/runtime/animations/coffee-break.glb",
+      "sha256": "48f044ef9ddb97f4126e61c7220b0e50bd54c8db833e6e9b6d1bd411a7451cea"
+    },
+    "female_avatar_1/animations/communicating.glb": {
+      "source": "Blender/female_avatar_1/runtime/animations/communicating.glb",
+      "sha256": "dde8c1f89dd3909250a68af6348e830a9e325e114f5acaeeb7949ddd51aeba5c"
+    },
+    "female_avatar_1/animations/idle.glb": {
+      "source": "Blender/female_avatar_1/runtime/animations/idle.glb",
+      "sha256": "eb0ba98b0ac83a781e40275ee79acd8b159d4e26c3aa8e5c3c0d6d950bf5dfd4"
+    },
+    "female_avatar_1/animations/taking-notes.glb": {
+      "source": "Blender/female_avatar_1/runtime/animations/taking-notes.glb",
+      "sha256": "5ea621b65a194f01718af25a17ff10699a426f9ff465caf51ebe494c4a8089ad"
+    },
+    "female_avatar_1/animations/talking.glb": {
+      "source": "Blender/female_avatar_1/runtime/animations/talking.glb",
+      "sha256": "eb38d87ca0acf0f7f1c3466e1868b17e120ada6855300e3f5d8224f35c091305"
+    },
+    "female_avatar_1/animations/teleport-in.glb": {
+      "source": "Blender/female_avatar_1/runtime/animations/teleport-in.glb",
+      "sha256": "91984eadbad6a2f16d0f67a47006a05ce8c08a2994050d3f47f20a8b90f20c84"
+    },
+    "female_avatar_1/animations/teleport-out.glb": {
+      "source": "Blender/female_avatar_1/runtime/animations/teleport-out.glb",
+      "sha256": "5b101d768fa2d32a12ec151dab917459a2a854614e33d322124ad52f52a333f3"
+    },
+    "female_avatar_1/animations/thinking.glb": {
+      "source": "Blender/female_avatar_1/runtime/animations/thinking.glb",
+      "sha256": "b0d41e24d660f4d0f02e2bd5ad74e39d222cb0f32dbd824c8b9d97019aadd16e"
+    },
+    "female_avatar_1/animations/walking.glb": {
+      "source": "Blender/female_avatar_1/runtime/animations/walking.glb",
+      "sha256": "78f3034cff09fec36143d7b8864c77317e644fb8f3d1208df76432ea5235116b"
+    },
+    "female_avatar_1/avatar.glb": {
+      "source": "Blender/female_avatar_1/runtime/avatar.glb",
+      "sha256": "b68de30b7cb26dbb4e336eeeb388a521da1b878dae66cfdebee4c95dc83cf53c"
+    },
+    "female_avatar_1/manifest.json": {
+      "source": "Blender/female_avatar_1/runtime/manifest.json",
+      "sha256": "08d98efd71414f1e11c6a20e568230c1deac6cbb5f52232c3b0a464f11ba1292"
+    },
+    "female_avatar_1/props/cup.glb": {
+      "source": "Blender/female_avatar_1/runtime/props/cup.glb",
+      "sha256": "f93a74a45e2fdd8812df3e0c9208063c029a7e7809e6a6c560b97016e3c534f1"
+    },
+    "female_avatar_1/props/notebook.glb": {
+      "source": "Blender/female_avatar_1/runtime/props/notebook.glb",
+      "sha256": "c9df8dfb21351ee088d83822bae8159aa5e2d8d332a699087378ab8f5557aaf5"
+    },
+    "female_avatar_1/props/pen.glb": {
+      "source": "Blender/female_avatar_1/runtime/props/pen.glb",
+      "sha256": "f714e76199c3b9bdffb00525005803149f9978ce31582f31681bbd60c88dcfe1"
+    },
+    "female_avatar_1/props/phone.glb": {
+      "source": "Blender/female_avatar_1/runtime/props/phone.glb",
+      "sha256": "12133ae2797ae7bb1e31aa4eab3ce3339eb1d4ef21cb015f7f4a65607794ae0f"
+    },
+    "female_avatar_2/animations/at-phone.glb": {
+      "source": "Blender/female_avatar_2/runtime/animations/at-phone.glb",
+      "sha256": "5b54c224d03a3c4d4d5b75fc139f477a6c95d8656ccf59e9ff5e8ed7f420b9c4"
+    },
+    "female_avatar_2/animations/coffee-break.glb": {
+      "source": "Blender/female_avatar_2/runtime/animations/coffee-break.glb",
+      "sha256": "952510b064a13fb84cc5024772112a623a7e81521890d1261cca489572f7a08e"
+    },
+    "female_avatar_2/animations/communicating.glb": {
+      "source": "Blender/female_avatar_2/runtime/animations/communicating.glb",
+      "sha256": "ca9916db88513006f28b4755dd84c7f81bfeb9605f4f4cf479e518c88f09dfc1"
+    },
+    "female_avatar_2/animations/idle.glb": {
+      "source": "Blender/female_avatar_2/runtime/animations/idle.glb",
+      "sha256": "e7f9112dd976f9c4c7b85c20890096f345a4ffb1e4ca8c55957dc40746fb8920"
+    },
+    "female_avatar_2/animations/taking-notes.glb": {
+      "source": "Blender/female_avatar_2/runtime/animations/taking-notes.glb",
+      "sha256": "5710b5301df206f547b54fad65446906cdb54a0ba91897c223558d23004bc466"
+    },
+    "female_avatar_2/animations/talking.glb": {
+      "source": "Blender/female_avatar_2/runtime/animations/talking.glb",
+      "sha256": "dd142c096cd3b26a585a60db489a987c3b488e83f2160d23952d20ab0e1ae441"
+    },
+    "female_avatar_2/animations/teleport-in.glb": {
+      "source": "Blender/female_avatar_2/runtime/animations/teleport-in.glb",
+      "sha256": "58ce38060fbdfe132c2d1fbc75da755bdd084eb81df69abd86d79b976b281546"
+    },
+    "female_avatar_2/animations/teleport-out.glb": {
+      "source": "Blender/female_avatar_2/runtime/animations/teleport-out.glb",
+      "sha256": "1f5fcf0b5e92aa199b68a0b16dff3885603400f8aaa7982bc1f965c19f60a910"
+    },
+    "female_avatar_2/animations/thinking.glb": {
+      "source": "Blender/female_avatar_2/runtime/animations/thinking.glb",
+      "sha256": "77bb457d63f6f3f6b7160e23cebea76e08d67c6b14bd2f526a551d0abff9a7bb"
+    },
+    "female_avatar_2/animations/walking.glb": {
+      "source": "Blender/female_avatar_2/runtime/animations/walking.glb",
+      "sha256": "284d5430c066a8c1e5d10fdb224ff5e5277543f98a8ac7b0f4c6c8eb413abb12"
+    },
+    "female_avatar_2/avatar.glb": {
+      "source": "Blender/female_avatar_2/runtime/avatar.glb",
+      "sha256": "437d5529aa3a4e5ed366e4bf04ad99aa537611aaf5e2cbe82aa9f541a71b16f5"
+    },
+    "female_avatar_2/manifest.json": {
+      "source": "Blender/female_avatar_2/runtime/manifest.json",
+      "sha256": "55e36cb5103d658ac051dfc9162adb780ae61d6cd7d8d47e20809894096bd4a2"
+    },
+    "female_avatar_2/props/cup.glb": {
+      "source": "Blender/female_avatar_2/runtime/props/cup.glb",
+      "sha256": "f93a74a45e2fdd8812df3e0c9208063c029a7e7809e6a6c560b97016e3c534f1"
+    },
+    "female_avatar_2/props/notebook.glb": {
+      "source": "Blender/female_avatar_2/runtime/props/notebook.glb",
+      "sha256": "c9df8dfb21351ee088d83822bae8159aa5e2d8d332a699087378ab8f5557aaf5"
+    },
+    "female_avatar_2/props/pen.glb": {
+      "source": "Blender/female_avatar_2/runtime/props/pen.glb",
+      "sha256": "f714e76199c3b9bdffb00525005803149f9978ce31582f31681bbd60c88dcfe1"
+    },
+    "female_avatar_2/props/phone.glb": {
+      "source": "Blender/female_avatar_2/runtime/props/phone.glb",
+      "sha256": "12133ae2797ae7bb1e31aa4eab3ce3339eb1d4ef21cb015f7f4a65607794ae0f"
+    }
+  }
+}

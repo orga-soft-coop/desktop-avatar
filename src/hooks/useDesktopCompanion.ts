@@ -1,3 +1,9 @@
+import { useHitlDecisions } from "./useHitlDecisions";
+import { useCompanionWindow } from "./useCompanionWindow";
+import { useSpeechOutput } from "./useSpeechOutput";
+import { useVoiceCapture } from "./useVoiceCapture";
+import { useOperatorRadar } from "./useOperatorRadar";
+import { errorMessage } from "../lib/companion-utils";
 import {
   useCallback,
   useEffect,
@@ -7,34 +13,22 @@ import {
   useState,
 } from "react";
 import type {
-  AvatarManifest,
   ChatMessage,
   CompanionState,
   CreateDesktopAvatarRequestInput,
   BackendConnectionState,
-  DesktopAvatarOperatorRadarWidget,
   DesktopAvatarDatasetPage,
-  DesktopAvatarRadarResponse,
-  DesktopAvatarRadarSignal,
-  DesktopAvatarRadarStreamEvent,
   DesktopAvatarRequestDocument,
   DesktopAvatarStreamEvent,
-  DesktopAvatarHitlApprovalWidget,
-  DesktopAvatarWidgetPayload,
   DevToolsLatencySnapshot,
-  HitlDecisionQueueItem,
-  HitlDecisionStreamEvent,
   MessageSource,
-  PeekMode,
   PeekPosition,
   PromptRoute,
   TranscriptionProviderId,
 } from "../lib/contracts";
 import {
   desktopAvatarApiClient,
-  type HitlDecisionStreamConnection,
   type DesktopAvatarStreamConnection,
-  type DesktopAvatarRadarStreamConnection,
 } from "../lib/desktop-avatar-api";
 import {
   desktopAvatarInitialState,
@@ -52,35 +46,14 @@ import {
 } from "../lib/i18n";
 import {
   frontendLog,
-  appendTranscriptionAudio,
-  commitTranscriptionTurn,
   getTranscriptionProvider,
   getBootstrapState,
   listTtsVoices,
   onTranscriptionProviderChanged,
-  onTranscriptionSessionEvent,
-  onTrayPeekCollapse,
-  onTrayPeekOpen,
-  onTrayPeekPositionChanged,
   onTtsState,
-  resizeWindow,
-  setPeekMode,
-  setPeekPosition,
-  startWindowDragForMode,
-  speakText,
   stopSpeaking,
-  startTranscriptionSession,
-  stopTranscriptionSession,
   setTranscriptionProvider,
-  type WindowResizeAnchor,
 } from "../lib/tauri";
-import {
-  DEFAULT_SIZE_PRESET,
-  type SizePreset,
-  getWindowSizesForPreset,
-  readStoredSizePreset,
-  storeSizePreset,
-} from "../lib/window-presets";
 import {
   getRequiredTenantContextId,
   isCurrentTenantContext,
@@ -88,44 +61,8 @@ import {
 
 const TTS_VOICE_STORAGE_KEY = "desktop-avatar.ttsVoice";
 const TTS_ENABLED_STORAGE_KEY = "desktop-avatar.ttsEnabled";
-const PEEK_MODE_STORAGE_KEY = "desktop-avatar.peekMode";
-const PEEK_POSITION_STORAGE_KEY = "desktop-avatar.peekPosition";
-const PEEK_ANIMATION_ENABLED_STORAGE_KEY =
-  "desktop-avatar.peekAnimationEnabled";
-const LAST_EXPANDED_SIZE_STORAGE_KEY = "desktop-avatar.lastExpandedSize";
-const DEFAULT_PEEK_MODE: PeekMode = "peek";
-const DEFAULT_PEEK_POSITION: PeekPosition = "top-right";
-const MODE_TRANSITION_COLLAPSE_OUT_MS = 210;
-const MODE_TRANSITION_EXPAND_REVEAL_MS = 240;
-const MODE_TRANSITION_PEEK_REVEAL_MS = 220;
-const MODE_TRANSITION_PEEK_OUT_MS = 190;
-const VOICE_MAX_RECORDING_MS = 20_000;
-const VOICE_SILENCE_HOLD_MS = 2_200;
-const VOICE_ACTIVITY_POLL_MS = 120;
-const VOICE_SILENCE_RMS_THRESHOLD = 0.01;
-const VOICE_SPEECH_RMS_THRESHOLD = 0.012;
-const VOICE_MIN_AUTOSTOP_ELAPSED_MS = 2_400;
-const VOICE_MAX_INITIAL_SILENCE_MS = 7_000;
-const VOICE_MIN_TRANSCRIPTION_MS = 700;
-const VOICE_MIN_TRANSCRIPTION_BYTES = 1_500;
-const VOICE_TRANSCRIPT_PREVIEW_MS = 2200;
-const VOICE_PCM_SAMPLE_RATE = 24_000;
-const VOICE_STT_CHUNK_BYTES = 12 * 1024;
-const HITL_STREAM_RECONNECT_MS = 5_000;
-const HITL_ANNOUNCEMENT_BATCH_MS = 250;
-const OPERATOR_RADAR_POLL_MS = 15_000;
-const OPERATOR_RADAR_STREAM_RECONNECT_MS = 5_000;
-const OPERATOR_RADAR_SNOOZE_MS = 10 * 60_000;
 const LEGACY_OPENAI_TTS_DEFAULT_VOICE = "onyx";
 const PREFERRED_OPENAI_TTS_DEFAULT_VOICE = "shimmer";
-
-type ModeTransitionPhase =
-  | "idle"
-  | "collapse-out"
-  | "peek-out"
-  | "peek-in"
-  | "expand-prep"
-  | "expand-in";
 
 interface SubmissionContext {
   prompt: string;
@@ -208,226 +145,6 @@ function buildUserMessage(text: string, source: MessageSource): ChatMessage {
   };
 }
 
-function toHitlWidget(item: HitlDecisionQueueItem): DesktopAvatarHitlApprovalWidget {
-  return {
-    type: "hitlApproval",
-    decisionId: item.decisionId,
-    runId: item.runId,
-    ...(item.proposalId ? { proposalId: item.proposalId } : {}),
-    ...(item.actionId ? { actionId: item.actionId } : {}),
-    title: item.title,
-    description: item.description,
-    agentName: item.agent.agentName,
-    mode: item.mode,
-    status: item.status,
-    priority: item.priority,
-    contextSections: item.contextSections,
-  };
-}
-
-function toOperatorRadarWidget(
-  response: DesktopAvatarRadarResponse,
-): DesktopAvatarOperatorRadarWidget {
-  return {
-    type: "operatorRadar",
-    title: t("widgets.radar.title"),
-    generatedAt: response.generatedAt,
-    summary: response.summary,
-    items: response.items,
-  };
-}
-
-interface RadarSignalControl {
-  followed?: boolean;
-  completionOnly?: boolean;
-  snoozedUntilMs?: number;
-}
-
-function isRadarCompletionStatus(status: DesktopAvatarRadarSignal["status"]): boolean {
-  return status === "completed" || status === "failed" || status === "blocked";
-}
-
-function buildRadarSummaryFromItems(
-  response: DesktopAvatarRadarResponse,
-  items: DesktopAvatarRadarSignal[],
-): DesktopAvatarRadarResponse["summary"] {
-  return {
-    totalCount: items.length,
-    criticalCount: items.filter((item) => item.severity === "critical").length,
-    highCount: items.filter((item) => item.severity === "high").length,
-    needsApprovalCount: items.filter((item) => item.status === "needsApproval").length,
-    runningCount: items.filter((item) => item.status === "running").length,
-    failedCount: items.filter(
-      (item) => item.status === "failed" || item.status === "blocked",
-    ).length,
-    ...(items[0] ? { topSignalId: items[0].signalId } : {}),
-    ...(items.length === response.items.length && response.summary.topSignalId
-      ? { topSignalId: response.summary.topSignalId }
-      : {}),
-  };
-}
-
-function applyRadarSignalControls(input: {
-  response: DesktopAvatarRadarResponse;
-  controls: Map<string, RadarSignalControl>;
-  nowMs: number;
-}): DesktopAvatarRadarResponse {
-  const visibleItems: DesktopAvatarRadarSignal[] = [];
-  for (const item of input.response.items) {
-    const control = input.controls.get(item.signalId);
-    if (!control) {
-      visibleItems.push(item);
-      continue;
-    }
-
-    const snoozedUntilMs = control.snoozedUntilMs ?? 0;
-    if (snoozedUntilMs > 0 && snoozedUntilMs <= input.nowMs) {
-      delete control.snoozedUntilMs;
-    }
-
-    const isSnoozed = (control.snoozedUntilMs ?? 0) > input.nowMs;
-    const waitsForCompletion =
-      Boolean(control.completionOnly) && !isRadarCompletionStatus(item.status);
-    if (isSnoozed || waitsForCompletion) {
-      continue;
-    }
-
-    visibleItems.push({
-      ...item,
-      clientState: {
-        ...(control.followed ? { followed: true } : {}),
-        ...(control.completionOnly ? { completionOnly: true } : {}),
-        ...(control.snoozedUntilMs
-          ? { snoozedUntil: new Date(control.snoozedUntilMs).toISOString() }
-          : {}),
-      },
-    });
-  }
-
-  return {
-    ...input.response,
-    summary: buildRadarSummaryFromItems(input.response, visibleItems),
-    items: visibleItems,
-  };
-}
-
-function upsertHitlWidget(
-  widgets: DesktopAvatarHitlApprovalWidget[],
-  next: DesktopAvatarHitlApprovalWidget,
-): DesktopAvatarHitlApprovalWidget[] {
-  const index = widgets.findIndex((widget) => widget.decisionId === next.decisionId);
-  if (index < 0) {
-    return [...widgets, next];
-  }
-  return widgets.map((widget, candidateIndex) =>
-    candidateIndex === index ? next : widget,
-  );
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const value of bytes) {
-    binary += String.fromCharCode(value);
-  }
-  return btoa(binary);
-}
-
-function splitBytesToBase64Chunks(
-  bytes: Uint8Array,
-  chunkSize = VOICE_STT_CHUNK_BYTES,
-): string[] {
-  const chunks: string[] = [];
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
-    chunks.push(bytesToBase64(chunk));
-  }
-  return chunks;
-}
-
-function clampSample(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  if (value > 1) {
-    return 1;
-  }
-  if (value < -1) {
-    return -1;
-  }
-  return value;
-}
-
-function readMixedSample(buffer: AudioBuffer, frameIndex: number): number {
-  const clampedIndex = Math.max(0, Math.min(buffer.length - 1, frameIndex));
-  let sum = 0;
-  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
-    sum += buffer.getChannelData(channel)[clampedIndex] ?? 0;
-  }
-  return sum / Math.max(1, buffer.numberOfChannels);
-}
-
-function audioBufferToPcm16(buffer: AudioBuffer, targetSampleRate = VOICE_PCM_SAMPLE_RATE): Uint8Array {
-  const frameCount = Math.max(
-    1,
-    Math.round((buffer.length * targetSampleRate) / buffer.sampleRate),
-  );
-  const pcm = new Uint8Array(frameCount * 2);
-  for (let frame = 0; frame < frameCount; frame += 1) {
-    const sourcePosition = (frame * buffer.sampleRate) / targetSampleRate;
-    const leftIndex = Math.floor(sourcePosition);
-    const rightIndex = Math.min(leftIndex + 1, buffer.length - 1);
-    const ratio = sourcePosition - leftIndex;
-    const leftSample = readMixedSample(buffer, leftIndex);
-    const rightSample = readMixedSample(buffer, rightIndex);
-    const interpolated = clampSample(leftSample + (rightSample - leftSample) * ratio);
-    const int16 = interpolated < 0 ? interpolated * 0x8000 : interpolated * 0x7fff;
-    const signed = Math.max(-32768, Math.min(32767, Math.round(int16)));
-    const byteOffset = frame * 2;
-    pcm[byteOffset] = signed & 0xff;
-    pcm[byteOffset + 1] = (signed >> 8) & 0xff;
-  }
-  return pcm;
-}
-
-async function decodeBlobToAudioBuffer(blob: Blob): Promise<AudioBuffer> {
-  const audioContext = new AudioContext();
-  try {
-    const arrayBuffer = await blob.arrayBuffer();
-    return await audioContext.decodeAudioData(arrayBuffer.slice(0));
-  } finally {
-    await audioContext.close().catch(() => undefined);
-  }
-}
-
-async function prepareTranscriptionUpload(
-  blob: Blob,
-  provider: TranscriptionProviderId,
-): Promise<{ mimeType: string; chunks: string[]; totalBytes: number }> {
-  if (provider === "openai-realtime") {
-    const audioBuffer = await decodeBlobToAudioBuffer(blob);
-    const pcm = audioBufferToPcm16(audioBuffer, VOICE_PCM_SAMPLE_RATE);
-    return {
-      mimeType: "audio/pcm",
-      chunks: splitBytesToBase64Chunks(pcm),
-      totalBytes: pcm.length,
-    };
-  }
-
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  return {
-    mimeType: blob.type || "audio/webm",
-    chunks: splitBytesToBase64Chunks(bytes),
-    totalBytes: bytes.length,
-  };
-}
-
-function preferredMimeType(): string {
-  const options = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
-  return (
-    options.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? ""
-  );
-}
-
 function buildDesktopAvatarRequestInput(
   prompt: string,
   source: MessageSource,
@@ -444,25 +161,6 @@ function buildDesktopAvatarRequestInput(
     responseModes: ["talk", "widget"],
     autoStart: true,
   };
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
-  }
-  if (typeof error === "string" && error.trim().length > 0) {
-    return error;
-  }
-  if (error && typeof error === "object") {
-    const candidate = error as { message?: unknown };
-    if (
-      typeof candidate.message === "string" &&
-      candidate.message.trim().length > 0
-    ) {
-      return candidate.message;
-    }
-  }
-  return fallback;
 }
 
 function authoritativeClarificationState(
@@ -499,12 +197,6 @@ function nextPollDelay(attempt: number): number {
     return 1000;
   }
   return 2000;
-}
-
-function waitMs(durationMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, durationMs);
-  });
 }
 
 function readStoredTtsVoice(): string | null {
@@ -598,129 +290,6 @@ function resolvePreferredTtsVoice(
   return normalizedCurrent;
 }
 
-function isPeekMode(value: string | null): value is PeekMode {
-  return value === "peek" || value === "expanded";
-}
-
-function isPeekPosition(value: string | null): value is PeekPosition {
-  return (
-    value === "top-left" ||
-    value === "top-right" ||
-    value === "bottom-left" ||
-    value === "bottom-right"
-  );
-}
-
-function readStoredPeekMode(): PeekMode {
-  if (typeof window === "undefined") {
-    return DEFAULT_PEEK_MODE;
-  }
-  try {
-    // Startup must always begin in peek mode; the stored value is only
-    // retained for compatibility and can still be updated at runtime.
-    const raw = window.localStorage.getItem(PEEK_MODE_STORAGE_KEY);
-    if (isPeekMode(raw) && raw === DEFAULT_PEEK_MODE) {
-      return raw;
-    }
-    return DEFAULT_PEEK_MODE;
-  } catch {
-    return DEFAULT_PEEK_MODE;
-  }
-}
-
-function storePeekMode(mode: PeekMode): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(PEEK_MODE_STORAGE_KEY, mode);
-  } catch {
-    // no-op
-  }
-}
-
-function readStoredPeekPosition(): PeekPosition {
-  if (typeof window === "undefined") {
-    return DEFAULT_PEEK_POSITION;
-  }
-  try {
-    const raw = window.localStorage.getItem(PEEK_POSITION_STORAGE_KEY);
-    return isPeekPosition(raw) ? raw : DEFAULT_PEEK_POSITION;
-  } catch {
-    return DEFAULT_PEEK_POSITION;
-  }
-}
-
-function storePeekPosition(position: PeekPosition): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(PEEK_POSITION_STORAGE_KEY, position);
-  } catch {
-    // no-op
-  }
-}
-
-function readStoredAnimationEnabled(): boolean {
-  if (typeof window === "undefined") {
-    return true;
-  }
-  try {
-    const raw = window.localStorage.getItem(PEEK_ANIMATION_ENABLED_STORAGE_KEY);
-    return raw?.trim().toLowerCase() !== "false";
-  } catch {
-    return true;
-  }
-}
-
-function storeAnimationEnabled(enabled: boolean): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(
-      PEEK_ANIMATION_ENABLED_STORAGE_KEY,
-      String(enabled),
-    );
-  } catch {
-    // no-op
-  }
-}
-
-function readStoredLastExpandedHeight(fallbackHeight: number): number {
-  if (typeof window === "undefined") {
-    return fallbackHeight;
-  }
-  try {
-    const raw = window.localStorage.getItem(LAST_EXPANDED_SIZE_STORAGE_KEY);
-    if (!raw) {
-      return fallbackHeight;
-    }
-    const parsed = JSON.parse(raw) as { width?: number; height?: number };
-    if (typeof parsed.height === "number" && Number.isFinite(parsed.height)) {
-      return Math.max(420, Math.round(parsed.height));
-    }
-    return fallbackHeight;
-  } catch {
-    return fallbackHeight;
-  }
-}
-
-function storeLastExpandedSize(width: number, height: number): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(
-      LAST_EXPANDED_SIZE_STORAGE_KEY,
-      JSON.stringify({ width: Math.round(width), height: Math.round(height) }),
-    );
-  } catch {
-    // no-op
-  }
-}
-
 function elapsed(startedAtMs: number, timestamp?: number): number | null {
   if (typeof timestamp !== "number") {
     return null;
@@ -777,27 +346,15 @@ function toLatencySnapshot(timeline: LatencyTimeline): DevToolsLatencySnapshot {
 
 export function useDesktopCompanion() {
   const [tenantContextId] = useState(() => getRequiredTenantContextId());
-  const [avatarManifest, setAvatarManifest] = useState<AvatarManifest | null>(
-    null,
-  );
+  const radar = useOperatorRadar(tenantContextId);
+  const windowController = useCompanionWindow();
+  const { peekMode, peekPosition, isModeTransitioning, modeTransitionPhase, animationEnabled, sizePreset, windowSize, applyPeekMode, applyPeekPosition, setUiMode, toggleExpanded, setSizePreset } = windowController;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [companionState, setCompanionState] = useState<CompanionState>("idle");
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [peekMode, setPeekModeState] = useState<PeekMode>(() =>
-    readStoredPeekMode(),
-  );
-  const [peekPosition, setPeekPositionState] = useState<PeekPosition>(() =>
-    readStoredPeekPosition(),
-  );
   const [bootstrapReady, setBootstrapReady] = useState(false);
-  const [isModeTransitioning, setIsModeTransitioning] = useState(false);
-  const [modeTransitionPhase, setModeTransitionPhase] =
-    useState<ModeTransitionPhase>("idle");
-  const [animationEnabled] = useState<boolean>(() =>
-    readStoredAnimationEnabled(),
-  );
   const [ttsEnabled, setTtsEnabled] = useState(
     () => readStoredTtsEnabled() ?? true,
   );
@@ -811,50 +368,24 @@ export function useDesktopCompanion() {
   const [selectedTtsVoice, setSelectedTtsVoiceState] = useState<string | null>(
     () => readStoredTtsVoice(),
   );
-  const [sizePreset, setSizePresetState] = useState<SizePreset>(() =>
-    readStoredSizePreset(),
-  );
-  const [windowSize, setWindowSize] = useState(() => {
-    const preset = getWindowSizesForPreset(DEFAULT_SIZE_PRESET);
-    return {
-      width: preset.expanded.width,
-      height: readStoredLastExpandedHeight(preset.expanded.height),
-    };
-  });
-  const [isRecording, setIsRecording] = useState(false);
   const [desktopAvatarState, desktopAvatarDispatch] = useReducer(
     reduceDesktopAvatarState,
     desktopAvatarInitialState,
   );
   const [latencyTimeline, setLatencyTimeline] =
     useState<LatencyTimeline | null>(null);
-  const [hitlWidgets, setHitlWidgets] = useState<DesktopAvatarHitlApprovalWidget[]>([]);
-  const [operatorRadarWidget, setOperatorRadarWidget] =
-    useState<DesktopAvatarWidgetPayload | null>(null);
-  const [operatorRadarSignalCount, setOperatorRadarSignalCount] = useState(0);
   const [backendConnectionState, setBackendConnectionState] =
     useState<BackendConnectionState>("connecting");
   const [pendingClarification, setPendingClarification] =
     useState<ClarificationReplyContext | null>(null);
 
+  const { isRecording, toggleRecording } = useVoiceCapture({
+    tenantContextId, transcriptionProvider, setStatus, setError, setCompanionState,
+    onTranscript: (text, contextId) => submitPrompt(text, "voice", undefined, contextId)
+  });
+
   const requestContextsRef = useRef(new Map<string, SubmissionContext>());
   const messagesRef = useRef<ChatMessage[]>([]);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const activeTranscriptionSessionIdRef = useRef<string | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const recordingAudioContextRef = useRef<AudioContext | null>(null);
-  const recordingSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(
-    null,
-  );
-  const recordingAnalyserNodeRef = useRef<AnalyserNode | null>(null);
-  const recordingMonitorIntervalRef = useRef<number | null>(null);
-  const recordingSilenceSinceMsRef = useRef<number | null>(null);
-  const recordingStartedAtMsRef = useRef<number | null>(null);
-  const recordingSpeechDetectedRef = useRef(false);
-  const recordingAutoStopReasonRef = useRef<
-    "manual" | "silence" | "limit" | null
-  >(null);
   const lastSubmissionRef = useRef<SubmissionContext | null>(null);
   const conversationEpochRef = useRef(0);
   const activeDesktopAvatarRequestRef =
@@ -871,25 +402,14 @@ export function useDesktopCompanion() {
   const desktopAvatarConnectionRef =
     useRef<DesktopAvatarStreamConnection | null>(null);
   const desktopAvatarConnectionGenerationRef = useRef(0);
-  const hitlDecisionConnectionRef =
-    useRef<HitlDecisionStreamConnection | null>(null);
-  const operatorRadarConnectionRef =
-    useRef<DesktopAvatarRadarStreamConnection | null>(null);
-  const announcedHitlDecisionIdsRef = useRef(new Set<string>());
-  const operatorRadarVisibleRef = useRef(false);
-  const operatorRadarLastResponseRef = useRef<DesktopAvatarRadarResponse | null>(null);
-  const operatorRadarSignalControlsRef = useRef(new Map<string, RadarSignalControl>());
-  const pendingHitlAnnouncementsRef = useRef(
-    new Map<string, DesktopAvatarHitlApprovalWidget>(),
-  );
-  const hitlAnnouncementTimeoutRef = useRef<number | null>(null);
-  const locallySubmittedHitlDecisionIdsRef = useRef(new Set<string>());
   const desktopAvatarPollTimeoutRef = useRef<number | null>(null);
   const desktopAvatarPollAttemptRef = useRef(0);
   const desktopAvatarPollErrorCountRef = useRef(0);
   const lastSpokenDesktopAvatarKeyRef = useRef<string | null>(null);
-  const isTtsSpeakingRef = useRef(false);
-  const peekModeRef = useRef<PeekMode>(peekMode);
+  const stoppedRequestIdsRef = useRef(new Set<string>());
+  const stoppingOutputRef = useRef(false);
+  const [isStoppingOutput, setIsStoppingOutput] = useState(false);
+  const { hasSpeechOutput, isTtsSpeakingRef, requestSpeech, stopSpeechOutput, acceptSpeechState } = useSpeechOutput(tenantContextId);
   const ttsEnabledRef = useRef(ttsEnabled);
   const selectedTtsVoiceRef = useRef(selectedTtsVoice);
 
@@ -901,199 +421,10 @@ export function useDesktopCompanion() {
     selectedTtsVoiceRef.current = selectedTtsVoice;
   }, [selectedTtsVoice]);
 
-  useEffect(() => {
-    function clearHitlAnnouncementTimeout(): void {
-      if (hitlAnnouncementTimeoutRef.current === null) {
-        return;
-      }
-      window.clearTimeout(hitlAnnouncementTimeoutRef.current);
-      hitlAnnouncementTimeoutRef.current = null;
-    }
-
-    function flushHitlAnnouncements(): void {
-      hitlAnnouncementTimeoutRef.current = null;
-      const widgets = Array.from(pendingHitlAnnouncementsRef.current.values());
-      pendingHitlAnnouncementsRef.current.clear();
-      if (widgets.length === 0) {
-        return;
-      }
-
-      const announcement =
-        widgets.length === 1
-          ? t("widgets.hitl.announcement", { title: widgets[0]!.title })
-          : t("widgets.hitl.announcementBatch", { count: widgets.length });
-      setStatus(announcement);
-      setCompanionState("thinking");
-      if (ttsEnabledRef.current) {
-        const speechId =
-          widgets.length === 1
-            ? `hitl:${widgets[0]!.decisionId}`
-            : `hitl:batch:${widgets
-                .map((widget) => widget.decisionId)
-                .join("|")}`;
-        void speakText(
-          speechId,
-          announcement,
-          selectedTtsVoiceRef.current,
-          tenantContextId,
-        );
-      }
-    }
-
-    function scheduleHitlAnnouncement(
-      widget: DesktopAvatarHitlApprovalWidget,
-    ): void {
-      if (announcedHitlDecisionIdsRef.current.has(widget.decisionId)) {
-        return;
-      }
-      announcedHitlDecisionIdsRef.current.add(widget.decisionId);
-      pendingHitlAnnouncementsRef.current.set(widget.decisionId, widget);
-      if (hitlAnnouncementTimeoutRef.current !== null) {
-        return;
-      }
-      hitlAnnouncementTimeoutRef.current = window.setTimeout(
-        flushHitlAnnouncements,
-        HITL_ANNOUNCEMENT_BATCH_MS,
-      );
-    }
-
-    function handleHitlEvent(event: HitlDecisionStreamEvent): void {
-      setBackendConnectionState("connected");
-      if (event.type === "snapshot") {
-        setHitlWidgets(
-          event.items
-            .filter(
-              (item) =>
-                item.status === "pending" &&
-                !locallySubmittedHitlDecisionIdsRef.current.has(item.decisionId),
-            )
-            .map((item) => toHitlWidget(item)),
-        );
-        return;
-      }
-      if (event.type !== "decision") {
-        return;
-      }
-      if (
-        event.kind === "resolved" ||
-        event.kind === "execution_started" ||
-        event.kind === "execution_finished" ||
-        event.status !== "pending"
-      ) {
-        locallySubmittedHitlDecisionIdsRef.current.delete(event.decisionId);
-        pendingHitlAnnouncementsRef.current.delete(event.decisionId);
-        if (pendingHitlAnnouncementsRef.current.size === 0) {
-          clearHitlAnnouncementTimeout();
-        }
-        setHitlWidgets((current) =>
-          current.filter((widget) => widget.decisionId !== event.decisionId),
-        );
-        setStatus(t("widgets.hitl.updated"));
-        return;
-      }
-      if (!event.item) {
-        return;
-      }
-      if (locallySubmittedHitlDecisionIdsRef.current.has(event.decisionId)) {
-        return;
-      }
-      const widget = toHitlWidget(event.item);
-      setHitlWidgets((current) => upsertHitlWidget(current, widget));
-      if (event.kind === "required") {
-        scheduleHitlAnnouncement(widget);
-      }
-    }
-
-    let active = true;
-    let reconnectTimeoutId: number | null = null;
-    let connecting = false;
-
-    function clearReconnectTimeout(): void {
-      if (reconnectTimeoutId === null) {
-        return;
-      }
-      window.clearTimeout(reconnectTimeoutId);
-      reconnectTimeoutId = null;
-    }
-
-    function scheduleReconnect(): void {
-      if (!active || reconnectTimeoutId !== null) {
-        return;
-      }
-      reconnectTimeoutId = window.setTimeout(() => {
-        reconnectTimeoutId = null;
-        void connectHitlStream();
-      }, HITL_STREAM_RECONNECT_MS);
-    }
-
-    async function connectHitlStream(): Promise<void> {
-      if (!active || connecting) {
-        return;
-      }
-      connecting = true;
-      setBackendConnectionState((current) =>
-        current === "connected" ? current : "connecting",
-      );
-      const previousConnection = hitlDecisionConnectionRef.current;
-      hitlDecisionConnectionRef.current = null;
-      try {
-        await previousConnection?.close().catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          void frontendLog(
-            "warn",
-            `hitl stream cleanup before reconnect failed: ${message}`,
-          );
-        });
-        const connection =
-          await desktopAvatarApiClient.connectHitlDecisionStream({
-            expectedContextId: tenantContextId,
-            onEvent: handleHitlEvent,
-            onDisconnect: (event) => {
-              if (!active) {
-                return;
-              }
-              const reason = event.reason ? `: ${event.reason}` : "";
-              setBackendConnectionState("disconnected");
-              void frontendLog(
-                "warn",
-                `hitl stream disconnected during ${event.phase}${reason}`,
-              );
-              scheduleReconnect();
-            },
-          });
-        if (!active) {
-          void connection.close();
-          return;
-        }
-        hitlDecisionConnectionRef.current = connection;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setBackendConnectionState("unavailable");
-        void frontendLog("warn", `hitl stream unavailable: ${message}`);
-        scheduleReconnect();
-      } finally {
-        connecting = false;
-      }
-    }
-
-    void connectHitlStream();
-
-    return () => {
-      active = false;
-      clearHitlAnnouncementTimeout();
-      pendingHitlAnnouncementsRef.current.clear();
-      clearReconnectTimeout();
-      const connection = hitlDecisionConnectionRef.current;
-      hitlDecisionConnectionRef.current = null;
-      void connection?.close();
-    };
-  }, []);
-  const transcriptionProviderRef = useRef<TranscriptionProviderId>(
-    transcriptionProvider,
-  );
-  const applyPeekModeRef = useRef<(mode: PeekMode) => Promise<void>>(
-    async () => {},
-  );
+  const { hitlWidgets, approveHitl, rejectHitl, requestMoreInfoForHitl, openHitl } = useHitlDecisions({
+    tenantContextId, setBackendConnectionState, setStatus, setCompanionState,
+    ttsEnabledRef, selectedTtsVoiceRef, requestSpeech
+  });
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -1111,14 +442,6 @@ export function useDesktopCompanion() {
     desktopAvatarStateRef.current = desktopAvatarState;
   }, [desktopAvatarState]);
 
-  useEffect(() => {
-    peekModeRef.current = peekMode;
-  }, [peekMode]);
-
-  useEffect(() => {
-    transcriptionProviderRef.current = transcriptionProvider;
-  }, [transcriptionProvider]);
-
   const patchLatencyByRequestKey = useCallback(
     (
       requestKey: string,
@@ -1130,125 +453,6 @@ export function useDesktopCompanion() {
         }
         return updater(current);
       });
-    },
-    [],
-  );
-
-  const applyPeekPosition = useCallback(async (position: PeekPosition) => {
-    setPeekPositionState(position);
-    storePeekPosition(position);
-    await setPeekPosition(position);
-  }, []);
-
-  const applyPeekMode = useCallback(
-    async (mode: PeekMode, options?: { animate?: boolean }) => {
-      const presetSizes = getWindowSizesForPreset(sizePreset);
-      const expandedWidth = presetSizes.expanded.width;
-      const collapsedWidth = presetSizes.collapsed.width;
-      const collapsedHeight = presetSizes.collapsed.height;
-      const expandedHeight =
-        mode === "expanded"
-          ? Math.max(presetSizes.expanded.height, windowSize.height)
-          : Math.max(
-              presetSizes.expanded.height,
-              readStoredLastExpandedHeight(windowSize.height),
-            );
-      const shouldAnimate = options?.animate ?? animationEnabled;
-
-      const clearTransition = () => {
-        requestAnimationFrame(() => {
-          setModeTransitionPhase("idle");
-          setIsModeTransitioning(false);
-        });
-      };
-
-      if (shouldAnimate && mode === "peek") {
-        setModeTransitionPhase("collapse-out");
-        setIsModeTransitioning(true);
-        await waitMs(MODE_TRANSITION_COLLAPSE_OUT_MS);
-      } else if (shouldAnimate) {
-        setModeTransitionPhase("peek-out");
-        setIsModeTransitioning(true);
-        await waitMs(MODE_TRANSITION_PEEK_OUT_MS);
-        setModeTransitionPhase("expand-prep");
-      }
-
-      try {
-        await setPeekMode(
-          mode,
-          expandedWidth,
-          expandedHeight,
-          collapsedWidth,
-          collapsedHeight,
-          shouldAnimate,
-        );
-        setPeekModeState(mode);
-        storePeekMode(mode);
-        if (mode === "expanded") {
-          const nextSize = { width: expandedWidth, height: expandedHeight };
-          setWindowSize(nextSize);
-          storeLastExpandedSize(nextSize.width, nextSize.height);
-        }
-
-        if (shouldAnimate) {
-          if (mode === "peek") {
-            setModeTransitionPhase("peek-in");
-            setIsModeTransitioning(true);
-            await waitMs(MODE_TRANSITION_PEEK_REVEAL_MS);
-          } else {
-            setModeTransitionPhase("expand-in");
-            setIsModeTransitioning(true);
-            await waitMs(MODE_TRANSITION_EXPAND_REVEAL_MS);
-          }
-        }
-      } finally {
-        if (shouldAnimate) {
-          clearTransition();
-        }
-      }
-    },
-    [animationEnabled, sizePreset, windowSize.height],
-  );
-
-  useEffect(() => {
-    applyPeekModeRef.current = (mode: PeekMode) => applyPeekMode(mode);
-  }, [applyPeekMode]);
-
-  const clearRecordingMonitor = useCallback(() => {
-    if (recordingMonitorIntervalRef.current !== null) {
-      window.clearInterval(recordingMonitorIntervalRef.current);
-      recordingMonitorIntervalRef.current = null;
-    }
-    recordingSilenceSinceMsRef.current = null;
-    recordingStartedAtMsRef.current = null;
-    recordingSpeechDetectedRef.current = false;
-  }, []);
-
-  const clearRecordingStream = useCallback(() => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-
-    recordingSourceNodeRef.current?.disconnect();
-    recordingSourceNodeRef.current = null;
-    recordingAnalyserNodeRef.current = null;
-
-    const audioContext = recordingAudioContextRef.current;
-    recordingAudioContextRef.current = null;
-    if (audioContext && audioContext.state !== "closed") {
-      void audioContext.close().catch(() => {
-        // Best-effort close.
-      });
-    }
-  }, []);
-
-  const stopActiveRecorder = useCallback(
-    (reason: "manual" | "silence" | "limit" = "manual") => {
-      const recorder = mediaRecorderRef.current;
-      if (!recorder || recorder.state === "inactive") {
-        return;
-      }
-      recordingAutoStopReasonRef.current = reason;
-      recorder.stop();
     },
     [],
   );
@@ -1450,6 +654,7 @@ export function useDesktopCompanion() {
             return;
           }
         } catch (caughtError) {
+          if (activeDesktopAvatarRequestRef.current !== activeRequest) return;
           desktopAvatarPollErrorCountRef.current += 1;
           const message =
             caughtError instanceof Error
@@ -1502,6 +707,7 @@ export function useDesktopCompanion() {
       await closeDesktopAvatarConnection();
       clearDesktopAvatarPolling();
       const generation = desktopAvatarConnectionGenerationRef.current;
+      if (activeDesktopAvatarRequestRef.current?.avatarRequestId !== avatarRequestId) return;
       const connection = await desktopAvatarApiClient.connectStream({
           avatarRequestId,
           streamUrl,
@@ -1561,16 +767,11 @@ export function useDesktopCompanion() {
   useEffect(() => {
     let active = true;
     let unlistenTts: (() => void) | undefined;
-    let unlistenTranscription: (() => void) | undefined;
     let unlistenTranscriptionProvider: (() => void) | undefined;
-    let unlistenTrayPeekOpen: (() => void) | undefined;
-    let unlistenTrayPeekCollapse: (() => void) | undefined;
-    let unlistenTrayPeekPositionChanged: (() => void) | undefined;
 
     void (async () => {
       const bootstrap = await getBootstrapState();
       if (!active) return;
-      setAvatarManifest(bootstrap.avatarManifest);
       setTtsEnabled(() => {
         const stored = readStoredTtsEnabled();
         const next = bootstrap.ttsEnabled ? (stored ?? true) : false;
@@ -1585,25 +786,7 @@ export function useDesktopCompanion() {
           if (active) setTranscriptionProviderState(provider);
         })
         .catch(() => undefined);
-      const presetSizes = getWindowSizesForPreset(sizePreset);
-      const expandedHeight = Math.max(
-        presetSizes.expanded.height,
-        readStoredLastExpandedHeight(presetSizes.expanded.height),
-      );
-      setWindowSize({
-        width: presetSizes.expanded.width,
-        height: expandedHeight,
-      });
-      if (!active) return;
-      await setPeekMode(
-        peekMode,
-        presetSizes.expanded.width,
-        expandedHeight,
-        presetSizes.collapsed.width,
-        presetSizes.collapsed.height,
-        false,
-        true,
-      );
+      await windowController.initializeWindow(() => active);
       if (!active) return;
       setBootstrapReady(true);
 
@@ -1625,7 +808,7 @@ export function useDesktopCompanion() {
     })();
 
     void onTtsState((event) => {
-      if (!active) return;
+      if (!active || !acceptSpeechState(event)) return;
       setLatencyTimeline((current) => {
         if (!current || current.ttsRequestId !== event.requestId) {
           return current;
@@ -1672,31 +855,6 @@ export function useDesktopCompanion() {
       unlistenTts = unlisten;
     });
 
-    void onTranscriptionSessionEvent((event) => {
-      if (!active) return;
-      if (event.type === "partial") {
-        setStatus(
-          t("status.transcribingPartial", {
-            text: event.text.trim(),
-          }),
-        );
-        setCompanionState("transcribing");
-        return;
-      }
-      if (event.type === "error") {
-        void frontendLog(
-          "warn",
-          `transcription provider ${event.provider} failed: ${event.message}`,
-        );
-      }
-    }).then((unlisten) => {
-      if (!active) {
-        unlisten();
-        return;
-      }
-      unlistenTranscription = unlisten;
-    });
-
     void onTranscriptionProviderChanged((event) => {
       if (!active) return;
       setTranscriptionProviderState(event.provider);
@@ -1708,67 +866,13 @@ export function useDesktopCompanion() {
       unlistenTranscriptionProvider = unlisten;
     });
 
-    void onTrayPeekOpen(() => {
-      if (!active) return;
-      void applyPeekModeRef.current("expanded");
-    }).then((unlisten) => {
-      if (!active) {
-        unlisten();
-        return;
-      }
-      unlistenTrayPeekOpen = unlisten;
-    });
-
-    void onTrayPeekCollapse(() => {
-      if (!active) return;
-      void applyPeekModeRef.current("peek");
-    }).then((unlisten) => {
-      if (!active) {
-        unlisten();
-        return;
-      }
-      unlistenTrayPeekCollapse = unlisten;
-    });
-
-    void onTrayPeekPositionChanged((position) => {
-      if (!active) return;
-      setPeekPositionState(position);
-      storePeekPosition(position);
-      if (peekModeRef.current === "peek") {
-        void setPeekPosition(position);
-      }
-    }).then((unlisten) => {
-      if (!active) {
-        unlisten();
-        return;
-      }
-      unlistenTrayPeekPositionChanged = unlisten;
-    });
-
     return () => {
       active = false;
       unlistenTts?.();
-      unlistenTranscription?.();
       unlistenTranscriptionProvider?.();
-      unlistenTrayPeekOpen?.();
-      unlistenTrayPeekCollapse?.();
-      unlistenTrayPeekPositionChanged?.();
-      clearRecordingMonitor();
-      clearRecordingStream();
-      mediaRecorderRef.current = null;
-      if (activeTranscriptionSessionIdRef.current) {
-        void stopTranscriptionSession({
-          sessionId: activeTranscriptionSessionIdRef.current,
-        });
-        activeTranscriptionSessionIdRef.current = null;
-      }
-      chunksRef.current = [];
-      recordingAutoStopReasonRef.current = null;
       void cleanupDesktopAvatarRuntime();
     };
   }, [
-    clearRecordingMonitor,
-    clearRecordingStream,
     cleanupDesktopAvatarRuntime,
   ]);
 
@@ -1922,12 +1026,7 @@ export function useDesktopCompanion() {
         ttsRequestId: activeRequest.avatarRequestId,
         ttsRequestedAtMs: current.ttsRequestedAtMs ?? requestedAtMs,
       }));
-      void speakText(
-        activeRequest.avatarRequestId,
-        desktopAvatarState.talkText,
-        selectedTtsVoice,
-        tenantContextId,
-      );
+      requestSpeech(activeRequest.avatarRequestId, desktopAvatarState.talkText, selectedTtsVoice);
     }
   }, [
     desktopAvatarState.talkText,
@@ -1969,7 +1068,7 @@ export function useDesktopCompanion() {
     updatePendingClarification(null);
     legacyClarificationBlockedRef.current = false;
     activeConversationIdRef.current = null;
-    const requestEpoch = conversationEpochRef.current;
+    const requestEpoch = ++conversationEpochRef.current;
     const requestId =
       clientRequestId ?? `desktop-avatar-client:${crypto.randomUUID()}`;
     const startedAtMs = Date.now();
@@ -2023,13 +1122,13 @@ export function useDesktopCompanion() {
 
     if (peekMode === "peek") {
       await applyPeekMode("expanded");
-      if (!isCurrentTenantContext(capturedContextId)) return;
+      if (!isCurrentTenantContext(capturedContextId) || requestEpoch !== conversationEpochRef.current) return;
     }
 
     await stopSpeaking(capturedContextId);
-    if (!isCurrentTenantContext(capturedContextId)) return;
+    if (!isCurrentTenantContext(capturedContextId) || requestEpoch !== conversationEpochRef.current) return;
     await cleanupDesktopAvatarRuntime();
-    if (!isCurrentTenantContext(capturedContextId)) return;
+    if (!isCurrentTenantContext(capturedContextId) || requestEpoch !== conversationEpochRef.current) return;
 
     try {
       const result = await desktopAvatarApiClient.createRequest(
@@ -2040,6 +1139,9 @@ export function useDesktopCompanion() {
         requestEpoch !== conversationEpochRef.current ||
         !isCurrentTenantContext(capturedContextId)
       ) {
+        if (stoppedRequestIdsRef.current.delete(requestId) && result.conversationId && isCurrentTenantContext(capturedContextId)) {
+          await cancelStoppedConversation(result.conversationId, requestEpoch + 1);
+        }
         return;
       }
       activeDesktopAvatarRequestRef.current = {
@@ -2119,7 +1221,7 @@ export function useDesktopCompanion() {
 
     clarificationReplyInFlightRef.current = true;
     legacyClarificationBlockedRef.current = false;
-    const requestEpoch = conversationEpochRef.current;
+    const requestEpoch = ++conversationEpochRef.current;
     const requestId =
       clientRequestId ?? `desktop-avatar-client:${crypto.randomUUID()}`;
     const route = lastSubmissionRef.current?.route ?? "backendBusiness";
@@ -2182,9 +1284,9 @@ export function useDesktopCompanion() {
       }
 
       await stopSpeaking(capturedContextId);
-      if (!isCurrentTenantContext(capturedContextId)) return;
+      if (!isCurrentTenantContext(capturedContextId) || requestEpoch !== conversationEpochRef.current) return;
       await cleanupDesktopAvatarRuntime();
-      if (!isCurrentTenantContext(capturedContextId)) return;
+      if (!isCurrentTenantContext(capturedContextId) || requestEpoch !== conversationEpochRef.current) return;
 
       const result = await desktopAvatarApiClient.replyClarification(
         {
@@ -2201,6 +1303,9 @@ export function useDesktopCompanion() {
         requestEpoch !== conversationEpochRef.current ||
         !isCurrentTenantContext(capturedContextId)
       ) {
+        if (stoppedRequestIdsRef.current.delete(requestId) && result.conversationId && isCurrentTenantContext(capturedContextId)) {
+          await cancelStoppedConversation(result.conversationId, requestEpoch + 1);
+        }
         return;
       }
 
@@ -2283,7 +1388,7 @@ export function useDesktopCompanion() {
       }));
       desktopAvatarDispatch({ type: "requestFailed", message });
     } finally {
-      clarificationReplyInFlightRef.current = false;
+      if (requestEpoch === conversationEpochRef.current) clarificationReplyInFlightRef.current = false;
     }
   }
 
@@ -2296,6 +1401,7 @@ export function useDesktopCompanion() {
     if (!isCurrentTenantContext(capturedContextId)) {
       return;
     }
+    if (stoppingOutputRef.current || (activeDesktopAvatarRequestRef.current && !desktopAvatarStateRef.current.isDone)) return;
     const prompt = rawPrompt.trim();
     if (!prompt) {
       return;
@@ -2342,210 +1448,12 @@ export function useDesktopCompanion() {
     );
   }
 
-  async function setUiMode(mode: PeekMode, options?: { animate?: boolean }) {
-    if (mode === peekMode) {
-      return;
-    }
-    await applyPeekMode(mode, options);
-  }
-
-  async function toggleExpanded() {
-    const nextMode: PeekMode = peekMode === "expanded" ? "peek" : "expanded";
-    await setUiMode(nextMode);
-  }
-
-  const applyOperatorRadarResponse = useCallback(
-    (
-      response: DesktopAvatarRadarResponse,
-      options?: { showWidget?: boolean; showEmpty?: boolean },
-    ) => {
-      operatorRadarLastResponseRef.current = response;
-      const visibleResponse = applyRadarSignalControls({
-        response,
-        controls: operatorRadarSignalControlsRef.current,
-        nowMs: Date.now(),
-      });
-      setOperatorRadarSignalCount(visibleResponse.summary.totalCount);
-
-      const shouldRenderWidget = Boolean(
-        options?.showWidget || operatorRadarVisibleRef.current,
-      );
-      if (!shouldRenderWidget) {
-        return;
-      }
-      if (visibleResponse.items.length === 0 && !options?.showEmpty) {
-        setOperatorRadarWidget(null);
-        return;
-      }
-      setOperatorRadarWidget(toOperatorRadarWidget(visibleResponse));
-    },
-    [],
-  );
-
-  const fetchOperatorRadar = useCallback(
-    async (options?: { showWidget?: boolean; showEmpty?: boolean }) => {
-      try {
-        const response = await desktopAvatarApiClient.getRadar(tenantContextId);
-        applyOperatorRadarResponse(response, options);
-      } catch (error) {
-        const message = errorMessage(error, t("widgets.radar.errorMessage"));
-        setOperatorRadarSignalCount(0);
-        if (operatorRadarVisibleRef.current || options?.showWidget) {
-          setOperatorRadarWidget({
-            type: "error",
-            title: t("widgets.radar.title"),
-            message,
-          });
-        }
-        void frontendLog("warn", `operator radar unavailable: ${message}`);
-      }
-    },
-    [applyOperatorRadarResponse],
-  );
-
-  useEffect(() => {
-    void fetchOperatorRadar();
-    const intervalId = window.setInterval(() => {
-      void fetchOperatorRadar();
-    }, OPERATOR_RADAR_POLL_MS);
-    return () => window.clearInterval(intervalId);
-  }, [fetchOperatorRadar]);
-
-  useEffect(() => {
-    let active = true;
-    let reconnectTimeoutId: number | null = null;
-    let connecting = false;
-
-    function clearReconnectTimeout(): void {
-      if (reconnectTimeoutId === null) {
-        return;
-      }
-      window.clearTimeout(reconnectTimeoutId);
-      reconnectTimeoutId = null;
-    }
-
-    function scheduleReconnect(): void {
-      if (!active || reconnectTimeoutId !== null) {
-        return;
-      }
-      reconnectTimeoutId = window.setTimeout(() => {
-        reconnectTimeoutId = null;
-        void connectRadarStream();
-      }, OPERATOR_RADAR_STREAM_RECONNECT_MS);
-    }
-
-    function handleRadarStreamEvent(event: DesktopAvatarRadarStreamEvent): void {
-      if (event.type === "snapshot" || event.type === "update") {
-        applyOperatorRadarResponse(event.radar);
-        return;
-      }
-      if (event.type === "error") {
-        void frontendLog(
-          "warn",
-          `operator radar stream error: ${event.message}`,
-        );
-      }
-    }
-
-    async function connectRadarStream(): Promise<void> {
-      if (!active || connecting) {
-        return;
-      }
-      connecting = true;
-      const previousConnection = operatorRadarConnectionRef.current;
-      operatorRadarConnectionRef.current = null;
-      try {
-        await previousConnection?.close().catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          void frontendLog(
-            "warn",
-            `operator radar stream cleanup before reconnect failed: ${message}`,
-          );
-        });
-        const connection = await desktopAvatarApiClient.connectRadarStream({
-          expectedContextId: tenantContextId,
-          onEvent: handleRadarStreamEvent,
-          onDisconnect: (event) => {
-            if (!active) {
-              return;
-            }
-            const reason = event.reason ? `: ${event.reason}` : "";
-            void frontendLog(
-              "warn",
-              `operator radar stream disconnected during ${event.phase}${reason}`,
-            );
-            scheduleReconnect();
-          },
-        });
-        if (!active) {
-          void connection.close();
-          return;
-        }
-        operatorRadarConnectionRef.current = connection;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        void frontendLog("warn", `operator radar stream unavailable: ${message}`);
-        scheduleReconnect();
-      } finally {
-        connecting = false;
-      }
-    }
-
-    void connectRadarStream();
-
-    return () => {
-      active = false;
-      clearReconnectTimeout();
-      const connection = operatorRadarConnectionRef.current;
-      operatorRadarConnectionRef.current = null;
-      void connection?.close();
-    };
-  }, [applyOperatorRadarResponse]);
-
-  async function setSizePreset(preset: SizePreset) {
-    if (preset === sizePreset) {
-      return;
-    }
-
-    const presetSizes = getWindowSizesForPreset(preset);
-    setSizePresetState(preset);
-    storeSizePreset(preset);
-
-    const targetSize = {
-      width: presetSizes.expanded.width,
-      height: Math.max(windowSize.height, presetSizes.expanded.height),
-    };
-    if (peekMode === "expanded") {
-      await resizeWindow(targetSize.width, targetSize.height);
-      setWindowSize(targetSize);
-      storeLastExpandedSize(targetSize.width, targetSize.height);
-      await setPeekMode(
-        "expanded",
-        targetSize.width,
-        targetSize.height,
-        presetSizes.collapsed.width,
-        presetSizes.collapsed.height,
-        false,
-      );
-      return;
-    }
-
-    await setPeekMode(
-      "peek",
-      targetSize.width,
-      targetSize.height,
-      presetSizes.collapsed.width,
-      presetSizes.collapsed.height,
-      false,
-    );
-  }
-
   async function retryLastPrompt() {
     if (!lastSubmissionRef.current) {
       return;
     }
 
-    const { prompt, source, route, clientRequestId, clarificationReply } =
+    const { prompt, source, clientRequestId, clarificationReply } =
       lastSubmissionRef.current;
     if (clarificationReply) {
       await submitClarificationReply(
@@ -2557,6 +1465,57 @@ export function useDesktopCompanion() {
       return;
     }
     await submitPrompt(prompt, source, clientRequestId);
+  }
+
+  async function cancelStoppedConversation(conversationId: string, epoch: number) {
+    try {
+      await desktopAvatarApiClient.cancelConversation(conversationId, tenantContextId);
+    } catch (error) {
+      void frontendLog("warn", `conversation cancellation failed: ${errorMessage(error, "CANCEL_FAILED")}`);
+      if (isCurrentTenantContext(tenantContextId) && epoch === conversationEpochRef.current) {
+        setError(t("chat.stopNotConfirmed"));
+      }
+    }
+  }
+
+  async function stopOutput() {
+    if (stoppingOutputRef.current) return;
+    stoppingOutputRef.current = true;
+    setIsStoppingOutput(true);
+    setError(null);
+    const request = activeDesktopAvatarRequestRef.current;
+    const stopRequest = request && !desktopAvatarStateRef.current.isDone;
+    let cancel: Promise<void> = Promise.resolve();
+    if (stopRequest) {
+      stoppedRequestIdsRef.current.add(request.clientRequestId);
+      const epoch = ++conversationEpochRef.current;
+      const conversationId = activeConversationIdRef.current;
+      activeDesktopAvatarRequestRef.current = null;
+      activeConversationIdRef.current = null;
+      lastSubmissionRef.current = null;
+      clarificationReplyInFlightRef.current = false;
+      updatePendingClarification(null);
+      const nextMessages = messagesRef.current.map((message) => ({
+        ...message,
+        ...(message.id === request.assistantMessageId ? { isStreaming: false, outputStopped: true } : {}),
+        ...((message.clarificationState === "submitting" || (message.id === request.assistantMessageId && message.clarificationState === "pending")) ? { clarificationState: "unavailable" as const } : {})
+      }));
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
+      desktopAvatarDispatch({ type: "reset" });
+      if (conversationId) cancel = cancelStoppedConversation(conversationId, epoch);
+    }
+    setStatus(t("chat.outputStopped"));
+    setCompanionState("idle");
+    const results = await Promise.allSettled([
+      stopSpeechOutput(),
+      stopRequest ? cleanupDesktopAvatarRuntime() : Promise.resolve(),
+      cancel
+    ]);
+    if (!isCurrentTenantContext(tenantContextId)) return;
+    if (results.some((result) => result.status === "rejected")) setError(t("chat.stopNotConfirmed"));
+    stoppingOutputRef.current = false;
+    setIsStoppingOutput(false);
   }
 
   async function clearConversation() {
@@ -2578,7 +1537,7 @@ export function useDesktopCompanion() {
     setLatencyTimeline(null);
     setCompanionState("idle");
     desktopAvatarDispatch({ type: "reset" });
-    await stopSpeaking(tenantContextId);
+    await stopSpeechOutput();
     await cleanupDesktopAvatarRuntime();
     if (conversationId) {
       await desktopAvatarApiClient
@@ -2605,485 +1564,6 @@ export function useDesktopCompanion() {
     [tenantContextId],
   );
 
-  async function startRecording() {
-    if (isRecording) {
-      return;
-    }
-
-    try {
-      const transcriptionContextId = tenantContextId;
-      if (!isCurrentTenantContext(transcriptionContextId)) return;
-      await stopSpeaking(transcriptionContextId).catch(() => {
-        // Recording should still start even if stopping TTS fails.
-      });
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-        },
-      });
-      if (!isCurrentTenantContext(transcriptionContextId)) {
-        stream.getTracks().forEach((track) => track.stop());
-        return;
-      }
-      const mimeType = preferredMimeType();
-      const recorder = new MediaRecorder(
-        stream,
-        mimeType ? { mimeType } : undefined,
-      );
-      const transcriptionSessionId = crypto.randomUUID();
-      await startTranscriptionSession({
-        sessionId: transcriptionSessionId,
-        locale: navigator.language,
-      }, transcriptionContextId);
-      if (!isCurrentTenantContext(transcriptionContextId)) {
-        stream.getTracks().forEach((track) => track.stop());
-        return;
-      }
-      activeTranscriptionSessionIdRef.current = transcriptionSessionId;
-      streamRef.current = stream;
-      mediaRecorderRef.current = recorder;
-      chunksRef.current = [];
-      recordingAutoStopReasonRef.current = null;
-      recordingStartedAtMsRef.current = performance.now();
-      recordingSilenceSinceMsRef.current = null;
-      recordingSpeechDetectedRef.current = false;
-
-      const audioContext = new AudioContext();
-      const sourceNode = audioContext.createMediaStreamSource(stream);
-      const analyserNode = audioContext.createAnalyser();
-      analyserNode.fftSize = 2048;
-      sourceNode.connect(analyserNode);
-      recordingAudioContextRef.current = audioContext;
-      recordingSourceNodeRef.current = sourceNode;
-      recordingAnalyserNodeRef.current = analyserNode;
-
-      const sampleBuffer = new Float32Array(analyserNode.fftSize);
-      recordingMonitorIntervalRef.current = window.setInterval(() => {
-        const activeRecorder = mediaRecorderRef.current;
-        if (!activeRecorder || activeRecorder.state !== "recording") {
-          return;
-        }
-
-        analyserNode.getFloatTimeDomainData(sampleBuffer);
-        let sumSquares = 0;
-        for (const sample of sampleBuffer) {
-          sumSquares += sample * sample;
-        }
-        const rms = Math.sqrt(sumSquares / sampleBuffer.length);
-        const now = performance.now();
-        const startedAt = recordingStartedAtMsRef.current ?? now;
-        const elapsedMs = now - startedAt;
-
-        if (elapsedMs >= VOICE_MAX_RECORDING_MS) {
-          setStatus(t("status.voiceAutoStoppedLimit"));
-          stopActiveRecorder("limit");
-          return;
-        }
-
-        if (rms >= VOICE_SPEECH_RMS_THRESHOLD) {
-          recordingSpeechDetectedRef.current = true;
-          recordingSilenceSinceMsRef.current = null;
-          return;
-        }
-
-        if (!recordingSpeechDetectedRef.current) {
-          if (elapsedMs >= VOICE_MAX_INITIAL_SILENCE_MS) {
-            setStatus(t("status.voiceAutoStoppedSilence"));
-            stopActiveRecorder("silence");
-          }
-          return;
-        }
-
-        if (rms < VOICE_SILENCE_RMS_THRESHOLD) {
-          if (recordingSilenceSinceMsRef.current === null) {
-            recordingSilenceSinceMsRef.current = now;
-          } else if (
-            elapsedMs >= VOICE_MIN_AUTOSTOP_ELAPSED_MS &&
-            now - recordingSilenceSinceMsRef.current >= VOICE_SILENCE_HOLD_MS
-          ) {
-            setStatus(t("status.voiceAutoStoppedSilence"));
-            stopActiveRecorder("silence");
-          }
-          return;
-        }
-
-        recordingSilenceSinceMsRef.current = null;
-      }, VOICE_ACTIVITY_POLL_MS);
-
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunksRef.current.push(event.data);
-        }
-      };
-
-      recorder.onstop = async () => {
-        const autoStopReason = recordingAutoStopReasonRef.current;
-        const startedAt = recordingStartedAtMsRef.current;
-        const elapsedMs =
-          startedAt === null ? 0 : Math.max(0, performance.now() - startedAt);
-        clearRecordingMonitor();
-
-        try {
-          if (!chunksRef.current.some((chunk) => chunk.size > 0)) {
-            if (autoStopReason === "silence") {
-              setStatus(t("status.voiceAutoStoppedSilence"));
-            } else if (autoStopReason === "limit") {
-              setStatus(t("status.voiceAutoStoppedLimit"));
-            } else {
-              setStatus(null);
-            }
-            setCompanionState("idle");
-            return;
-          }
-
-          const totalBytes = chunksRef.current.reduce(
-            (sum, chunk) => sum + chunk.size,
-            0,
-          );
-          const blob = new Blob(chunksRef.current, {
-            type: recorder.mimeType || "audio/webm",
-          });
-          const speechDetected = recordingSpeechDetectedRef.current;
-          void frontendLog(
-            "info",
-            `voice recording finished: mime=${blob.type || "audio/webm"} bytes=${totalBytes} elapsedMs=${Math.round(elapsedMs)} speechDetected=${speechDetected}`,
-          );
-
-          if (
-            elapsedMs < VOICE_MIN_TRANSCRIPTION_MS ||
-            totalBytes < VOICE_MIN_TRANSCRIPTION_BYTES
-          ) {
-            setStatus(t("status.voiceAutoStoppedSilence"));
-            setCompanionState("idle");
-            return;
-          }
-
-          setCompanionState("transcribing");
-          setStatus(t("status.transcribing"));
-          const activeSessionId = activeTranscriptionSessionIdRef.current;
-          if (!activeSessionId) {
-            throw new Error("No active transcription session.");
-          }
-          const upload = await prepareTranscriptionUpload(
-            blob,
-            transcriptionProviderRef.current,
-          );
-          void frontendLog(
-            "info",
-            `voice transcription upload: provider=${transcriptionProviderRef.current} mime=${upload.mimeType} bytes=${upload.totalBytes} chunks=${upload.chunks.length}`,
-          );
-          for (const chunk of upload.chunks) {
-            await appendTranscriptionAudio({
-              sessionId: activeSessionId,
-              audioBase64: chunk,
-              mimeType: upload.mimeType,
-            }, transcriptionContextId);
-            if (!isCurrentTenantContext(transcriptionContextId)) {
-              throw new Error("DESKTOP_SESSION_CHANGED");
-            }
-          }
-          const transcript = await commitTranscriptionTurn({
-            sessionId: activeSessionId,
-          }, transcriptionContextId);
-          if (!isCurrentTenantContext(transcriptionContextId)) {
-            throw new Error("DESKTOP_SESSION_CHANGED");
-          }
-          await stopTranscriptionSession({ sessionId: activeSessionId }, transcriptionContextId).catch(
-            () => undefined,
-          );
-          activeTranscriptionSessionIdRef.current = null;
-          const cleanedTranscript = transcript.trim();
-          if (cleanedTranscript) {
-            setStatus(
-              t("status.voiceRecognized", {
-                text: cleanedTranscript,
-              }),
-            );
-            await waitMs(VOICE_TRANSCRIPT_PREVIEW_MS);
-            if (!isCurrentTenantContext(transcriptionContextId)) {
-              throw new Error("DESKTOP_SESSION_CHANGED");
-            }
-            await submitPrompt(
-              cleanedTranscript,
-              "voice",
-              undefined,
-              transcriptionContextId,
-            );
-          } else {
-            setStatus(null);
-            if (autoStopReason === "silence") {
-              setStatus(t("status.voiceAutoStoppedSilence"));
-            } else if (autoStopReason === "limit") {
-              setStatus(t("status.voiceAutoStoppedLimit"));
-            } else {
-              setStatus(null);
-            }
-            setCompanionState("idle");
-          }
-        } catch (caughtError) {
-          const fallbackMessage = t("status.voiceTranscriptionFailed");
-          const detailedMessage = errorMessage(caughtError, fallbackMessage);
-          const message = import.meta.env.DEV
-            ? detailedMessage
-            : fallbackMessage;
-          void frontendLog(
-            "error",
-            `voice transcription failed: ${detailedMessage}`,
-          );
-          setError(message);
-          setStatus(message);
-          setCompanionState("error");
-        } finally {
-          setIsRecording(false);
-          clearRecordingMonitor();
-          clearRecordingStream();
-          mediaRecorderRef.current = null;
-          if (activeTranscriptionSessionIdRef.current) {
-            await stopTranscriptionSession({
-              sessionId: activeTranscriptionSessionIdRef.current,
-            }, transcriptionContextId).catch(() => undefined);
-            activeTranscriptionSessionIdRef.current = null;
-          }
-          chunksRef.current = [];
-          recordingAutoStopReasonRef.current = null;
-        }
-      };
-
-      recorder.start();
-      setError(null);
-      setIsRecording(true);
-      setCompanionState("listening");
-      setStatus(t("status.listening"));
-    } catch (caughtError) {
-      const message =
-        caughtError instanceof Error
-          ? caughtError.message
-          : t("status.microphoneAccessFailed");
-      setError(message);
-      setStatus(message);
-      setCompanionState("error");
-      setIsRecording(false);
-      clearRecordingMonitor();
-      clearRecordingStream();
-      mediaRecorderRef.current = null;
-      if (activeTranscriptionSessionIdRef.current) {
-        await stopTranscriptionSession({
-          sessionId: activeTranscriptionSessionIdRef.current,
-        }).catch(() => undefined);
-        activeTranscriptionSessionIdRef.current = null;
-      }
-      chunksRef.current = [];
-      recordingAutoStopReasonRef.current = null;
-    }
-  }
-
-  async function stopRecording(
-    reason: "manual" | "silence" | "limit" = "manual",
-  ) {
-    stopActiveRecorder(reason);
-  }
-
-  async function toggleRecording() {
-    if (isRecording) {
-      await stopRecording();
-    } else {
-      await startRecording();
-    }
-  }
-
-  const findHitlWidget = useCallback(
-    (decisionId: string) =>
-      hitlWidgets.find((widget) => widget.decisionId === decisionId) ?? null,
-    [hitlWidgets],
-  );
-
-  const markHitlActionSending = useCallback((decisionId: string) => {
-    locallySubmittedHitlDecisionIdsRef.current.add(decisionId);
-    setHitlWidgets((current) =>
-      current.filter((item) => item.decisionId !== decisionId),
-    );
-    setStatus(t("widgets.hitl.sending"));
-    setCompanionState("thinking");
-  }, []);
-
-  const restoreHitlAction = useCallback((widget: DesktopAvatarHitlApprovalWidget) => {
-    locallySubmittedHitlDecisionIdsRef.current.delete(widget.decisionId);
-    setHitlWidgets((current) => upsertHitlWidget(current, widget));
-    setStatus(t("widgets.hitl.actionFailed"));
-    setCompanionState("error");
-  }, []);
-
-  const markHitlActionSent = useCallback((decisionId: string) => {
-    setStatus(t("widgets.hitl.sent"));
-    setCompanionState("idle");
-  }, []);
-
-  const markHitlMoreInfoSent = useCallback(() => {
-    setStatus(t("widgets.hitl.moreInfoSent"));
-    setCompanionState("idle");
-  }, []);
-
-  const approveHitl = useCallback(
-    async (decisionId: string, decisionReason?: string) => {
-      const widget = findHitlWidget(decisionId);
-      if (!widget?.proposalId) {
-        return;
-      }
-      markHitlActionSending(decisionId);
-      try {
-        await desktopAvatarApiClient.approveHitlDecision({
-          runId: widget.runId,
-          proposalId: widget.proposalId,
-          ...(decisionReason?.trim()
-            ? { decisionReason: decisionReason.trim() }
-            : {}),
-        }, tenantContextId);
-        markHitlActionSent(decisionId);
-      } catch {
-        restoreHitlAction(widget);
-      }
-    },
-    [findHitlWidget, markHitlActionSending, markHitlActionSent, restoreHitlAction],
-  );
-
-  const rejectHitl = useCallback(
-    async (decisionId: string, decisionReason: string) => {
-      const widget = findHitlWidget(decisionId);
-      const reason = decisionReason.trim();
-      if (!widget?.proposalId || reason.length === 0) {
-        return;
-      }
-      markHitlActionSending(decisionId);
-      try {
-        await desktopAvatarApiClient.rejectHitlDecision({
-          runId: widget.runId,
-          proposalId: widget.proposalId,
-          decisionReason: reason,
-        }, tenantContextId);
-        markHitlActionSent(decisionId);
-      } catch {
-        restoreHitlAction(widget);
-      }
-    },
-    [findHitlWidget, markHitlActionSending, markHitlActionSent, restoreHitlAction],
-  );
-
-  const requestMoreInfoForHitl = useCallback(
-    async (decisionId: string, message: string) => {
-      const widget = findHitlWidget(decisionId);
-      const trimmed = message.trim();
-      if (!widget || trimmed.length === 0) {
-        return;
-      }
-      setStatus(t("widgets.hitl.sending"));
-      setCompanionState("thinking");
-      try {
-        await desktopAvatarApiClient.requestMoreInfoForHitl({
-          runId: widget.runId,
-          message: trimmed,
-        }, tenantContextId);
-        markHitlMoreInfoSent();
-      } catch {
-        restoreHitlAction(widget);
-      }
-    },
-    [findHitlWidget, markHitlMoreInfoSent, restoreHitlAction],
-  );
-
-  const openHitl = useCallback((decisionId: string) => {
-    const url = `/Hitl?decisionId=${encodeURIComponent(decisionId)}`;
-    window.open(url, "_blank", "noopener,noreferrer");
-  }, []);
-
-  const openOperatorRadar = useCallback(() => {
-    operatorRadarVisibleRef.current = true;
-    void fetchOperatorRadar({ showWidget: true, showEmpty: true });
-    if (peekMode !== "expanded") {
-      void applyPeekMode("expanded");
-    }
-  }, [fetchOperatorRadar, peekMode, applyPeekMode]);
-
-  const dismissOperatorRadar = useCallback(() => {
-    operatorRadarVisibleRef.current = false;
-    setOperatorRadarWidget(null);
-  }, []);
-
-  const renderCachedOperatorRadar = useCallback((options?: { showEmpty?: boolean }) => {
-    const response = operatorRadarLastResponseRef.current;
-    if (!response) {
-      setOperatorRadarSignalCount(0);
-      return;
-    }
-    const visibleResponse = applyRadarSignalControls({
-      response,
-      controls: operatorRadarSignalControlsRef.current,
-      nowMs: Date.now(),
-    });
-    setOperatorRadarSignalCount(visibleResponse.summary.totalCount);
-    if (!operatorRadarVisibleRef.current) {
-      return;
-    }
-    if (visibleResponse.items.length === 0 && !options?.showEmpty) {
-      setOperatorRadarWidget(null);
-      return;
-    }
-    setOperatorRadarWidget(toOperatorRadarWidget(visibleResponse));
-  }, []);
-
-  const snoozeOperatorRadarSignal = useCallback(
-    (signalId: string) => {
-      const controls = operatorRadarSignalControlsRef.current;
-      const current = controls.get(signalId) ?? {};
-      controls.set(signalId, {
-        ...current,
-        followed: false,
-        snoozedUntilMs: Date.now() + OPERATOR_RADAR_SNOOZE_MS,
-      });
-      renderCachedOperatorRadar({ showEmpty: true });
-    },
-    [renderCachedOperatorRadar],
-  );
-
-  const toggleFollowOperatorRadarSignal = useCallback(
-    (signalId: string) => {
-      const controls = operatorRadarSignalControlsRef.current;
-      const current = controls.get(signalId) ?? {};
-      const nextFollowed = !current.followed;
-      if (!nextFollowed && !current.completionOnly && !current.snoozedUntilMs) {
-        controls.delete(signalId);
-      } else {
-        controls.set(signalId, {
-          ...current,
-          followed: nextFollowed,
-          ...(nextFollowed
-            ? { completionOnly: false, snoozedUntilMs: undefined }
-            : {}),
-        });
-      }
-      renderCachedOperatorRadar({ showEmpty: true });
-    },
-    [renderCachedOperatorRadar],
-  );
-
-  const notifyOperatorRadarSignalOnCompletion = useCallback(
-    (signalId: string) => {
-      const controls = operatorRadarSignalControlsRef.current;
-      const current = controls.get(signalId) ?? {};
-      controls.set(signalId, {
-        ...current,
-        followed: false,
-        completionOnly: true,
-        snoozedUntilMs: undefined,
-      });
-      renderCachedOperatorRadar({ showEmpty: true });
-    },
-    [renderCachedOperatorRadar],
-  );
-
   const canSend = useMemo(() => draft.trim().length > 0, [draft]);
   const latencyDebug = useMemo(
     () => (latencyTimeline ? toLatencySnapshot(latencyTimeline) : null),
@@ -3091,7 +1571,9 @@ export function useDesktopCompanion() {
   );
 
   return {
-    avatarManifest,
+    canStopOutput: hasSpeechOutput || Boolean(activeDesktopAvatarRequestRef.current && !desktopAvatarState.isDone),
+    isStoppingOutput,
+    stopOutput,
     canSend,
     companionState,
     draft,
@@ -3108,8 +1590,8 @@ export function useDesktopCompanion() {
     messages,
     pendingClarification,
     hitlWidgets,
-    operatorRadarWidget,
-    operatorRadarSignalCount,
+    operatorRadarWidget: radar.operatorRadarWidget,
+    operatorRadarSignalCount: radar.operatorRadarSignalCount,
     locale,
     supportedLocales,
     latencyDebug,
@@ -3121,9 +1603,11 @@ export function useDesktopCompanion() {
     transcriptionProvider,
     transcriptionProviders,
     windowSize,
-    activeAnimation: activeDesktopAvatarRequestRef.current
-      ? desktopAvatarState.animation
-      : null,
+    activeAnimation: isRecording
+      ? "attention" as const
+      : hasSpeechOutput
+        ? "talking" as const
+        : activeDesktopAvatarRequestRef.current ? desktopAvatarState.animation : null,
     setDraft,
     setSizePreset,
     submitCurrentDraft: () => submitPrompt(draft, "text"),
@@ -3134,11 +1618,14 @@ export function useDesktopCompanion() {
     rejectHitl,
     requestMoreInfoForHitl,
     openHitl,
-    openOperatorRadar,
-    dismissOperatorRadar,
-    snoozeOperatorRadarSignal,
-    toggleFollowOperatorRadarSignal,
-    notifyOperatorRadarSignalOnCompletion,
+    openOperatorRadar: () => {
+      radar.openOperatorRadar();
+      if (peekMode !== "expanded") void applyPeekMode("expanded");
+    },
+    dismissOperatorRadar: radar.dismissOperatorRadar,
+    snoozeOperatorRadarSignal: radar.snoozeOperatorRadarSignal,
+    toggleFollowOperatorRadarSignal: radar.toggleFollowOperatorRadarSignal,
+    notifyOperatorRadarSignalOnCompletion: radar.notifyOperatorRadarSignalOnCompletion,
     toggleExpanded,
     openAgent: () => setUiMode("expanded"),
     collapseToPeek: () => setUiMode("peek"),
@@ -3161,7 +1648,7 @@ export function useDesktopCompanion() {
     },
     toggleTts: async () => {
       if (ttsEnabled) {
-        await stopSpeaking(tenantContextId);
+        await stopSpeechOutput();
       }
       setTtsEnabled((current) => {
         const next = !current;
@@ -3169,15 +1656,7 @@ export function useDesktopCompanion() {
         return next;
       });
     },
-    resizeWindow: async (
-      width: number,
-      height: number,
-      anchor?: WindowResizeAnchor,
-    ) => {
-      await resizeWindow(width, height, anchor);
-      setWindowSize({ width, height });
-      storeLastExpandedSize(width, height);
-    },
-    startWindowDrag: () => startWindowDragForMode(peekModeRef.current),
+    resizeWindow: windowController.resizeWindow,
+    startWindowDrag: windowController.startWindowDrag,
   };
 }

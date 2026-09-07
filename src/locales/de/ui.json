@@ -40,7 +40,11 @@
     "switchToLightMode": "Light Mode aktivieren",
     "switchToDarkMode": "Dark Mode aktivieren",
     "toPeek": "In Peek-Modus wechseln",
-    "closeChat": "Chat schließen"
+    "closeChat": "Chat schließen",
+    "newAnswer": "Neue Antwort ↓",
+    "stopOutput": "Stoppen",
+    "outputStopped": "Ausgabe gestoppt.",
+    "stopNotConfirmed": "Die Ausgabe wurde angehalten. Der vollständige Stopp konnte nicht bestätigt werden; bereits ausgeführte Aktionen bleiben bestehen."
   },
   "devTools": {
     "title": "Entwicklerwerkzeuge",
@@ -293,8 +297,7 @@
     "tauriRequired": "{{feature}} benötigt die Tauri-Desktop-Shell.",
     "avatarManifestMissing": "Kein Avatar-Manifest konfiguriert.",
     "avatarLoadFailed": "Avatar konnte nicht geladen werden.",
-    "avatarManifestRequiresModel": "Avatar-Manifest muss entweder modelUrl (Packed GLB) oder vrmUrl enthalten.",
-    "legacyVrmRequiresIdle": "Legacy-VRM-Avatar-Manifest benötigt mindestens eine idleAnimationUrl."
+    "avatarManifestRequiresModel": "Es werden nur die mitgelieferten GLB-Bibliotheken Female Avatar 1 und 2 unterstützt."
   },
   "features": {
     "voiceTranscription": "Sprachtranskription"
@@ -318,5 +321,11 @@
     "transcriptionProviderFile": "OpenAI File Fallback",
     "toggleAlwaysOnTop": "Immer im Vordergrund umschalten",
     "quit": "Beenden"
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "size": "Größe",
+    "avatar": "Avatar",
+    "deviceOnly": "Diese Auswahl gilt nur auf diesem Gerät."
   }
 }

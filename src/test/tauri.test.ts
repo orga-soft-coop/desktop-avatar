@@ -6,7 +6,6 @@ const { invokeMock, listenMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
-  convertFileSrc: (path: string) => path,
   invoke: invokeMock
 }));
 
@@ -59,6 +58,7 @@ describe("tauri runtime guards", () => {
     clearTenantSession();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
+
 
   it("returns a noop unlisten callback for desktop avatar events when tauri is unavailable", async () => {
     const unlisten = await onDesktopAvatarStreamEvent(() => {});

@@ -4,7 +4,7 @@ import { t } from "../lib/i18n";
 import { setPeekMode, startWindowDragForMode } from "../lib/tauri";
 import { LOGIN_WINDOW_SIZE } from "../lib/window-presets";
 import { AuthCombobox } from "./AuthCombobox";
-import orgaSoftIconUrl from "../../src-tauri/icons/icon.png";
+import orgaSoftIconUrl from "../../src-tauri/icons/icon.png?inline";
 
 interface LoginGateProps {
   step: "credentials" | "company" | "branch";

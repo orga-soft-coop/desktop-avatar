@@ -1,40 +1,21 @@
+import { CompanionDeveloperTools, type CompanionDeveloperToolsProps, type DevToolsSectionKey } from "./CompanionDeveloperTools";
+export type { DevToolsDemoWidgetKind } from "./CompanionDeveloperTools";
+import { CompanionSettings } from "./CompanionSettings";
+import type { AvatarPreference } from "../lib/bundled-avatars";
 import { useLayoutEffect, useRef, useState } from "react";
-import type { AvatarCameraConfig } from "../lib/avatar-stage-config";
 import type {
   BackendConnectionState,
   ChatMessage,
-  DevToolsLatencySnapshot,
-  TranscriptionProviderId
 } from "../lib/contracts";
 import { t, type LocaleId } from "../lib/i18n";
-import { SIZE_PRESET_OPTIONS, type SizePreset } from "../lib/window-presets";
+import { type SizePreset } from "../lib/window-presets";
 
-export type DevToolsDemoWidgetKind =
-  | "table"
-  | "keyValue"
-  | "text"
-  | "clarification"
-  | "error"
-  | "areaChart"
-  | "hitlApproval"
-  | "operatorRadar"
-  | "radarForecastRunning"
-  | "radarForecastCompleted"
-  | "radarHitlOpen"
-  | "radarRunFailed"
-  | "radarWarehouseReorder";
-
-type DevToolsSectionKey =
-  | "interface"
-  | "voice"
-  | "latency"
-  | "widgetDemo"
-  | "animation"
-  | "runtime"
-  | "window"
-  | "camera";
-
-interface ChatPanelProps {
+interface ChatPanelProps extends CompanionDeveloperToolsProps {
+  avatarPreference?: AvatarPreference;
+  onSelectAvatar?: (avatar: AvatarPreference) => void;
+  canStopOutput?: boolean;
+  isStoppingOutput?: boolean;
+  onStopOutput?: () => void;
   draft: string;
   isExpanded: boolean;
   isRecording: boolean;
@@ -48,81 +29,30 @@ interface ChatPanelProps {
   supportedLocales?: LocaleId[];
   ttsVoices?: string[];
   selectedTtsVoice?: string | null;
-  transcriptionProvider?: TranscriptionProviderId;
-  transcriptionProviders?: TranscriptionProviderId[];
   messages?: ChatMessage[];
-  latencyDebug?: DevToolsLatencySnapshot | null;
   error?: string | null;
-  animationNames?: string[];
-  cameraConfig?: AvatarCameraConfig;
-  cameraConfigSnippet?: string;
-  forcedAnimation?: string | null;
-  avatarAssetKind?: "legacy-vrm" | "packed-glb" | null;
-  selectedAnimationClip?: string | null;
-  resolvedAnimationMapping?: Record<string, string> | null;
-  windowSize?: { width: number; height: number };
-  activeDemoWidgets?: DevToolsDemoWidgetKind[];
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
-  onAdjustWindowHeight?: (delta: number) => void;
-  onCameraConfigChange?: (next: AvatarCameraConfig) => void;
-  onResetCameraConfig?: () => void;
   onToggleExpanded: () => void;
   onToggleTheme: () => void;
   onOpenRadar?: () => void;
   onToggleTts: () => void;
   onSelectLocale?: (locale: LocaleId) => void;
   onSelectTtsVoice?: (voice: string | null) => void;
-  onSelectTranscriptionProvider?: (provider: TranscriptionProviderId) => void;
   onToggleRecording: () => void;
   onSelectSizePreset: (preset: SizePreset) => void;
   onClearConversation?: () => void;
   onSuggestionSubmit?: (value: string) => void;
   onRetry: () => void;
   onDragStart: () => void;
-  onSelectAnimation?: (name: string | null) => void;
-  onToggleDemoWidget?: (kind: DevToolsDemoWidgetKind) => void;
-  onClearDemoWidgets?: () => void;
-}
-
-interface DevToolsSectionProps {
-  title: string;
-  summary?: string | null;
-  open: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-}
-
-function DevToolsSection({ title, summary, open, onToggle, children }: DevToolsSectionProps) {
-  return (
-    <div className="chat-panel__devtools-section">
-      <button className="chat-panel__devtools-section-toggle" type="button" onClick={onToggle}>
-        <span>{title}</span>
-        {summary ? <span className="chat-panel__devtools-section-summary">{summary}</span> : null}
-        <svg
-          className={`chat-panel__devtools-section-chevron ${open ? "is-open" : ""}`}
-          width="10"
-          height="10"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-      {open ? <div className="chat-panel__devtools-section-body">{children}</div> : null}
-    </div>
-  );
-}
-
-function localeLabel(locale: LocaleId): string {
-  return locale === "en" ? t("devTools.languageEnglish") : t("devTools.languageGerman");
 }
 
 export function ChatPanel({
+  canStopOutput = false,
+  isStoppingOutput = false,
+  onStopOutput,
+  avatarPreference,
+  onSelectAvatar,
   draft,
   isExpanded,
   isRecording,
@@ -136,45 +66,26 @@ export function ChatPanel({
   supportedLocales = ["de"],
   ttsVoices,
   selectedTtsVoice,
-  transcriptionProvider = "openai-realtime",
-  transcriptionProviders = ["openai-realtime", "openai-file-fallback"],
   messages = [],
-  latencyDebug,
   error,
-  animationNames,
-  cameraConfig,
-  cameraConfigSnippet,
-  forcedAnimation,
-  avatarAssetKind,
-  selectedAnimationClip,
-  resolvedAnimationMapping,
-  windowSize,
-  activeDemoWidgets = [],
   onDraftChange,
   onSubmit,
-  onAdjustWindowHeight,
-  onCameraConfigChange,
-  onResetCameraConfig,
   onToggleExpanded,
   onToggleTheme,
   onOpenRadar,
   onToggleTts,
   onSelectLocale,
   onSelectTtsVoice,
-  onSelectTranscriptionProvider,
   onToggleRecording,
   onSelectSizePreset,
   onClearConversation,
   onSuggestionSubmit,
   onRetry,
   onDragStart,
-  onSelectAnimation,
-  onToggleDemoWidget,
-  onClearDemoWidgets
+  ...developerTools
 }: ChatPanelProps) {
   const [devToolsOpen, setDevToolsOpen] = useState(false);
   const [openSections, setOpenSections] = useState<Record<DevToolsSectionKey, boolean>>({
-    interface: true,
     voice: true,
     latency: false,
     widgetDemo: true,
@@ -183,113 +94,22 @@ export function ChatPanel({
     window: false,
     camera: false
   });
-  const [configCopied, setConfigCopied] = useState(false);
   const draftTextareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesListRef = useRef<HTMLDivElement>(null);
+  const followTranscriptRef = useRef(true);
+  const [hasNewAnswer, setHasNewAnswer] = useState(false);
 
-  const hasVoiceControls =
-    Boolean(onSelectTranscriptionProvider) ||
-    Boolean(onSelectTtsVoice && (ttsVoices?.length ?? 0) > 0);
-  const hasInterfaceControls = Boolean(onSelectLocale && supportedLocales.length > 1);
-  const hasLatency = Boolean(latencyDebug);
-  const hasAnimationControls = Boolean(onSelectAnimation && animationNames && animationNames.length > 0);
-  const hasRuntimeInfo = Boolean(avatarAssetKind || selectedAnimationClip || resolvedAnimationMapping);
-  const hasWindowControls = Boolean(onAdjustWindowHeight || windowSize);
-  const hasCameraControls = Boolean(cameraConfig && onCameraConfigChange);
-  const hasWidgetDemoControls = Boolean(onToggleDemoWidget || onClearDemoWidgets);
-  const selectedDemoCount = activeDemoWidgets.length;
   const visibleMessages = messages.filter(
     (message) =>
       message.role !== "system" &&
       (message.text.trim() ||
         message.isStreaming ||
+        message.outputStopped ||
         message.widget ||
         (message.followUpQuestions?.length ?? 0) > 0)
   );
   const hasConversation = visibleMessages.length > 0;
   const latestVisibleMessage = visibleMessages[visibleMessages.length - 1] ?? null;
-  const widgetDemoSummary =
-    selectedDemoCount === 0
-      ? t("devTools.demoSummary.none")
-      : selectedDemoCount === 1
-        ? t(`devTools.demoSummary.${activeDemoWidgets[0]}`)
-        : t("devTools.demoSummary.multiple", { count: selectedDemoCount });
-
-  const hasDevTools = Boolean(
-    hasVoiceControls ||
-      hasInterfaceControls ||
-      hasLatency ||
-      hasAnimationControls ||
-      hasRuntimeInfo ||
-      hasWindowControls ||
-      hasCameraControls ||
-      hasWidgetDemoControls
-  );
-
-  const toggleSection = (section: DevToolsSectionKey) => {
-    setOpenSections((current) => ({ ...current, [section]: !current[section] }));
-  };
-
-  const collapseAllSections = () => {
-    setOpenSections({
-      interface: false,
-      voice: false,
-      latency: false,
-      widgetDemo: false,
-      animation: false,
-      runtime: false,
-      window: false,
-      camera: false
-    });
-  };
-
-  const handleCameraNumberChange = (
-    section: keyof Pick<AvatarCameraConfig, "position" | "target">,
-    axis: keyof AvatarCameraConfig["position"],
-    value: string
-  ) => {
-    if (!cameraConfig || !onCameraConfigChange) {
-      return;
-    }
-
-    const nextValue = Number.parseFloat(value);
-    if (Number.isNaN(nextValue)) {
-      return;
-    }
-
-    onCameraConfigChange({
-      ...cameraConfig,
-      [section]: {
-        ...cameraConfig[section],
-        [axis]: nextValue
-      }
-    });
-  };
-
-  const handleCameraFovChange = (value: string) => {
-    if (!cameraConfig || !onCameraConfigChange) {
-      return;
-    }
-
-    const nextValue = Number.parseFloat(value);
-    if (Number.isNaN(nextValue)) {
-      return;
-    }
-
-    onCameraConfigChange({
-      ...cameraConfig,
-      fov: nextValue
-    });
-  };
-
-  const handleCopyConfig = () => {
-    if (!cameraConfigSnippet) return;
-    navigator.clipboard.writeText(cameraConfigSnippet).then(() => {
-      setConfigCopied(true);
-      setTimeout(() => setConfigCopied(false), 1500);
-    });
-  };
-
   useLayoutEffect(() => {
     const textarea = draftTextareaRef.current;
     if (!textarea) {
@@ -310,17 +130,23 @@ export function ChatPanel({
     }
   }, [draft]);
 
+  const jumpToLatest = () => {
+    const list = messagesListRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+    followTranscriptRef.current = true;
+    setHasNewAnswer(false);
+  };
+
   useLayoutEffect(() => {
-    const messagesList = messagesListRef.current;
-    if (!messagesList) {
-      return;
+    if (!latestVisibleMessage) {
+      followTranscriptRef.current = true;
+      setHasNewAnswer(false);
+    } else if (followTranscriptRef.current || latestVisibleMessage.role === "user") {
+      jumpToLatest();
+    } else {
+      setHasNewAnswer(true);
     }
-    messagesList.scrollTop = messagesList.scrollHeight;
-  }, [
-    latestVisibleMessage?.id,
-    latestVisibleMessage?.text,
-    latestVisibleMessage?.isStreaming
-  ]);
+  }, [latestVisibleMessage?.id, latestVisibleMessage?.text, latestVisibleMessage?.isStreaming]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -332,38 +158,6 @@ export function ChatPanel({
     }
   };
 
-  const formatLatency = (value: number | null): string => {
-    if (typeof value !== "number") {
-      return "—";
-    }
-    return `${value} ms`;
-  };
-
-  const formatTimestamp = (isoValue: string): string => {
-    const date = new Date(isoValue);
-    if (Number.isNaN(date.getTime())) {
-      return isoValue;
-    }
-    return date.toLocaleTimeString();
-  };
-
-  const demoWidgetButtons: Array<{ kind: DevToolsDemoWidgetKind; label: string }> = [
-    { kind: "table", label: t("devTools.demoTable") },
-    { kind: "keyValue", label: t("devTools.demoKeyValue") },
-    { kind: "text", label: t("devTools.demoText") },
-    { kind: "clarification", label: t("devTools.demoClarification") },
-    { kind: "areaChart", label: t("devTools.demoAreaChart") },
-    { kind: "hitlApproval", label: t("devTools.demoHitlApproval") },
-    { kind: "operatorRadar", label: t("devTools.demoOperatorRadar") },
-    { kind: "error", label: t("devTools.demoError") }
-  ];
-  const radarScenarioButtons: Array<{ kind: DevToolsDemoWidgetKind; label: string }> = [
-    { kind: "radarForecastRunning", label: t("devTools.radarScenarioForecastRunning") },
-    { kind: "radarForecastCompleted", label: t("devTools.radarScenarioForecastCompleted") },
-    { kind: "radarHitlOpen", label: t("devTools.radarScenarioHitlOpen") },
-    { kind: "radarRunFailed", label: t("devTools.radarScenarioRunFailed") },
-    { kind: "radarWarehouseReorder", label: t("devTools.radarScenarioWarehouseReorder") }
-  ];
 
   return (
     <section className={`chat-panel ${isExpanded ? "is-expanded" : "is-collapsed"}`}>
@@ -405,11 +199,15 @@ export function ChatPanel({
               value={draft}
               onChange={(event) => onDraftChange(event.target.value)}
               onKeyDown={handleKeyDown}
+              aria-label={t("chat.placeholder")}
               placeholder={t("chat.placeholder")}
               rows={1}
               autoFocus
             />
-            <button className="chat-panel__send" type="button" onClick={onSubmit} title={t("chat.send")}>
+            {onStopOutput && (canStopOutput || isStoppingOutput) ? (
+              <button type="button" className="chat-panel__stop" disabled={isStoppingOutput}
+                onClick={onStopOutput}>{t("chat.stopOutput")}</button>
+            ) : <button className="chat-panel__send" type="button" onClick={onSubmit} title={t("chat.send")}>
               <svg
                 width="16"
                 height="16"
@@ -423,7 +221,7 @@ export function ChatPanel({
                 <line x1="22" y1="2" x2="11" y2="13" />
                 <polygon points="22 2 15 22 11 13 2 9 22 2" />
               </svg>
-            </button>
+            </button>}
           </div>
 
           <div className="chat-panel__transcript" aria-label={t("chat.transcript")}>
@@ -440,7 +238,14 @@ export function ChatPanel({
                 </button>
               ) : null}
             </div>
-            <div className="chat-panel__messages" ref={messagesListRef}>
+            <div className="chat-panel__messages" ref={messagesListRef} tabIndex={0}
+              onScroll={(event) => {
+                const list = event.currentTarget;
+                const atEnd = list.scrollHeight - list.clientHeight - list.scrollTop <= 40;
+                followTranscriptRef.current = atEnd;
+                if (atEnd) setHasNewAnswer(false);
+              }}
+            >
               {hasConversation ? (
                 visibleMessages.map((message) => {
                   const hasFollowUps = (message.followUpQuestions?.length ?? 0) > 0;
@@ -489,6 +294,7 @@ export function ChatPanel({
                             ))}
                           </div>
                         ) : null}
+                        {message.outputStopped ? <span role="status">{t("chat.outputStopped")}</span> : null}
                         {message.clarificationState ? (
                           <span className="chat-panel__clarification-status" role="status">
                             {t(`widgets.clarification.${message.clarificationState}`)}
@@ -505,6 +311,12 @@ export function ChatPanel({
               )}
             </div>
           </div>
+
+          {hasNewAnswer ? (
+            <button type="button" className="chat-panel__new-answer" onClick={jumpToLatest}>
+              {t("chat.newAnswer")}
+            </button>
+          ) : null}
 
           <div className="chat-panel__bar">
             <small className="chat-panel__hint">{t("chat.launcherHint")}</small>
@@ -555,6 +367,7 @@ export function ChatPanel({
               <button
                 type="button"
                 onClick={onToggleRecording}
+                disabled={isStoppingOutput || (canStopOutput && !isRecording)}
                 title={isRecording ? t("chat.stopRecording") : t("chat.voiceInput")}
                 className={isRecording ? "is-active" : undefined}
               >
@@ -672,484 +485,13 @@ export function ChatPanel({
             </div>
           </div>
 
-          {hasDevTools ? (
-            <div className={`chat-panel__devtools ${devToolsOpen ? "is-open" : ""}`}>
-              <button
-                className="chat-panel__devtools-toggle"
-                type="button"
-                onClick={() => setDevToolsOpen((value) => !value)}
-              >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-                </svg>
-                <span>{t("devTools.title")}</span>
-                <svg
-                  className="chat-panel__devtools-chevron"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
+          <CompanionSettings locale={locale} supportedLocales={supportedLocales} onSelectLocale={onSelectLocale}
+            ttsVoices={ttsVoices} selectedTtsVoice={selectedTtsVoice} onSelectTtsVoice={onSelectTtsVoice}
+            sizePreset={sizePreset} onSelectSizePreset={onSelectSizePreset}
+            avatarPreference={avatarPreference} onSelectAvatar={onSelectAvatar} />
 
-              {devToolsOpen ? (
-                <div className="chat-panel__devtools-body">
-                  <div className="chat-panel__devtools-row chat-panel__devtools-row--actions">
-                    <button className="chat-panel__devtools-btn" type="button" onClick={collapseAllSections}>
-                      {t("devTools.collapseAll")}
-                    </button>
-                  </div>
-
-                  {hasInterfaceControls ? (
-                    <DevToolsSection
-                      title={t("devTools.interface")}
-                      summary={localeLabel(locale)}
-                      open={openSections.interface}
-                      onToggle={() => toggleSection("interface")}
-                    >
-                      <div className="chat-panel__devtools-row">
-                        <label>{t("devTools.language")}</label>
-                        <select
-                          value={locale}
-                          onChange={(event) =>
-                            onSelectLocale?.(event.target.value as LocaleId)
-                          }
-                        >
-                          {supportedLocales.map((supportedLocale) => (
-                            <option key={supportedLocale} value={supportedLocale}>
-                              {localeLabel(supportedLocale)}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </DevToolsSection>
-                  ) : null}
-
-                  {hasVoiceControls ? (
-                    <DevToolsSection
-                      title={t("devTools.voice")}
-                      summary={selectedTtsVoice ?? t("devTools.systemDefault")}
-                      open={openSections.voice}
-                      onToggle={() => toggleSection("voice")}
-                    >
-                      <div className="chat-panel__devtools-row">
-                        <label>{t("devTools.voice")}</label>
-                        <select
-                          value={selectedTtsVoice ?? ""}
-                          onChange={(event) => onSelectTtsVoice?.(event.target.value || null)}
-                        >
-                          <option value="">{t("devTools.systemDefault")}</option>
-                          {ttsVoices?.map((voice) => (
-                            <option key={voice} value={voice}>
-                              {voice}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      {onSelectTranscriptionProvider ? (
-                        <div className="chat-panel__devtools-row">
-                          <label>{t("devTools.transcriptionProvider")}</label>
-                          <select
-                            value={transcriptionProvider}
-                            onChange={(event) =>
-                              onSelectTranscriptionProvider(
-                                event.target.value as TranscriptionProviderId,
-                              )
-                            }
-                          >
-                            {transcriptionProviders.map((provider) => (
-                              <option key={provider} value={provider}>
-                                {provider === "openai-realtime"
-                                  ? t("devTools.transcriptionProviderRealtime")
-                                  : t("devTools.transcriptionProviderFile")}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      ) : null}
-                    </DevToolsSection>
-                  ) : null}
-
-                  {hasLatency && latencyDebug ? (
-                    <DevToolsSection
-                      title={t("devTools.latency")}
-                      summary={latencyDebug.status ?? "—"}
-                      open={openSections.latency}
-                      onToggle={() => toggleSection("latency")}
-                    >
-                      <div className="chat-panel__devtools-kv">
-                        <span className="chat-panel__devtools-k">{t("devTools.started")}</span>
-                        <span className="chat-panel__devtools-v">{formatTimestamp(latencyDebug.startedAt)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.mode")}</span>
-                        <span className="chat-panel__devtools-v">{latencyDebug.requestKind}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.route")}</span>
-                        <span className="chat-panel__devtools-v">{latencyDebug.route}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.status")}</span>
-                        <span className="chat-panel__devtools-v">{latencyDebug.status ?? "—"}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.create")}</span>
-                        <span className="chat-panel__devtools-v">{formatLatency(latencyDebug.createAcceptedMs)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.stream")}</span>
-                        <span className="chat-panel__devtools-v">{formatLatency(latencyDebug.streamConnectedMs)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.firstEvent")}</span>
-                        <span className="chat-panel__devtools-v">{formatLatency(latencyDebug.firstEventMs)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.firstResponse")}</span>
-                        <span className="chat-panel__devtools-v">{formatLatency(latencyDebug.firstResponseMs)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.polling")}</span>
-                        <span className="chat-panel__devtools-v">
-                          {latencyDebug.usedPolling
-                            ? formatLatency(latencyDebug.pollFallbackMs)
-                            : t("devTools.no")}
-                        </span>
-                        <span className="chat-panel__devtools-k">{t("devTools.completed")}</span>
-                        <span className="chat-panel__devtools-v">{formatLatency(latencyDebug.completedMs)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.failed")}</span>
-                        <span className="chat-panel__devtools-v">{formatLatency(latencyDebug.failedMs)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.ttsRequest")}</span>
-                        <span className="chat-panel__devtools-v">{formatLatency(latencyDebug.ttsRequestedMs)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.ttsStart")}</span>
-                        <span className="chat-panel__devtools-v">{formatLatency(latencyDebug.ttsStartedMs)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.talkToTts")}</span>
-                        <span className="chat-panel__devtools-v">{formatLatency(latencyDebug.talkToTtsStartMs)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.ttsDuration")}</span>
-                        <span className="chat-panel__devtools-v">{formatLatency(latencyDebug.ttsSpeakDurationMs)}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.ttsProvider")}</span>
-                        <span className="chat-panel__devtools-v">{latencyDebug.ttsProvider ?? "—"}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.ttsFallback")}</span>
-                        <span className="chat-panel__devtools-v">
-                          {latencyDebug.ttsFallbackUsed === null
-                            ? "—"
-                            : latencyDebug.ttsFallbackUsed
-                              ? t("devTools.yes")
-                              : t("devTools.no")}
-                        </span>
-                        {latencyDebug.lastError ? (
-                          <>
-                            <span className="chat-panel__devtools-k">{t("devTools.error")}</span>
-                            <span className="chat-panel__devtools-v chat-panel__devtools-v--error">
-                              {latencyDebug.lastError}
-                            </span>
-                          </>
-                        ) : null}
-                      </div>
-                    </DevToolsSection>
-                  ) : null}
-
-                  {hasWidgetDemoControls ? (
-                    <DevToolsSection
-                      title={t("devTools.widgetDemo")}
-                      summary={widgetDemoSummary}
-                      open={openSections.widgetDemo}
-                      onToggle={() => toggleSection("widgetDemo")}
-                    >
-                      <div className="chat-panel__devtools-demo-grid">
-                        {demoWidgetButtons.map((entry) => (
-                          <button
-                            key={entry.kind}
-                            className={`chat-panel__devtools-btn chat-panel__devtools-btn--demo ${
-                              activeDemoWidgets.includes(entry.kind) ? "is-active" : ""
-                            }`}
-                            type="button"
-                            onClick={() => onToggleDemoWidget?.(entry.kind)}
-                          >
-                            {entry.label}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="chat-panel__devtools-subgroup">
-                        <span className="chat-panel__devtools-subtitle">
-                          {t("devTools.radarScenarios")}
-                        </span>
-                        <div className="chat-panel__devtools-demo-grid">
-                          {radarScenarioButtons.map((entry) => (
-                            <button
-                              key={entry.kind}
-                              className={`chat-panel__devtools-btn chat-panel__devtools-btn--demo ${
-                                activeDemoWidgets.includes(entry.kind) ? "is-active" : ""
-                              }`}
-                              type="button"
-                              onClick={() => onToggleDemoWidget?.(entry.kind)}
-                            >
-                              {entry.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      {selectedDemoCount > 0 ? (
-                        <button
-                          className="chat-panel__devtools-btn chat-panel__devtools-btn--wide"
-                          type="button"
-                          onClick={() => onClearDemoWidgets?.()}
-                        >
-                          {t("devTools.clearDemoSelection")}
-                        </button>
-                      ) : null}
-                    </DevToolsSection>
-                  ) : null}
-
-                  {hasAnimationControls ? (
-                    <DevToolsSection
-                      title={t("devTools.animation")}
-                      summary={forcedAnimation ?? t("devTools.autoStateBased")}
-                      open={openSections.animation}
-                      onToggle={() => toggleSection("animation")}
-                    >
-                      <div className="chat-panel__devtools-row">
-                        <label>{t("devTools.animation")}</label>
-                        <select
-                          value={forcedAnimation ?? ""}
-                          onChange={(event) => onSelectAnimation?.(event.target.value || null)}
-                        >
-                          <option value="">{t("devTools.autoStateBased")}</option>
-                          {animationNames?.map((name) => (
-                            <option key={name} value={name}>
-                              {name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </DevToolsSection>
-                  ) : null}
-
-                  {hasRuntimeInfo ? (
-                    <DevToolsSection
-                      title={t("devTools.avatarRuntime")}
-                      summary={selectedAnimationClip ?? "—"}
-                      open={openSections.runtime}
-                      onToggle={() => toggleSection("runtime")}
-                    >
-                      <div className="chat-panel__devtools-kv">
-                        <span className="chat-panel__devtools-k">{t("devTools.asset")}</span>
-                        <span className="chat-panel__devtools-v">{avatarAssetKind ?? "—"}</span>
-                        <span className="chat-panel__devtools-k">{t("devTools.clip")}</span>
-                        <span className="chat-panel__devtools-v">{selectedAnimationClip ?? "—"}</span>
-                      </div>
-                      {resolvedAnimationMapping && Object.keys(resolvedAnimationMapping).length > 0 ? (
-                        <pre className="chat-panel__devtools-mapping">
-                          {Object.entries(resolvedAnimationMapping)
-                            .map(([state, clip]) => `${state} -> ${clip}`)
-                            .join("\n")}
-                        </pre>
-                      ) : null}
-                    </DevToolsSection>
-                  ) : null}
-
-                  {hasWindowControls ? (
-                    <DevToolsSection
-                      title={t("devTools.window")}
-                      summary={windowSize ? `${Math.round(windowSize.width)}×${Math.round(windowSize.height)}` : null}
-                      open={openSections.window}
-                      onToggle={() => toggleSection("window")}
-                    >
-                      <div className="chat-panel__devtools-row">
-                        <label>{t("devTools.preset")}</label>
-                        <div className="chat-panel__size-presets">
-                          {SIZE_PRESET_OPTIONS.map((preset) => (
-                            <button
-                              key={preset.id}
-                              type="button"
-                              className={preset.id === sizePreset ? "is-active" : undefined}
-                              onClick={() => onSelectSizePreset(preset.id)}
-                              title={t("devTools.sizeTitle", { label: preset.label })}
-                            >
-                              {preset.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      {windowSize && onAdjustWindowHeight ? (
-                        <div className="chat-panel__devtools-row">
-                          <label>{t("devTools.height")}</label>
-                          <div className="chat-panel__devtools-inline">
-                            <button
-                              className="chat-panel__devtools-btn"
-                              type="button"
-                              onClick={() => onAdjustWindowHeight(-40)}
-                              title={t("devTools.shrinkWindow")}
-                            >
-                              <svg
-                                width="10"
-                                height="10"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="3"
-                                strokeLinecap="round"
-                              >
-                                <line x1="5" y1="12" x2="19" y2="12" />
-                              </svg>
-                              <span>40px</span>
-                            </button>
-                            <span className="chat-panel__devtools-metric">
-                              {Math.round(windowSize.width)} &times; {Math.round(windowSize.height)}
-                            </span>
-                            <button
-                              className="chat-panel__devtools-btn"
-                              type="button"
-                              onClick={() => onAdjustWindowHeight(40)}
-                              title={t("devTools.growWindow")}
-                            >
-                              <svg
-                                width="10"
-                                height="10"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="3"
-                                strokeLinecap="round"
-                              >
-                                <line x1="12" y1="5" x2="12" y2="19" />
-                                <line x1="5" y1="12" x2="19" y2="12" />
-                              </svg>
-                              <span>40px</span>
-                            </button>
-                          </div>
-                        </div>
-                      ) : null}
-
-                    </DevToolsSection>
-                  ) : null}
-
-                  {hasCameraControls && cameraConfig ? (
-                    <DevToolsSection
-                      title={t("devTools.camera")}
-                      summary={`FOV ${Math.round(cameraConfig.fov)}`}
-                      open={openSections.camera}
-                      onToggle={() => toggleSection("camera")}
-                    >
-                      <div className="chat-panel__devtools-row">
-                        <label>{t("devTools.position")}</label>
-                        <div className="chat-panel__devtools-slider-group">
-                          {(["x", "y", "z"] as const).map((axis) => (
-                            <div className="chat-panel__devtools-slider-row" key={`pos-${axis}`}>
-                              <span className="chat-panel__devtools-axis">{axis.toUpperCase()}</span>
-                              <input
-                                type="range"
-                                min={axis === "y" ? "-1" : "-3"}
-                                max={axis === "z" ? "8" : "3"}
-                                step="0.05"
-                                value={cameraConfig.position[axis]}
-                                onChange={(event) =>
-                                  handleCameraNumberChange("position", axis, event.target.value)
-                                }
-                                aria-label={t("devTools.positionAxis", { axis: axis.toUpperCase() })}
-                              />
-                              <input
-                                className="chat-panel__devtools-num"
-                                type="number"
-                                step="0.05"
-                                value={cameraConfig.position[axis]}
-                                onChange={(event) =>
-                                  handleCameraNumberChange("position", axis, event.target.value)
-                                }
-                                aria-label={t("devTools.positionAxisValue", { axis: axis.toUpperCase() })}
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="chat-panel__devtools-row">
-                        <label>{t("devTools.target")}</label>
-                        <div className="chat-panel__devtools-slider-group">
-                          {(["x", "y", "z"] as const).map((axis) => (
-                            <div className="chat-panel__devtools-slider-row" key={`tgt-${axis}`}>
-                              <span className="chat-panel__devtools-axis">{axis.toUpperCase()}</span>
-                              <input
-                                type="range"
-                                min="-3"
-                                max="3"
-                                step="0.05"
-                                value={cameraConfig.target[axis]}
-                                onChange={(event) =>
-                                  handleCameraNumberChange("target", axis, event.target.value)
-                                }
-                                aria-label={t("devTools.targetAxis", { axis: axis.toUpperCase() })}
-                              />
-                              <input
-                                className="chat-panel__devtools-num"
-                                type="number"
-                                step="0.05"
-                                value={cameraConfig.target[axis]}
-                                onChange={(event) =>
-                                  handleCameraNumberChange("target", axis, event.target.value)
-                                }
-                                aria-label={t("devTools.targetAxisValue", { axis: axis.toUpperCase() })}
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="chat-panel__devtools-row">
-                        <label>{t("devTools.fov")}</label>
-                        <div className="chat-panel__devtools-slider-row">
-                          <input
-                            type="range"
-                            min="10"
-                            max="120"
-                            step="1"
-                            value={cameraConfig.fov}
-                            onChange={(event) => handleCameraFovChange(event.target.value)}
-                            aria-label={t("devTools.fieldOfView")}
-                          />
-                          <input
-                            className="chat-panel__devtools-num"
-                            type="number"
-                            step="1"
-                            value={cameraConfig.fov}
-                            onChange={(event) => handleCameraFovChange(event.target.value)}
-                            aria-label={t("devTools.fieldOfViewValue")}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="chat-panel__devtools-row chat-panel__devtools-row--actions">
-                        {onResetCameraConfig ? (
-                          <button className="chat-panel__devtools-btn" type="button" onClick={onResetCameraConfig}>
-                            {t("devTools.reset")}
-                          </button>
-                        ) : null}
-                        {cameraConfigSnippet ? (
-                          <button className="chat-panel__devtools-btn" type="button" onClick={handleCopyConfig}>
-                            <svg
-                              width="12"
-                              height="12"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            >
-                              <rect x="9" y="9" width="13" height="13" rx="2" />
-                              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                            </svg>
-                            <span>{configCopied ? t("devTools.copied") : t("devTools.copyConfig")}</span>
-                          </button>
-                        ) : null}
-                      </div>
-                    </DevToolsSection>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
+          <CompanionDeveloperTools {...developerTools} devToolsOpen={devToolsOpen} setDevToolsOpen={setDevToolsOpen}
+            openSections={openSections} setOpenSections={setOpenSections} />
         </div>
       ) : (
         <button className="chat-panel__launcher backdrop-blur" type="button" onClick={onToggleExpanded}>

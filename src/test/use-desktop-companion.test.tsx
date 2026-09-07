@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CreateDesktopAvatarRequestInput,
@@ -124,8 +124,10 @@ const mocks = vi.hoisted(() => {
       streamHandlers.onDisconnect = args.onDisconnect;
       return {
         close: vi.fn(async () => {
-          streamHandlers.onEvent = null;
-          streamHandlers.onDisconnect = null;
+          if (streamHandlers.onEvent === args.onEvent) {
+            streamHandlers.onEvent = null;
+            streamHandlers.onDisconnect = null;
+          }
         })
       };
     }),
@@ -137,8 +139,10 @@ const mocks = vi.hoisted(() => {
       streamHandlers.onHitlDisconnect = args.onDisconnect;
       return {
         close: vi.fn(async () => {
-          streamHandlers.onHitlEvent = null;
-          streamHandlers.onHitlDisconnect = null;
+          if (streamHandlers.onHitlEvent === args.onEvent) {
+            streamHandlers.onHitlEvent = null;
+            streamHandlers.onHitlDisconnect = null;
+          }
         })
       };
     }),
@@ -150,8 +154,10 @@ const mocks = vi.hoisted(() => {
       streamHandlers.onRadarDisconnect = args.onDisconnect;
       return {
         close: vi.fn(async () => {
-          streamHandlers.onRadarEvent = null;
-          streamHandlers.onRadarDisconnect = null;
+          if (streamHandlers.onRadarEvent === args.onEvent) {
+            streamHandlers.onRadarEvent = null;
+            streamHandlers.onRadarDisconnect = null;
+          }
         })
       };
     }),
@@ -262,6 +268,7 @@ function deferred<T = void>() {
 
 describe("useDesktopCompanion desktop avatar integration", () => {
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
     clearTenantSession();
   });
@@ -299,7 +306,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     mocks.streamHandlers.onTrayPeekCollapse = null;
     mocks.streamHandlers.onTrayPeekPositionChanged = null;
     mocks.getBootstrapStateMock.mockReset().mockResolvedValue({
-      avatarManifest: null,
+
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
       ttsEnabled: false,
@@ -547,7 +554,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
 
   it("adds a HITL card and announces a required decision once", async () => {
     mocks.getBootstrapStateMock.mockResolvedValue({
-      avatarManifest: null,
+
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
       ttsEnabled: true,
@@ -605,7 +612,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
 
   it("batches a burst of HITL required announcements into one spoken update", async () => {
     mocks.getBootstrapStateMock.mockResolvedValue({
-      avatarManifest: null,
+
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
       ttsEnabled: true,
@@ -641,7 +648,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
 
   it("does not announce a HITL decision that resolves before the batch timer fires", async () => {
     mocks.getBootstrapStateMock.mockResolvedValue({
-      avatarManifest: null,
+
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
       ttsEnabled: true,
@@ -950,7 +957,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
 
   it("uses selected voice and persists TTS off across remounts", async () => {
     mocks.getBootstrapStateMock.mockResolvedValue({
-      avatarManifest: null,
+
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
       ttsEnabled: true,
@@ -1019,7 +1026,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
   it("migrates the legacy onyx default to shimmer when available", async () => {
     window.localStorage.setItem("desktop-avatar.ttsVoice", "onyx");
     mocks.getBootstrapStateMock.mockResolvedValue({
-      avatarManifest: null,
+
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
       ttsEnabled: true,
@@ -1072,7 +1079,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     unmount();
     await act(async () => {
       bootstrap.resolve({
-        avatarManifest: null,
+
         collapsedSize: { width: 235, height: 235 },
         expandedSize: { width: 520, height: 620 },
         ttsEnabled: false,
@@ -1333,6 +1340,123 @@ describe("useDesktopCompanion desktop avatar integration", () => {
     expect(page.totalRowCount).toBe(2);
   });
 
+  it("stops streamed output, retains history and HITL, and ignores late stream and speech events", async () => {
+    mocks.createRequestMock.mockResolvedValue({ accepted: true, avatarRequestId: "stop-request", conversationId: "stop-conversation", status: "RECEIVED", streamUrl: "/stream/stop-request", pollUrl: "/poll/stop-request", idempotent: false });
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(result.current.bootstrapReady).toBe(true));
+    await act(async () => { await result.current.submitSuggestion("Zeige den Status"); });
+    const requestId = result.current.messages[1].avatarRequestId!;
+    const lateEvent = mocks.streamHandlers.onEvent!;
+    act(() => {
+      mocks.streamHandlers.onHitlEvent?.(requiredHitlEvent());
+      lateEvent({ type: "talk", avatarRequestId: requestId, talk: { text: "Bisherige Antwort" }, emittedAt: "2026-09-06" });
+      mocks.streamHandlers.onTtsState?.({ requestId, speaking: true });
+    });
+    expect(result.current.canStopOutput).toBe(true);
+    await act(async () => { await result.current.stopOutput(); });
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[1]).toMatchObject({ text: "Bisherige Antwort", isStreaming: false, outputStopped: true });
+    expect(result.current.hitlWidgets).toHaveLength(1);
+    expect(mocks.cancelConversationMock).toHaveBeenCalledWith("stop-conversation", "context-a");
+    act(() => {
+      lateEvent({ type: "talk", avatarRequestId: requestId, talk: { text: "Verspätet" }, emittedAt: "2026-09-06" });
+      mocks.streamHandlers.onTtsState?.({ requestId, speaking: true });
+    });
+    expect(result.current.messages[1].text).toBe("Bisherige Antwort");
+    expect(result.current.companionState).toBe("idle");
+    expect(result.current.canStopOutput).toBe(false);
+  });
+
+  it("cancels a stopped request accepted later without attaching its stream", async () => {
+    const pending = deferred<CreateDesktopAvatarRequestResult>();
+    mocks.createRequestMock.mockReturnValueOnce(pending.promise);
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(result.current.bootstrapReady).toBe(true));
+    let submit: Promise<void> | undefined;
+    act(() => { submit = result.current.submitSuggestion("Auswertung"); });
+    await waitFor(() => expect(mocks.createRequestMock).toHaveBeenCalledTimes(1));
+    await act(async () => { await result.current.stopOutput(); });
+    await act(async () => {
+      pending.resolve({ accepted: true, avatarRequestId: "late", conversationId: "late-conversation", status: "RECEIVED", streamUrl: "/stream/late", pollUrl: "/poll/late", idempotent: false });
+      await submit;
+    });
+    expect(mocks.cancelConversationMock).toHaveBeenCalledWith("late-conversation", "context-a");
+    expect(mocks.connectStreamMock).not.toHaveBeenCalled();
+    expect(result.current.messages[1]).toMatchObject({ isStreaming: false, outputStopped: true });
+    expect(result.current.canStopOutput).toBe(false);
+  });
+
+  it("stops speech on a completed answer without cancelling the server conversation", async () => {
+    mocks.createRequestMock.mockResolvedValue({ accepted: true, avatarRequestId: "stop-request", conversationId: "stop-conversation", status: "RECEIVED", streamUrl: "/stream/stop-request", pollUrl: "/poll/stop-request", idempotent: false });
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(result.current.bootstrapReady).toBe(true));
+    await act(async () => { await result.current.submitSuggestion("Hallo"); });
+    const requestId = result.current.messages[1].avatarRequestId!;
+    act(() => {
+      mocks.streamHandlers.onEvent?.({ type: "done", avatarRequestId: requestId, status: "COMPLETED", emittedAt: "2026-09-06" });
+      mocks.streamHandlers.onTtsState?.({ requestId, speaking: true });
+    });
+    await act(async () => { await result.current.stopOutput(); });
+    expect(mocks.cancelConversationMock).not.toHaveBeenCalled();
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[1].outputStopped).not.toBe(true);
+    expect(result.current.canStopOutput).toBe(false);
+  });
+
+  it("does not show a late cancellation failure in a newer request", async () => {
+    const oldCreate = deferred<CreateDesktopAvatarRequestResult>();
+    const cancel = deferred();
+    mocks.createRequestMock.mockReturnValueOnce(oldCreate.promise);
+    mocks.cancelConversationMock.mockReturnValueOnce(cancel.promise);
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(result.current.bootstrapReady).toBe(true));
+    let oldSubmit: Promise<void> | undefined;
+    act(() => { oldSubmit = result.current.submitSuggestion("Alte Anfrage"); });
+    await waitFor(() => expect(mocks.createRequestMock).toHaveBeenCalledOnce());
+    await act(async () => { await result.current.stopOutput(); });
+    mocks.createRequestMock.mockResolvedValueOnce({ accepted: true, avatarRequestId: "new", conversationId: "new-conversation", status: "RECEIVED", streamUrl: "/stream/new", pollUrl: "/poll/new", idempotent: false });
+    await act(async () => { await result.current.submitSuggestion("Neue Anfrage"); });
+    act(() => oldCreate.resolve({ accepted: true, avatarRequestId: "old", conversationId: "old-conversation", status: "RECEIVED", streamUrl: "/stream/old", pollUrl: "/poll/old", idempotent: false }));
+    await waitFor(() => expect(mocks.cancelConversationMock).toHaveBeenCalledWith("old-conversation", "context-a"));
+    await act(async () => { cancel.reject(new Error("offline")); await oldSubmit; });
+    expect(result.current.error).toBeNull();
+    expect(result.current.messages.at(-1)?.avatarRequestId).toBe("new");
+    expect(result.current.canStopOutput).toBe(true);
+  });
+
+  it("releases a microphone grant arriving after its view unmounts in the same tenant", async () => {
+    const media = deferred<MediaStream>();
+    const trackStop = vi.fn();
+    const previous = navigator.mediaDevices;
+    const getUserMedia = vi.fn(() => media.promise);
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    try {
+      const { result, unmount } = renderHook(() => useDesktopCompanion());
+      await waitFor(() => expect(result.current.bootstrapReady).toBe(true));
+      let capture: Promise<void> | undefined;
+      act(() => { capture = result.current.toggleRecording(); });
+      await waitFor(() => expect(getUserMedia).toHaveBeenCalledOnce());
+      unmount();
+      await act(async () => { media.resolve({ getTracks: () => [{ stop: trackStop }] } as unknown as MediaStream); await capture; });
+      expect(trackStop).toHaveBeenCalledOnce();
+      expect(mocks.startTranscriptionSessionMock).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: previous });
+    }
+  });
+
+  it("keeps Stop available when native speech termination fails", async () => {
+    const { result } = renderHook(() => useDesktopCompanion());
+    await waitFor(() => expect(result.current.bootstrapReady).toBe(true));
+    act(() => mocks.streamHandlers.onTtsState?.({ requestId: "speech", speaking: true }));
+    mocks.stopSpeakingMock.mockRejectedValueOnce(new Error("native stop failed"));
+    await act(async () => { await result.current.stopOutput(); });
+    expect(result.current.error).toContain("nicht bestätigt");
+    expect(result.current.canStopOutput).toBe(true);
+    await act(async () => { await result.current.stopOutput(); });
+    expect(result.current.canStopOutput).toBe(false);
+  });
+
   it("clears the local conversation without deleting HITL state", async () => {
     mocks.createRequestMock.mockResolvedValue({
       accepted: true,
@@ -1497,7 +1621,7 @@ describe("useDesktopCompanion desktop avatar integration", () => {
 
   it("tracks actual TTS provider and fallback usage in latency debug", async () => {
     mocks.getBootstrapStateMock.mockResolvedValue({
-      avatarManifest: null,
+
       collapsedSize: { width: 520, height: 780 },
       expandedSize: { width: 520, height: 920 },
       ttsEnabled: true,

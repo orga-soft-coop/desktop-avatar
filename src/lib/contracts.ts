@@ -35,7 +35,7 @@ export type DesktopAvatarWidgetScalar = string | number | boolean | null;
 export type DesktopAvatarAnimationKey = "idle" | "attention" | "thinking" | "talking";
 export type PeekMode = "peek" | "expanded";
 export type PeekPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
-export type PackedAvatarAnimationState =
+export type AvatarAnimationState =
   | "idle"
   | "walking"
   | "working"
@@ -530,21 +530,23 @@ export interface DesktopAvatarStreamLifecycleEvent {
   reason?: string | null;
 }
 
+export type AvatarAssetKind = "animation-library";
+export interface AvatarAnimationDebug {
+  assetKind: AvatarAssetKind | null;
+  selectedClip: string | null;
+  resolvedAnimationMapping: Record<string, string>;
+}
+
 export interface AvatarManifest {
+  animationLibraryUrl?: string | null;
   displayName?: string | null;
   license?: string | null;
   thumbnailUrl?: string | null;
-  modelUrl?: string | null;
-  animationMapping?: Partial<Record<PackedAvatarAnimationState, string>>;
-  vrmUrl?: string | null;
-  idleAnimationUrls?: string[];
-  attentionAnimationUrl?: string | null;
-  thinkingAnimationUrl?: string | null;
-  talkingAnimationUrl?: string | null;
+  animationMapping?: Partial<Record<AvatarAnimationState, string>>;
+
 }
 
 export interface BootstrapState {
-  avatarManifest: AvatarManifest | null;
   collapsedSize: { width: number; height: number };
   expandedSize: { width: number; height: number };
   ttsEnabled: boolean;
@@ -642,6 +644,8 @@ export interface TtsStateEvent {
 }
 
 export interface ChatMessage {
+  /** Local output presentation; does not assert server cancellation or rollback. */
+  outputStopped?: boolean;
   id: string;
   role: MessageRole;
   text: string;

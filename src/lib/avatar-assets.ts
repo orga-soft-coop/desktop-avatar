@@ -1,88 +1,28 @@
-import { loadAvatarAsset } from "./tauri";
-import { normalizePackedAnimationMapping } from "./avatar-animation-selection";
-import type { PackedAvatarAnimationState } from "./contracts";
+import { normalizeAnimationMapping } from "./avatar-animation-selection";
+import type { AvatarManifest, AvatarAnimationState } from "./contracts";
+import { parseAvatarLibrary, resolveLibraryAsset, type AvatarLibrary } from "./avatar-library";
 import { t } from "./i18n";
 
-export interface LoadedAnimationAsset {
-  source: string;
-  url: string;
+export interface LoadedAvatarAssets {
+  modelUrl: string;
+  clips: AvatarLibrary["clips"];
+  props: AvatarLibrary["props"];
+  animationMapping: Partial<Record<AvatarAnimationState, string>>;
 }
 
-export type LoadedAvatarAssets =
-  | {
-      kind: "legacy-vrm";
-      vrmUrl: string;
-      idleAnimationUrls: LoadedAnimationAsset[];
-      attentionAnimationUrl: LoadedAnimationAsset | null;
-      thinkingAnimationUrl: LoadedAnimationAsset | null;
-      talkingAnimationUrl: LoadedAnimationAsset | null;
-      revoke: () => void;
-    }
-  | {
-      kind: "packed-glb";
-      modelUrl: string;
-      animationMapping: Partial<Record<PackedAvatarAnimationState, string>>;
-      revoke: () => void;
-    };
-
-export async function resolveAvatarAssets(manifest: {
-  modelUrl?: string | null;
-  animationMapping?: Partial<Record<PackedAvatarAnimationState, string>> | null;
-  vrmUrl?: string | null;
-  idleAnimationUrls?: string[];
-  attentionAnimationUrl?: string | null;
-  thinkingAnimationUrl?: string | null;
-  talkingAnimationUrl?: string | null;
-}): Promise<LoadedAvatarAssets> {
-  const blobUrls: string[] = [];
-  const load = async (path: string): Promise<LoadedAnimationAsset> => {
-    const url = await loadAvatarAsset(path);
-    if (url.startsWith("blob:")) {
-      blobUrls.push(url);
-    }
-    return {
-      source: path,
-      url
-    };
-  };
-
-  const packedModelUrl = manifest.modelUrl?.trim();
-  if (packedModelUrl) {
-    return {
-      kind: "packed-glb",
-      modelUrl: (await load(packedModelUrl)).url,
-      animationMapping: normalizePackedAnimationMapping(manifest.animationMapping),
-      revoke: () => {
-        blobUrls.forEach((url) => URL.revokeObjectURL(url));
-      }
-    };
-  }
-
-  const vrmUrl = manifest.vrmUrl?.trim();
-  if (!vrmUrl) {
+export async function resolveAvatarAssets(manifest: AvatarManifest): Promise<LoadedAvatarAssets> {
+  const path = manifest.animationLibraryUrl;
+  if (!path || !/^\/avatars\/female_avatar_[12]\/manifest\.json$/.test(path)) {
     throw new Error(t("errors.avatarManifestRequiresModel"));
   }
-
-  const idleAnimationSources = manifest.idleAnimationUrls ?? [];
-  if (idleAnimationSources.length === 0) {
-    throw new Error(t("errors.legacyVrmRequiresIdle"));
-  }
-
+  const response = await fetch(path);
+  if (!response.ok) throw new Error(`Avatar library unavailable (${response.status}).`);
+  const library = parseAvatarLibrary(await response.json());
+  if (library.avatar !== path.split("/")[2]) throw new Error("Avatar library identity mismatch.");
   return {
-    kind: "legacy-vrm",
-    vrmUrl: (await load(vrmUrl)).url,
-    idleAnimationUrls: await Promise.all(idleAnimationSources.map(load)),
-    attentionAnimationUrl: manifest.attentionAnimationUrl
-      ? await load(manifest.attentionAnimationUrl)
-      : null,
-    thinkingAnimationUrl: manifest.thinkingAnimationUrl
-      ? await load(manifest.thinkingAnimationUrl)
-      : null,
-    talkingAnimationUrl: manifest.talkingAnimationUrl
-      ? await load(manifest.talkingAnimationUrl)
-      : null,
-    revoke: () => {
-      blobUrls.forEach((url) => URL.revokeObjectURL(url));
-    }
+    props: Object.fromEntries(Object.entries(library.props).map(([id, prop]) => [id, { url: resolveLibraryAsset(path, prop.url) }])),
+    modelUrl: resolveLibraryAsset(path, library.model),
+    clips: library.clips.map(clip => ({ ...clip, url: resolveLibraryAsset(path, clip.url) })),
+    animationMapping: normalizeAnimationMapping(manifest.animationMapping)
   };
 }

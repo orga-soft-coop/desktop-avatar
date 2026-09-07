@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveAnimationCandidates,
-  normalizePackedAnimationMapping,
+  normalizeAnimationMapping,
   selectAnimationAction
 } from "../lib/avatar-animation-selection";
 
@@ -31,8 +31,8 @@ describe("avatar animation selection", () => {
     expect(action).toBe("communicating-action");
   });
 
-  it("normalizes packed mapping by trimming and dropping empty values", () => {
-    const mapping = normalizePackedAnimationMapping({
+  it("normalizes animation mapping by trimming and dropping empty values", () => {
+    const mapping = normalizeAnimationMapping({
       working: " thinking ",
       talking: " ",
       idle: "idle"

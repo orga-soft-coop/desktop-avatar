@@ -3613,3 +3613,28 @@ button {
   outline: 2px solid #2b91ff;
   outline-offset: 2px;
 }
+
+.chat-panel__new-answer {
+  align-self: center;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 5px 12px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.companion-settings { border-top: 1px solid rgba(128, 128, 128, .25); }
+.companion-settings__body { font-size: 12px; display: grid; gap: 12px; padding: 12px; max-height: 360px; overflow-y: auto; }
+.companion-settings__body > label { display: grid; grid-template-columns: 1fr minmax(0, 2fr); align-items: center; gap: 8px; }
+.companion-settings select { width: 100%; min-width: 0; border: 1px solid #7d8ca0; border-radius: 6px; color: #182331; background: #f4f7fb; padding: 6px; }
+.companion-settings__avatars { min-width: 0; border: 0; padding: 0; }
+.companion-settings__avatars legend { margin-bottom: 8px; }
+.companion-settings__avatar-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.companion-settings__avatar-grid label { display: grid; justify-items: center; gap: 4px; padding: 8px; border: 1px solid #7d8ca0; border-radius: 8px; cursor: pointer; }
+.companion-settings__avatar-grid label:has(input:checked) { outline: 2px solid #4a9fc8; outline-offset: -2px; }
+.companion-settings__avatar-grid img { object-fit: contain; border-radius: 4px; }
+.companion-settings__avatars input { margin-right: 6px; }
+.companion-settings__avatars p { font-size: 11px; margin-top: 8px; }
+
+.chat-panel__stop { padding: 7px 10px; border: 1px solid currentColor; border-radius: 8px; color: inherit; background: transparent; cursor: pointer; align-self: center; }

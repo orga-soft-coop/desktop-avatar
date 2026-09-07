@@ -213,9 +213,9 @@ describe("desktop avatar contracts", () => {
     expect(event.kind).toBe("required");
   });
 
-  it("accepts packed GLB avatar manifest shape", () => {
+  it("accepts a bundled GLB library manifest", () => {
     const manifest: AvatarManifest = {
-      modelUrl: "./avatars/female_avatar_1.glb",
+      animationLibraryUrl: "/avatars/female_avatar_1/manifest.json",
       animationMapping: {
         idle: "idle",
         walking: "walking",
@@ -229,7 +229,7 @@ describe("desktop avatar contracts", () => {
       }
     };
 
-    expect(manifest.modelUrl).toContain(".glb");
+    expect(manifest.animationLibraryUrl).toContain("manifest.json");
     expect(manifest.animationMapping?.working).toBe("thinking");
   });
 });

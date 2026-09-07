@@ -18,6 +18,34 @@ export const DEFAULT_AVATAR_CAMERA_CONFIG: AvatarCameraConfig = {
   referenceHeight: 780
 };
 
+export interface AvatarCameraAnimation { name: string; time: number; duration: number }
+
+/** Follow the authored wave briefly, then return to the close portrait. */
+export function resolveAvatarCameraPose(
+  config: AvatarCameraConfig, viewportHeight: number, expanded: boolean,
+  animation?: AvatarCameraAnimation | null, reducedMotion = false
+) {
+  const smooth = (value: number) => {
+    const clamped = Math.max(0, Math.min(1, value));
+    return clamped * clamped * (3 - 2 * clamped);
+  };
+  const progress = animation && animation.duration > 0 ? animation.time / animation.duration : 0;
+  const wave = !expanded && !reducedMotion && animation?.name === "teleport-out"
+    ? smooth(progress / 0.16) * (1 - smooth((progress - 0.76) / 0.24)) : 0;
+  return {
+    position: {
+      ...config.position,
+      x: config.position.x - wave * 0.18,
+      z: config.position.z * (expanded ? viewportHeight / config.referenceHeight : 0.35 + wave * 0.13)
+    },
+    target: {
+      ...config.target,
+      x: config.target.x - wave * 0.24,
+      y: config.target.y + (expanded ? 0 : 0.12 - wave * 0.17)
+    }
+  };
+}
+
 function formatNumber(value: number): string {
   return Number(value.toFixed(2)).toString();
 }

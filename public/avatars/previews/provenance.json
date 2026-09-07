@@ -1,0 +1,12 @@
+[
+  {
+    "source": "Blender/female_avatar_1/previews/library_idle.png",
+    "file": "female_avatar_1.png",
+    "sha256": "0321aeaf8065febb4d954e5e8caccb168918cc53efa775745c2639397a6f02f3"
+  },
+  {
+    "source": "Blender/female_avatar_2/previews/library_idle.png",
+    "file": "female_avatar_2.png",
+    "sha256": "f11cf1b1e6950d6e188c6c996e35fa5be7dc9f556b062cb3d57b1b25ec26b415"
+  }
+]

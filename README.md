@@ -1,6 +1,6 @@
 # SYNTRA Assistant
 
-Cross-platform desktop companion that renders a 3D VRM avatar with voice and text chat. All commands, questions, HITL decisions, Radar reads, polls, and streams run through the active Agent Studio tenant session.
+Cross-platform desktop companion that renders a 3D avatar from the two bundled Female Avatar GLB libraries with voice and text chat. All commands, questions, HITL decisions, Radar reads, polls, and streams run through the active Agent Studio tenant session.
 
 ## Stack
 
@@ -8,7 +8,7 @@ Cross-platform desktop companion that renders a 3D VRM avatar with voice and tex
 |-------|-----------|
 | Desktop shell | Tauri 2 (Rust) |
 | Frontend | React 19, TypeScript, Vite |
-| 3D avatar | Three.js, @react-three/fiber, @pixiv/three-vrm |
+| 3D avatar | Three.js, @react-three/fiber |
 | State | Custom hook (`useDesktopCompanion`) |
 | Testing | Vitest, @testing-library/react |
 
@@ -22,7 +22,7 @@ Cross-platform desktop companion that renders a 3D VRM avatar with voice and tex
 
 ## Setup
 
-1. `pnpm install`
+1. `pnpm --ignore-workspace install`
 2. Copy `.env.example` to `.env` and fill in the required values (see Environment below).
 3. Start Agent Studio and configure `COMM_OFFICER_BASE_URL`.
 4. `pnpm tauri:dev`
@@ -30,7 +30,7 @@ Cross-platform desktop companion that renders a 3D VRM avatar with voice and tex
 ## Commands
 
 ```bash
-pnpm install                # Install dependencies
+pnpm --ignore-workspace install                # Install dependencies
 pnpm dev                    # Vite dev server (127.0.0.1:1420)
 pnpm build                  # TypeScript check + Vite production build
 pnpm test                   # Run tests (Vitest)
@@ -55,7 +55,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust unit tests
 │                                                 │
 │  ┌───────────────────────────────────────────┐  │
 │  │         AvatarStage (full window)         │  │
-│  │    Three.js Canvas · VRM · Animations     │  │
+│  │    Three.js Canvas · GLB · Animations     │  │
 │  │    z-index: 1 (behind all UI)             │  │
 │  └───────────────────────────────────────────┘  │
 │                                                 │
@@ -109,7 +109,7 @@ TTS (macOS `say` command) → speaking animation
 
 ### Authentication and tenant switching
 
-- The native window appears immediately at startup. Before authentication it opens at 520 x 600, remains in the neutral closed/peek-circle presentation with the bundled OrgaSoft app icon, and shows only the dedicated opaque login-step overlay. The normal content overlays stay unavailable, and the Three.js/VRM avatar is mounted only after Agent Studio confirms the tenant session.
+- The native window appears immediately at startup. Before authentication it opens at 520 x 600, remains in the neutral closed/peek-circle presentation with the bundled OrgaSoft app icon, and shows only the dedicated opaque login-step overlay. The normal content overlays stay unavailable, and the Three.js/GLB avatar is mounted only after Agent Studio confirms the tenant session.
 - The login surface is named `SYNTRA · Desktop Agent`; authentication copy exposes the SYNTRA product name rather than the internal Agent Studio service name.
 - Drag the circle, heading, or another non-interactive part of the login surface to move the window; form controls remain interactive.
 - The React login gate calls Agent Studio's `preauthenticate → companies → branches → complete` flow through Tauri IPC.
@@ -131,7 +131,7 @@ TTS (macOS `say` command) → speaking animation
 ```
 src/
   components/
-    AvatarStage.tsx          3D VRM rendering + animation state machine
+    AvatarStage.tsx          3D stage and runtime/playback integration
     ChatPanel.tsx            Chat input, action buttons, collapsible dev tools
     SpeechBubble.tsx         Floating status/response display
     DataPanelSlider.tsx      Carousel for multiple data components
@@ -146,15 +146,17 @@ src/
     auth-contracts.ts        Public Agent Studio auth/session DTOs
     tenant-session.ts        Immutable active context guard
     router.ts                UX/diagnostic intent classification only
-    avatar-assets.ts         Asset resolution (file paths, relative, HTTPS → blob URLs)
-    vrm-animation.ts         VRMA + FBX loading with Mixamo bone mapping
+    avatar-assets.ts         Bundled GLB library validation and URL resolution
     window-presets.ts        Size presets (S/M/L) + localStorage persistence
   styles/
     app.css                  All styles (glassmorphic dark theme)
   test/                      Vitest unit tests
 
 src-tauri/
-  src/main.rs                Tauri commands, SSE parsing, HTTP clients, TTS, tray
+  src/main.rs                Composition, shared configuration, auth and tray
+  src/window.rs              Window geometry, persistence and Peek transitions
+  src/transport.rs           Tenant-bound requests, HITL, Radar and SSE
+  src/speech.rs              Transcription sessions and speech output
   Cargo.toml                 Rust dependencies
   tauri.conf.json            Window config, permissions, bundle settings
   capabilities/default.json  Tauri permission grants
@@ -164,7 +166,7 @@ src-tauri/
 
 **`useDesktopCompanion` hook** — Central state manager. Owns chat history, companion state machine, recording lifecycle, TTS toggling, window expansion, and size presets. Coordinates all Tauri IPC calls.
 
-**`AvatarStage`** — Renders a Three.js Canvas filling the full window. Loads a VRM model and animation clips from a manifest. A `CameraController` component adjusts camera Z position based on canvas height so the avatar maintains consistent visual size when the window grows.
+**`AvatarStage`** — Renders a Three.js Canvas filling the full window. Loads one of the two bundled GLB libraries through the owned runtime loader. A `CameraController` component adjusts camera Z position based on canvas height so the avatar maintains consistent visual size when the window grows.
 
 **Animation state machine:**
 
@@ -231,108 +233,21 @@ The macOS menu bar tray provides:
 
 ## Avatar Assets
 
-The app supports two avatar manifest styles:
+The app contains only **Female Avatar 1** and **Female Avatar 2**, including their matching GLB animation clips. Select either figure in Settings; the device-local preference applies immediately. Missing, obsolete (`configured`) and invalid selections fall back to Female Avatar 1. `AVATAR_ASSET_MANIFEST` and custom filesystem/HTTPS, packed GLB, VRM, VRMA and FBX loading have been removed. Rebuild the native client to use the simplified bootstrap/command contract.
 
-- **Legacy VRM flow** (`vrmUrl` + external animation files)
-- **Packed GLB flow** (`modelUrl` + clip-name mapping)
+The complete runtime directories under `public/avatars` are unchanged copies of `agent-avatars/Blender/female_avatar_1/runtime` and `female_avatar_2/runtime`. Update model authoring and retargeting in that owning project, copy each complete runtime directory, then refresh `public/avatars/provenance.json` and run the shared-asset test. Do not mix clips between figures or use the older intermediate exports. The former local avatar-build pipeline and packed sample have been removed. `rootHeightOffset` remains authoring provenance already baked into the clips.
 
-Assets can be absolute file paths, manifest-relative paths, or HTTPS URLs.
+`public/sample-avatar-manifest.json` and `public/sample-avatar-2-manifest.json` define the status mappings. Both libraries load directly from the embedded frontend origin in Vite and packaged Tauri. The version-2 manifest supplies the model and named clips with loop flags. Invalid libraries and load failures remain visible.
 
-```json
-{
-  "displayName": "Mint",
-  "license": "CC0",
-  "vrmUrl": "./sample-assets/mint.vrm",
-  "idleAnimationUrls": [
-    "./sample-assets/warrior-idle.fbx",
-    "./sample-assets/bored.fbx"
-  ],
-  "attentionAnimationUrl": "./sample-assets/looking.fbx",
-  "thinkingAnimationUrl": "./sample-assets/bored.fbx",
-  "talkingAnimationUrl": "./sample-assets/looking.fbx"
-}
-```
+Runtime fallback order remains `speaking → talking → communicating → idle` and `thinking/transcribing → thinking → working → idle`. Developer diagnostics show the selected clip and resolved mapping. The renderer separates model/resource ownership (`avatar-runtime`, `avatar-scene`, `useAvatarRuntime`) from animation transitions (`avatar-playback`), preserving phases across aliases and library one-shot behavior.
 
-Packed GLB example:
+Use `pnpm dev` and open `/tools/avatar-preview/` to inspect both figures with the production stage and unload/reload controls. This development entry does not mount business UI or call business APIs. Run `pnpm test`, `pnpm build`, and `cargo test --locked --manifest-path src-tauri/Cargo.toml`. Shared-asset tests verify hashes and exercise every clip against each real skeleton; Node stubs image decoding, so textures and framing also require a browser check.
 
-```json
-{
-  "displayName": "Female Avatar 1",
-  "modelUrl": "./sample-assets/female_avatar_1_packed.glb",
-  "animationMapping": {
-    "idle": "idle",
-    "walking": "walking",
-    "working": "thinking",
-    "communicating": "communicating",
-    "coffee-break": "coffee-break",
-    "at-phone": "at-phone",
-    "teleport-out": "teleport-out",
-    "teleport-in": "teleport-in",
-    "talking": "talking"
-  }
-}
-```
+### Runtime ownership
 
-Runtime fallbacks:
-- `speaking` -> `talking` -> `communicating` -> `idle`
-- `thinking/transcribing` -> `thinking` -> `working` -> `idle`
+`ChatPanel` owns conversation presentation; `CompanionDeveloperTools` renders diagnostics and demos, preserving disclosure state when collapsed. `useDesktopCompanion` coordinates requests, clarification and cancellation. `useHitlDecisions` owns the independent HITL feed and announcement batch; existing immutable tenant context remains captured through cleanup. Radar, microphone/STT and speech keep their separate hooks.
 
-DevTools now show avatar runtime diagnostics:
-- active asset kind (`legacy-vrm` or `packed-glb`)
-- currently selected clip name
-- resolved runtime mapping (`state -> clip`)
-
-Supported formats:
-- Legacy: `.vrm` (avatar), `.vrma` or `.fbx` clips
-- Packed: `.glb` (mesh + rig + clips in one file)
-
-Samples:
-- `public/sample-avatar-manifest.json` (legacy)
-- `public/sample-avatar-packed-manifest.json` (packed template)
-
-### Avatar Build Pipeline (`semi|full`)
-
-Build one packed GLB from `mesh.glb + base.fbx + clips/*.fbx`:
-
-```bash
-pnpm --dir desktop-avatar avatar:validate \
-  --mode semi \
-  --clips-dir /abs/path/clips
-```
-
-CI/automation friendly output:
-
-```bash
-pnpm --dir desktop-avatar avatar:validate \
-  --mode semi \
-  --clips-dir /abs/path/clips \
-  --json
-```
-
-```bash
-pnpm --dir desktop-avatar avatar:build \
-  --mode semi \
-  --mesh-glb /abs/path/female_avatar_1.glb \
-  --base-fbx /abs/path/female_avatar_1_base.fbx \
-  --clips-dir /abs/path/clips \
-  --output-glb /abs/path/build/female_avatar_1.glb
-```
-
-For Tripo-rigged base FBX files, run:
-
-```bash
-pnpm --dir desktop-avatar avatar:build:tripo \
-  --mode semi \
-  --mesh-glb /abs/path/neutral_avatar_2.glb \
-  --base-fbx /abs/path/neutral_avatar_2_base.fbx \
-  --clips-dir /abs/path/clips \
-  --output-glb /abs/path/build/neutral_avatar_2.glb
-```
-
-Use `--mode full` for final export.  
-Optional in `full` mode: `--desktop-target` and `--studio-target` to copy the generated GLB to separate runtime paths.  
-The build narrows unusually wide lower-body rest stance automatically and keeps capped vertical hips motion on a shared clip baseline so walking/working feet stay grounded.
-Details: `tools/avatar-build/README.md`.
+`useCompanionWindow` owns native mode, size and tray subscriptions. `useWidgetDockLayout` owns DOM measurement, dock-side selection and resize anchoring. Charts load through a dynamic import only when an area-chart widget is displayed. Rust command names and business guards remain unchanged in `transport.rs`, `speech.rs` and `window.rs`; the obsolete avatar-file IPC command is removed.
 
 ## Environment
 
@@ -357,7 +272,6 @@ Details: `tools/avatar-build/README.md`.
 | `LOCAL_TTS_RESPONSE_BASE64_PATH` | No | auto-detect | Dot-path for JSON base64 audio payload (for non-binary TTS responses), e.g. `data.audio` |
 | `LOCAL_TTS_HEADERS` | No | `{}` | Optional JSON headers map for local TTS requests |
 | `ENABLE_TTS` | No | `true` | Text-to-speech toggle |
-| `AVATAR_ASSET_MANIFEST` | No | `public/sample-avatar-manifest.json` | Path to manifest JSON |
 | `VITE_DEV_TOOLS` | No | `false` | Show dev tools in chat panel |
 
 ## Design
@@ -383,3 +297,25 @@ pnpm test
 | `tauri.test.ts` | IPC command mapping and runtime guards outside Tauri |
 | `use-desktop-companion.test.tsx` | Request/reply child turns, paging, cancellation, streaming, and fallback safety |
 | `window-presets.test.ts` | Preset dimensions, validation, and defaults |
+
+## Companion controls and runtime ownership
+
+The expanded chat preserves your position when you scroll up during an answer. **Neue Antwort / New answer** returns to the latest output; submitting a new turn resumes following. **Einstellungen / Settings** contains language, TTS voice, window size, and Female Avatar 1/2 with source preview images. The selected bundled avatar changes immediately and is a device-local preference (`desktop-avatar.avatarPreference`). Only the two bundled figures are selectable; unsupported stored selections fall back to Female Avatar 1. Selection resolves only inside the authenticated app. Camera, raw window sizing, transcription provider and demo widgets remain in developer tools.
+
+**Stoppen / Stop** halts the current output and speech while preserving messages, draft, result widgets and HITL decisions. A pending answer is marked locally as stopped; this does not claim server cancellation or rollback. When available, its conversation is cancelled through the existing tenant-bound API, including a create result arriving after Stop. A completed answer's speech can be stopped without cancelling its conversation or clarification. Failed cancellation is surfaced, and late output cannot revive a stopped turn. Already executed ERP actions are never reversed by this control. Sending another prompt or starting microphone capture waits until current output is stopped/completed. **New chat** retains its separate clear-history behavior.
+
+Bundled avatars use `taking-notes` with notebook and pen for attention/listening and `talking` for speech; these are distinct authored motions. Active recording and speech take precedence over an older request's suggested animation. The shared model/clip bytes remain unchanged. Static reduced-motion poses may use the clip's initial pose rather than its peak gesture.
+
+`useOperatorRadar` owns Radar polling, SSE and local display preferences; `useVoiceCapture` owns microphone/audio/STT resources and cancellation on unmount; `useSpeechOutput` owns speech-output tracking and suppressed late speech events. `useDesktopCompanion` coordinates the current conversation, window mode and HITL interactions. All captured tenant IDs and existing transport contracts are preserved.
+
+Visible animated avatars render continuously; reduced motion renders on demand after state/model/camera changes. Hidden documents and explicitly hidden native windows stop scheduling canvas frames. Native show/hide actions emit `avatar-window-visibility`; focus loss alone does not pause the companion. Rebuild/restart the native client to activate these show/hide events. This is not an assertion that macOS occlusion or energy consumption has been benchmarked.
+
+For a local component review run Vite and open `/tools/companion-preview/`. It uses the actual stage/settings/chat components with clearly labelled local transcript data, without backend calls or a login bypass. `/tools/avatar-preview/` remains the focused animation preview. Neither page is a production build entry. To verify output races use `pnpm exec vitest run src/test/use-desktop-companion.test.tsx`; native login, tray and multi-monitor checks still require the Tauri client.
+
+The closed Peek keeps its large close portrait. During the canonical `teleport-out` wave, the camera briefly pans toward the waving hand with a modest pullback and returns as the gesture ends. The cue follows the current clip time, has consistent composition across S/M/L circles, and is disabled for reduced motion and expanded mode. The animation preview offers all three closed circle sizes. Custom clips do not receive an inferred camera cue.
+
+After loading a model (including model changes and preview reload), it greets once using the same authored wave as **Abgang**, then resumes its current state. Loading has no temporary 3D placeholder. Explicit animation selection overrides the automatic greeting; reduced motion skips decorative movement. Listening uses `taking-notes`: notebook in the left hand and pen in the right. The source-authored writing grip rolls the right hand sideways and keeps the pen tip on the page; no desktop-only wrist correction is applied. `at-phone` and `coffee-break` retain their own phone and cup attachments.
+
+The bundled distribution uses the recorded version-2 body/hands/props export. Refresh both complete runtime directories together and regenerate the source hashes; do not mix old body-only clips with the 45-bone rig.
+
+The version-2 libraries include ten clips per figure and four props: phone, notebook, pen and cup. The runtime uses the source manifest's hand transforms and sanitized bone names, without additional axis correction or IK. Props follow the active clip, disappear when switching away, and are released with the model. Refresh all 16 files per avatar together; the provenance test covers all 32 files. No new native commands or dependencies are required for this library update.

@@ -1,0 +1,15 @@
+{
+  "displayName": "female_avatar_2",
+  "license": "Project internal",
+  "animationLibraryUrl": "./avatars/female_avatar_2/manifest.json",
+  "animationMapping": {
+    "idle": "idle",
+    "attention": "taking-notes",
+    "thinking": "thinking",
+    "working": "thinking",
+    "talking": "talking",
+    "communicating": "communicating",
+    "teleport-out": "teleport-out",
+    "teleport-in": "teleport-in"
+  }
+}

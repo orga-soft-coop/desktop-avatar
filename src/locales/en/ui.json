@@ -40,7 +40,11 @@
     "switchToLightMode": "Enable light mode",
     "switchToDarkMode": "Enable dark mode",
     "toPeek": "Switch to peek mode",
-    "closeChat": "Close chat"
+    "closeChat": "Close chat",
+    "newAnswer": "New answer ↓",
+    "stopOutput": "Stop",
+    "outputStopped": "Output stopped.",
+    "stopNotConfirmed": "Output was paused. The full stop could not be confirmed; actions already executed remain in effect."
   },
   "devTools": {
     "title": "Developer tools",
@@ -293,8 +297,7 @@
     "tauriRequired": "{{feature}} requires the Tauri desktop shell.",
     "avatarManifestMissing": "No avatar manifest configured.",
     "avatarLoadFailed": "Avatar could not be loaded.",
-    "avatarManifestRequiresModel": "Avatar manifest must contain either modelUrl (Packed GLB) or vrmUrl.",
-    "legacyVrmRequiresIdle": "Legacy VRM avatar manifest requires at least one idleAnimationUrl."
+    "avatarManifestRequiresModel": "Only the bundled GLB libraries Female Avatar 1 and 2 are supported."
   },
   "features": {
     "voiceTranscription": "Voice transcription"
@@ -318,5 +321,11 @@
     "transcriptionProviderFile": "OpenAI file fallback",
     "toggleAlwaysOnTop": "Toggle always on top",
     "quit": "Quit"
+  },
+  "settings": {
+    "title": "Settings",
+    "size": "Size",
+    "avatar": "Avatar",
+    "deviceOnly": "This selection applies only on this device."
   }
 }

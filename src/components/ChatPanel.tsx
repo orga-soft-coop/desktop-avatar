@@ -36,6 +36,7 @@ interface ChatPanelProps extends CompanionDeveloperToolsProps {
   onToggleExpanded: () => void;
   onToggleTheme: () => void;
   onOpenRadar?: () => void;
+  onOpenLearningReviews?: () => void;
   onToggleTts: () => void;
   onSelectLocale?: (locale: LocaleId) => void;
   onSelectTtsVoice?: (voice: string | null) => void;
@@ -73,6 +74,7 @@ export function ChatPanel({
   onToggleExpanded,
   onToggleTheme,
   onOpenRadar,
+  onOpenLearningReviews,
   onToggleTts,
   onSelectLocale,
   onSelectTtsVoice,
@@ -332,6 +334,7 @@ export function ChatPanel({
                 <span className="chat-panel__backend-status-dot" aria-hidden="true" />
                 <span>{backendConnectionLabel}</span>
               </span>
+              {onOpenLearningReviews ? <button type="button" onClick={onOpenLearningReviews} title={t("chat.openLearningReviews")} aria-label={t("chat.openLearningReviews")}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M4 4h7v16H4zM13 4h7v16h-7z" /><path d="m7 11 2 2 5-5" /></svg></button> : null}
               {onOpenRadar ? (
                 <button
                   type="button"

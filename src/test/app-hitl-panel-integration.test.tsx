@@ -110,6 +110,7 @@ const companion = vi.hoisted(() => ({
 }));
 
 const initialHitlWidgets = companion.hitlWidgets.map((widget) => ({ ...widget }));
+const learning = vi.hoisted(() => ({ decide: vi.fn() }));
 
 vi.mock("../hooks/useTenantSession", () => ({
   useTenantSession: () => auth
@@ -132,12 +133,30 @@ vi.mock("../components/SpeechBubble", () => ({
 }));
 
 vi.mock("../components/ChatPanel", () => ({
-  ChatPanel: () => <div />
+  ChatPanel: ({ onOpenLearningReviews }: { onOpenLearningReviews?: () => void }) => <button onClick={onOpenLearningReviews}>Lernprüfungen öffnen</button>
+}));
+vi.mock("../components/LearningReviewPanel", () => ({
+  LearningReviewPanel: ({ contextId, onDismiss }: { contextId: string; onDismiss?: () => void }) => <section aria-label="Separate Lernprüfung"><span>{contextId}</span><button onClick={() => learning.decide()}>Lernprüfung bestätigen</button><button onClick={onDismiss}>Lernprüfung schließen</button></section>
 }));
 
 import App from "../App";
 
 describe("App HITL panel integration", () => {
+  it("opens a separate learning panel without business action callbacks or altered pending HITLs", async () => {
+    const user = userEvent.setup(); render(<App />);
+    await screen.findByText("SECOND HITL");
+    await user.click(screen.getByRole("button", { name: "Lernprüfungen öffnen" }));
+    expect(await screen.findByRole("region", { name: "Separate Lernprüfung" })).toHaveTextContent("context-a");
+    await user.click(screen.getByRole("button", { name: "Lernprüfung bestätigen" }));
+    expect(learning.decide).toHaveBeenCalledTimes(1);
+    expect(companion.approveHitl).not.toHaveBeenCalled();
+    expect(companion.rejectHitl).not.toHaveBeenCalled();
+    expect(companion.requestMoreInfoForHitl).not.toHaveBeenCalled();
+    expect(companion.hitlWidgets).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: "Lernprüfung schließen" }));
+    expect(await screen.findByText("SECOND HITL")).toBeInTheDocument();
+  });
+
   afterEach(() => {
     cleanup();
     companion.peekMode = "expanded";

@@ -3638,3 +3638,16 @@ button {
 .companion-settings__avatars p { font-size: 11px; margin-top: 8px; }
 
 .chat-panel__stop { padding: 7px 10px; border: 1px solid currentColor; border-radius: 8px; color: inherit; background: transparent; cursor: pointer; align-self: center; }
+
+/* Learning reviews reuse the widget shell and own their private form state. */
+.learning-review-panel { max-height: 72vh; overflow: auto; }
+.learning-review-panel__filters, .learning-review-panel__form { display: grid; gap: .65rem; margin-block: .75rem; }
+.learning-review-panel label { display: grid; gap: .25rem; font-size: .85rem; }
+.learning-review-panel input, .learning-review-panel select, .learning-review-panel textarea { width: 100%; box-sizing: border-box; padding: .5rem; border: 1px solid currentColor; border-radius: .5rem; background: transparent; color: inherit; font: inherit; }
+.learning-review-panel textarea { min-height: 5rem; resize: vertical; }
+.learning-review-panel__list { display: grid; gap: .5rem; list-style: none; padding: 0; }
+.learning-review-panel__list button { display: grid; gap: .3rem; text-align: left; width: 100%; background: transparent; color: inherit; border: 1px solid currentColor; border-radius: .5rem; padding: .6rem; }
+.learning-review-panel__list button[aria-pressed="true"] { outline: 2px solid currentColor; }
+.learning-review-panel small, .learning-review-panel pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+.learning-review-panel__detail { border-top: 1px solid currentColor; margin-top: .75rem; padding-top: .75rem; }
+.learning-review-panel button:disabled { opacity: .5; cursor: not-allowed; }

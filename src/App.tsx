@@ -9,6 +9,7 @@ import {
 } from "./lib/avatar-stage-config";
 import { ChatPanel, type DevToolsDemoWidgetKind } from "./components/ChatPanel";
 import { AvatarStage } from "./components/AvatarStage";
+import { LearningReviewPanel } from "./components/LearningReviewPanel";
 import { DataPanelSlider } from "./components/DataPanelSlider";
 import { DesktopAvatarWidgetPanel } from "./components/DesktopAvatarWidgetPanel";
 import { SpeechBubble } from "./components/SpeechBubble";
@@ -54,7 +55,7 @@ function backendConnectionLabel(state: ReturnType<typeof useDesktopCompanion>["b
 
 interface PanelEntry {
   id: string;
-  source: "request" | "radar" | "hitl" | "demo";
+  source: "request" | "radar" | "hitl" | "demo" | "learning";
   messageId?: string;
   avatarRequestId?: string;
   clarificationState?:
@@ -94,6 +95,7 @@ function AuthenticatedApp({
   const [activePanelEntryId, setActivePanelEntryId] = useState<string | null>(null);
   const [renderedPanelEntries, setRenderedPanelEntries] = useState<PanelEntry[]>([]);
   const [radarOpenRequested, setRadarOpenRequested] = useState(false);
+  const [learningOpen, setLearningOpen] = useState(false);
   const [widgetPanelState, setWidgetPanelState] = useState<
     "closed" | "opening" | "open" | "closing"
   >("closed");
@@ -232,14 +234,17 @@ function AuthenticatedApp({
     [companion.operatorRadarWidget]
   );
 
+  const learningPanelEntries = useMemo<PanelEntry[]>(() => learningOpen ? [{ id: "learning:reviews", source: "learning", widget: { type: "text", title: t("learning.title"), text: "" }, followUpQuestions: [] }] : [], [learningOpen]);
+
   const panelEntries = useMemo<PanelEntry[]>(
     () => [
       ...requestPanelEntries,
       ...hitlPanelEntries,
       ...radarPanelEntries,
+      ...learningPanelEntries,
       ...demoPanelEntries
     ],
-    [demoPanelEntries, hitlPanelEntries, radarPanelEntries, requestPanelEntries]
+    [demoPanelEntries, hitlPanelEntries, radarPanelEntries, requestPanelEntries, learningPanelEntries]
   );
   const activePanelIndex = panelEntries.findIndex((entry) => entry.id === activePanelEntryId);
   const preferredFallbackPanelEntry =
@@ -397,6 +402,7 @@ function AuthenticatedApp({
 
   const dismissPanelEntry = useCallback(
     (entry: PanelEntry) => {
+      if (entry.source === "learning") { setLearningOpen(false); return; }
       if (entry.source === "demo" && entry.demoKind) {
         setActiveDemoWidgets((current) => current.filter((kind) => kind !== entry.demoKind));
         return;
@@ -436,6 +442,7 @@ function AuthenticatedApp({
   }, []);
 
   const closeAllWidgets = useCallback(() => {
+    setLearningOpen(false);
     setActiveDemoWidgets([]);
     setRadarOpenRequested(false);
     companion.dismissOperatorRadar();
@@ -630,6 +637,7 @@ function AuthenticatedApp({
               uiTheme={uiTheme}
               onToggleTheme={toggleUiTheme}
               onOpenRadar={handleOpenRadar}
+              onOpenLearningReviews={() => { setLearningOpen(true); setActivePanelEntryId("learning:reviews"); }}
               onToggleRecording={companion.toggleRecording}
               onToggleTts={companion.toggleTts}
               onSelectLocale={companion.selectLocale}
@@ -662,7 +670,9 @@ function AuthenticatedApp({
               onSelectIndex={selectPanelEntryAt}
               onCloseAll={closeAllWidgets}
             >
-              {displayedPanelEntries.map((entry) => (
+              {displayedPanelEntries.map((entry) => entry.source === "learning" ? (
+                <LearningReviewPanel key={`${session.contextId}:${entry.id}`} contextId={session.contextId} onDismiss={() => dismissPanelEntry(entry)} />
+              ) : (
                 <DesktopAvatarWidgetPanel
                   key={entry.id}
                   widget={entry.widget}

@@ -223,6 +223,15 @@ Selection behavior:
 - `TRANSCRIPTION_PROVIDER_DEFAULT`
 - `TRANSCRIPTION_PROVIDER_FALLBACK`
 
+## Separate learning-review workspace
+
+- The explicit chat action opens `LearningReviewPanel` in the existing widget slider. It does not change business HITL selection, pending counts or decision callbacks.
+- Pending, confirmed and discarded groups use `GET /v1/learning/reviews`; discarded includes both REJECTED and REVOKED. Mode/text filters and opaque page cursors remain bounded. Detail supports historical `version` reads and a current-version reload.
+- Original source feedback (reason, actor, time, business decision, CAPTURED status) remains separate from the attributed case-example body, reviewer assessment/reason and validity. Business approval never implies POSITIVE quality. COMPANY is a purpose label; V1 access and recall stay with the original source owner, agent and mode.
+- Confirm/reject/adjust require explicit POSITIVE, NEGATIVE, CORRECTION or UNASSESSED assessment and a reason. Adjustment edits body/purpose and optional validity together with one confirmed revision. Omitted dates preserve server values; explicit null clears them. Revoke requires a reason and confirmed current revision. Terminal and historical revisions are read-only.
+- Commands `learning_reviews_list`, `learning_review_get`, `learning_review_decide`, `learning_review_revoke` use the existing native session broker, mandatory immutable `expectedContextId`, post-await epoch checks and CSRF/Origin protections. Numeric HTTP error status survives native IPC so conflicts and access loss remain distinguishable. Mutation keys are reused for exact retries and replaced for changed requests. A conflict retains the local draft and offers explicit reload. Access loss clears private state; a context change synchronously remounts the workspace and discards late results/errors.
+- No browser fetch, local LLM fallback, local persistence, business action or installed-app replacement belongs to this workspace. Source tests and artifacts verify implementation; installed-app and real target-browser acceptance are separate evidence.
+
 ## Verification baseline
 
 - `pnpm test`

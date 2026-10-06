@@ -1,3 +1,4 @@
+mod learning;
 mod speech;
 mod transport;
 mod window;
@@ -1199,6 +1200,10 @@ pub fn run() {
             transport::desktop_avatar_clarification_reply,
             transport::desktop_avatar_dataset_page_get,
             transport::desktop_avatar_conversation_cancel,
+            learning::learning_reviews_list,
+            learning::learning_review_get,
+            learning::learning_review_decide,
+            learning::learning_review_revoke,
             transport::desktop_avatar_radar_get,
             transport::desktop_avatar_radar_stream_start,
             transport::desktop_avatar_radar_stream_stop,

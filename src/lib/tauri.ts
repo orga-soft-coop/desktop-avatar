@@ -664,3 +664,30 @@ export function onTrayPeekPositionChanged(
   }
   return listen<PeekPosition>("peek-position-changed", ({ payload }) => listener(payload));
 }
+
+/** Learning calls stay separate from executable HITL commands. */
+async function invokeLearning<T>(command: string, args: Record<string, unknown>, expectedContextId: string): Promise<T> {
+  requireTauriRuntime("Lernprüfungen");
+  const contextId = resolveExpectedContextId(expectedContextId);
+  try {
+    const result = await invokeTenant<T>(command, { ...args, expectedContextId: contextId });
+    if (!isCurrentTenantContext(contextId)) throw new Error("DESKTOP_SESSION_CHANGED");
+    return result;
+  } catch (error) {
+    if (!isCurrentTenantContext(contextId)) throw new Error("DESKTOP_SESSION_CHANGED");
+    throw error;
+  }
+}
+
+export function listLearningReviews(query: import("./learning-review-contracts").LearningReviewListQuery, expectedContextId: string) {
+  return invokeLearning<import("./learning-review-contracts").LearningReviewListResponse>("learning_reviews_list", { query }, expectedContextId);
+}
+export function getLearningReview(reviewId: string, version: number | undefined, expectedContextId: string) {
+  return invokeLearning<import("./learning-review-contracts").LearningReviewDetail>("learning_review_get", { reviewId, version }, expectedContextId);
+}
+export function decideLearningReview(reviewId: string, input: import("./learning-review-contracts").LearningReviewDecisionInput, idempotencyKey: string, expectedContextId: string) {
+  return invokeLearning<import("./learning-review-contracts").LearningReviewDetail>("learning_review_decide", { reviewId, input, idempotencyKey }, expectedContextId);
+}
+export function revokeLearningReview(reviewId: string, input: import("./learning-review-contracts").RevokeLearningReviewInput, idempotencyKey: string, expectedContextId: string) {
+  return invokeLearning<import("./learning-review-contracts").LearningReviewDetail>("learning_review_revoke", { reviewId, input, idempotencyKey }, expectedContextId);
+}

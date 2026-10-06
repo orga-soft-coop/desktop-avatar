@@ -42,6 +42,8 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust unit tests
 
 ## Architecture
 
+The chat's learning-review action opens a separate private queue. Reviewers see the original human feedback beside the attributed case example, explicitly assess it, and confirm, adjust, reject or revoke a learning revision. COMPANY labels the purpose; V1 still restricts access and reuse to the original user, agent and mode. Native session/context protections apply to every read and mutation. This workspace does not change pending business decisions. See `spec.md` for version conflicts, exact retries, validity and access-loss behavior.
+
 ### Overview
 
 ```
